@@ -61,14 +61,14 @@
              and it stays one line: the release train's follow-bump step
              (.config/qits/ci-event-upstream-eventstream.yml) rewrites exactly this element with a
              `sed`, so a second spelling of the version anywhere would be left behind. -->
-        <qits.eventstream.version>2026.924.141456</qits.eventstream.version>
-        <qits.auth-core.version>2026.917.65806</qits.auth-core.version>
+        <qits.eventstream.version>2026.929.142419</qits.eventstream.version>
+        <qits.auth-core.version>2026.929.140626</qits.auth-core.version>
         <!-- The platform's shared ArchUnit rules, published by qits-integrations-quarkus beside
              qits-auth-core. Test scope wherever entities live — see service/pom.xml. -->
-        <qits.arch-rules.version>2026.917.65806</qits.arch-rules.version>
+        <qits.arch-rules.version>2026.929.140626</qits.arch-rules.version>
         <!-- The platform's database patience, published beside the two above: PatientPgDriver (the
              datasource's driver line) and DbRetry (the worker's brackets). -->
-        <qits.db-core.version>2026.917.65806</qits.db-core.version>
+        <qits.db-core.version>2026.929.140626</qits.db-core.version>
         <!-- The user-story framework (test scope): this repo's story catalogue is written as
              @UserStory methods, so a `mvn verify -DskipITs=false` also regenerates
              service/target/userstories/ — the story logs and their network diagrams, which are
@@ -78,7 +78,7 @@
         <!-- The recording service mocks the story ITs boot against (the generic MockService plus
              idp.MockIdp), published by qits-integrations-quarkus beside qits-auth-core,
              qits-arch-rules and qits-db-core above. -->
-        <qits.service-mock.version>2026.917.65806</qits.service-mock.version>
+        <qits.service-mock.version>2026.929.140626</qits.service-mock.version>
         <qits.maven.repository.url>http://registry.dev.localhost:8080/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
