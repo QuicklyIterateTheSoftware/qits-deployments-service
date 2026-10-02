@@ -78,8 +78,8 @@ public class ResourceProvisioning {
 
   static final String IDP_RESOURCE_TYPE = "idp-client";
 
-  /** The application qits-platform-idp deploys under, and the port every service reaches it on. */
-  static final String IDP_APPLICATION = "qits-platform-idp";
+  /** The application the idp deploys under, and the port every service reaches it on. */
+  static final String IDP_APPLICATION = "qits-idp";
 
   static final int IDP_PORT = 8080;
 
@@ -567,14 +567,14 @@ public class ResourceProvisioning {
   }
 
   /**
-   * {@code http://<tier>-qits-platform-idp:8080/idp} — derived, like the postgres host, never
-   * configured.
+   * {@code http://<tier>-qits-idp:8080/idp} — derived, like the postgres host, never configured.
    *
    * <p><b>It gained the tier when the plane was deleted, and that is a cutover rather than a
    * cosmetic change.</b> It read {@code http://qits-platform-idp:8080/idp} while the plane's services
-   * answered on their bare names; qits-platform-idp is an ordinary service in the one tier now, so
-   * the address a provisioned container is handed has to carry the tier or it resolves to nothing the
-   * moment the bare-named predecessor is retired.
+   * answered on their bare names; the idp is an ordinary service in the one tier now, so the
+   * address a provisioned container is handed has to carry the tier or it resolves to nothing the
+   * moment the bare-named predecessor is retired. (It was also renamed from {@code qits-platform-idp}
+   * to {@code qits-idp} once the tier distinction in the name itself was gone.)
    */
   private static String idpUrl(String environmentName) {
     return "http://" + PdNetworks.alias(environmentName, IDP_APPLICATION) + ":" + IDP_PORT + "/idp";

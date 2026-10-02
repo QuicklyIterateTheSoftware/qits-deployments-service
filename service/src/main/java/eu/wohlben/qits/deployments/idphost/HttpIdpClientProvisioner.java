@@ -34,7 +34,7 @@ import org.jboss.logging.Logger;
  * ResourceProvisioning.idpUrl}). This one was the last exception: it read a bare
  * {@code qits-platform-idp} and so resolved only while that plane-era swarm service was still up,
  * which made retiring that service break every {@code idp:client} provisioning. It now derives
- * {@code <env>-qits-platform-idp} from this component's OWN environment (see {@link
+ * {@code <env>-qits-idp} from this component's OWN environment (see {@link
  * #resolveBaseUrl}). The debt that remains is narrower and unchanged in kind: {@link
  * IdpClientProvisioner} is a courier of three requests carrying no tier, so this uses the
  * environment this component runs in rather than the one the application being provisioned for runs
@@ -61,7 +61,7 @@ public class HttpIdpClientProvisioner implements IdpClientProvisioner {
   private static final Logger LOG = Logger.getLogger(HttpIdpClientProvisioner.class);
   private static final ObjectMapper JSON = new ObjectMapper();
 
-  static final String IDP_APPLICATION = "qits-platform-idp";
+  static final String IDP_APPLICATION = "qits-idp";
   static final int IDP_PORT = 8080;
 
   static final int SECRET_MAX_CHARS = 128;
