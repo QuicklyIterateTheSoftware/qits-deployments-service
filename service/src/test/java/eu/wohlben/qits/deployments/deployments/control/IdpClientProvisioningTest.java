@@ -227,7 +227,8 @@ public class IdpClientProvisioningTest {
     // `http://qits-platform-idp:8080/idp` — both of them the plane's un-tiered spelling, both derived
     // through `PdNetworks.alias(PLATFORM, …)`. The plane is deleted, so the one derivation left
     // answers `<tier>-<app>`, and the address a provisioned container is handed has to carry the tier
-    // or it resolves to nothing once qits-platform-idp's bare-named service is retired.
+    // or it resolves to nothing once qits-platform-idp's bare-named service is retired. (The
+    // application itself was later renamed to `qits-idp`.)
     //
     // The client id moving is a real cutover rather than a cosmetic one: qits-idp keys a service
     // client by it, so the first deployment of a former platform application under this code creates
@@ -240,6 +241,6 @@ public class IdpClientProvisioningTest {
     assertEquals(
         List.of("idp-tier-idp-plat"), idpProvisioner.createCalls(), "the tier is the qualifier");
     assertEquals("idp-tier-idp-plat", bindings.get(0).value("CLIENT_ID"));
-    assertEquals("http://idp-tier-qits-platform-idp:8080/idp", bindings.get(0).value("URL"));
+    assertEquals("http://idp-tier-qits-idp:8080/idp", bindings.get(0).value("URL"));
   }
 }
