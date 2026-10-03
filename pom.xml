@@ -43,7 +43,7 @@
          value. It is deliberately NOT a `-SNAPSHOT`: the image build resolves this reactor from
          source, so a snapshot coordinate would only invite a resolver to look for one in a
          repository that will never hold it. -->
-    <version>2026.1003.133413</version>
+    <version>2026.1003.170119</version>
     <packaging>pom</packaging>
     <name>qits-platform-deployments</name>
 
