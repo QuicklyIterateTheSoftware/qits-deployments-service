@@ -3,17 +3,19 @@
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 https://maven.apache.org/xsd/settings-1.2.0.xsd">
   <mirrors>
-    <!-- Exact repository-id matches win over Maven's external:http:* blocker. This permits only
-         the platform's own repository URL supplied to the image build, not arbitrary HTTP repos. -->
+    <!-- The platform's hosted Maven, https://registry.qits.$QITS_DOMAIN/artifacts/maven/maven.
+         Maven cannot compute a string, so the URL arrives derived: the docker/Dockerfile RUN and the
+         CI recipe build it from QITS_DOMAIN. Mirrors exactly the pom's `qits-maven` id. -->
     <mirror>
       <id>qits-maven-network</id>
       <mirrorOf>qits-maven</mirrorOf>
       <url>${env.QITS_MAVEN_REPOSITORY_URL}</url>
     </mirror>
-    <!-- Maven Central through qits-platform-mirror's pull-through cache. The exact repository id is
-         the same blocker exemption the entry above uses, scoped to the one repository the profile
-         below declares — so while QITS_MAVEN_CENTRAL_URL is unset or empty, nothing declares
-         qits-central, this entry matches nothing, and the unexpanded URL is never dialled. -->
+    <!-- Maven Central through qits-mirror's cache,
+         https://mirror.qits.$QITS_DOMAIN/mirror/maven/central, derived the same way. Scoped to the
+         one repository the profile below declares — so while QITS_MAVEN_CENTRAL_URL is unset or
+         empty, nothing declares qits-central, this entry matches nothing, and the unexpanded URL is
+         never dialled. -->
     <mirror>
       <id>qits-central-proxy</id>
       <mirrorOf>qits-central</mirrorOf>
@@ -21,22 +23,15 @@
     </mirror>
   </mirrors>
   <servers>
-    <!-- The credential that answers the registry's 401 once reads are gated. The id is the MIRROR's
-         id, because a mirror is the server Maven authenticates against. Maven presents a server's
-         username and password only when a repository challenges, so while reads are anonymous —
-         today, and for any in-network build that never sees a 401 — these two lines are unused
-         literals: an unset variable stays unexpanded and is never sent anywhere. The image build
-         supplies both from BuildKit secret mounts; see docker/Dockerfile. -->
+    <!-- The credential that answers the registry's 401 — both hosts refuse anonymous reads. The id
+         is the MIRROR's id, because a mirror is the server Maven authenticates against. The image
+         build supplies both variables from BuildKit secret mounts; see docker/Dockerfile. -->
     <server>
       <id>qits-maven-network</id>
       <username>${env.QITS_MAVEN_AUTH_USR}</username>
       <password>${env.QITS_MAVEN_AUTH_PSW}</password>
     </server>
-    <!-- Same commissioned credential, for the mirror's central pull-through. Maven presents it
-         only on the edge's 401 (a build resolving Central at
-         mirror.dev.localhost:8080/mirror/maven/central); an in-network step-plane read is anonymous
-         and never sends it. Both variables are the BuildKit secret mounts on docker/Dockerfile's
-         mvnw RUN, as for qits-maven-network. -->
+    <!-- Same commissioned credential, for the Central cache. -->
     <server>
       <id>qits-central-proxy</id>
       <username>${env.QITS_MAVEN_AUTH_USR}</username>
@@ -45,11 +40,12 @@
   </servers>
   <profiles>
     <!-- Active only while QITS_MAVEN_CENTRAL_URL is NON-EMPTY — measured on Maven 3.9: an empty
-         environment value does not activate a property-presence profile, so an injected-empty
-         variable is the off switch and no call site needs a guard. Central itself is re-declared
-         DISABLED, because repository ordering consults the stock central first and the mirror above
-         would never see a request; qits-central takes its place and the mirror reroutes it whole to
-         the pull-through. Unset means stock Maven Central, exactly as before this profile existed. -->
+         environment value does not activate a property-presence profile. The platform always sets
+         it, so platform builds always resolve Central through the cache; unset or empty is the off
+         switch for a build outside the platform, and means stock Maven Central. Central itself is
+         re-declared DISABLED, because repository ordering consults the stock central first and the
+         mirror above would never see a request; qits-central takes its place and the mirror
+         reroutes it whole to the cache. -->
     <profile>
       <id>qits-central-proxy</id>
       <activation>

@@ -2785,8 +2785,8 @@ Four things follow, each load-bearing:
 - **The build runs on the PLATFORM BUILDER, and no `--network` flag exists to argue about.**
   `build: true` + buildctl replaced `docker: true` + `docker build --network host` (the wrapper's
   qits-buildkit-plan.md): a RUN executes in the builder's namespace on the platform network, so the
-  maven registry rides in as `$QITS_MAVEN_REGISTRY_URL` — the in-network address every step already
-  carries — and the old host-networking doctrine retired with the host-daemon build.
+  maven registry rides in as a `QITS_DOMAIN` build-arg, from which `https://registry.qits.$QITS_DOMAIN/artifacts/maven/maven`
+  is derived — and the old host-networking doctrine retired with the host-daemon build.
 
 The pipeline also rewrites `package-lock.json`'s `resolved` **origins** before `npm ci`: npm fetches
 tarballs by the absolute URL in the lockfile and ignores the configured registry, and npm's own
