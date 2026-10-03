@@ -129,7 +129,24 @@ navigation-entries: platform.Deployments:4, project.detail.Deployment Requests:5
 # It must not be left off: without it this component keeps its credentials only for as long as
 # nothing recreates its service — the update path preserves QITS_RESOURCE_* and a `service rm`
 # does not — and a cold bootstrap would provision nothing at all.
-resources: postgresql:db, postgresql:eventstream:qits_deployments_eventstream
+#
+# idp:client PROVISIONS THIS COMPONENT'S OWN QITS-IDP CLIENT, derived id `<tier>-qits-deployments`
+# (dev-qits-deployments), injected as QITS_RESOURCE_IDP_URL / _CLIENT_ID / _CLIENT_SECRET. It
+# replaces the bootstrap pair — client `qits-deployments`,
+# QUARKUS_OIDC_CLIENT_CONFIGURATION_CLIENT_ID / _CREDENTIALS_SECRET — which stays in configuration
+# only as the rollback fallback, and the docker config.json in /work/config the same.
+#
+# SELF-PROVISIONING: the running deployer finds BootResourceRegistration's `qits-deployments` row,
+# which no longer matches the derived id, so ResourceProvisioning treats it as no row, creates
+# `dev-qits-deployments`, stores it and injects it into its successor; the rotate guard refuses
+# only the id the process itself is signed in as (D9). At start the successor writes
+# /tmp/qits-docker/config.json from the pair and every docker child pulls with it.
+#
+# THE CODE SHIPPED FIRST (release 2026.1003.201033): a deployer without the mismatched-row check
+# would hand the old secret out under the new id after a rollback.
+#
+# Ticket qits-879.
+resources: postgresql:db, postgresql:eventstream:qits_deployments_eventstream, idp:client
 
 # STOP-FIRST, AND THIS COMPONENT IS THE REASON THE KEY EXISTS. The default is `start-first`: the
 # successor starts beside the predecessor, which is what makes an orchestrator's rollback lossless.
