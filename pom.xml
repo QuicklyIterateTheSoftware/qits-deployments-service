@@ -61,7 +61,7 @@
              and it stays one line: the release train's follow-bump step
              (.config/qits/ci-event-upstream-eventstream.yml) rewrites exactly this element with a
              `sed`, so a second spelling of the version anywhere would be left behind. -->
-        <qits.eventstream.version>2026.1002.104319</qits.eventstream.version>
+        <qits.eventstream.version>2026.1003.44717</qits.eventstream.version>
         <qits.auth-core.version>2026.1002.70617</qits.auth-core.version>
         <!-- The platform's shared ArchUnit rules, published by qits-integrations-quarkus beside
              qits-auth-core. Test scope wherever entities live — see service/pom.xml. -->
