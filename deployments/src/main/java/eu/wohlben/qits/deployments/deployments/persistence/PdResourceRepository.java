@@ -53,4 +53,14 @@ public class PdResourceRepository implements PanacheRepositoryBase<PdResource, S
   public List<PdResource> listByClientId(String clientId) {
     return list("clientId = ?1", clientId);
   }
+
+  /**
+   * Every {@code idp-client} row, across every application and tier — the claims listing a
+   * garbage collector reads to tell "issued and claimed" apart from "issued and orphaned". Ordered
+   * by {@code clientId} so a reader gets a deterministic answer without reaching for a second
+   * field to break ties.
+   */
+  public List<PdResource> listByResourceType(String resourceType) {
+    return list("resourceType = ?1 order by clientId", resourceType);
+  }
 }

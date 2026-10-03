@@ -55,6 +55,7 @@ class MachineGuardEnforcedTest {
   private static final String SERVICES = "/deployments/api/services";
   private static final String INTAKE = "/deployments/api/events/software-released";
   private static final String PINS = "/deployments/api/pins";
+  private static final String CLAIMS = "/deployments/api/claims/idp-clients";
   private static final String REQUESTS = "/deployments/api/deployment-requests";
 
   /** An application nothing here ever deployed — the operator levers' own three paths. */
@@ -135,6 +136,7 @@ class MachineGuardEnforcedTest {
     given().when().get("/deployments/api/applications").then().statusCode(401);
     given().when().get("/deployments/api/deployments?environmentId=whatever").then().statusCode(401);
     given().when().get(PINS).then().statusCode(401);
+    given().when().get(CLAIMS).then().statusCode(401);
   }
 
   // --- a token minted for another service: refused at validation --------------------------------
@@ -197,6 +199,7 @@ class MachineGuardEnforcedTest {
         .then()
         .statusCode(403);
     given().header("Authorization", roleless).when().get(PINS).then().statusCode(403);
+    given().header("Authorization", roleless).when().get(CLAIMS).then().statusCode(403);
   }
 
   // --- the right token: every machine-facing call goes through ----------------------------------
@@ -289,6 +292,7 @@ class MachineGuardEnforcedTest {
         .statusCode(201);
 
     given().header("Authorization", machineBearer).when().get(PINS).then().statusCode(200);
+    given().header("Authorization", machineBearer).when().get(CLAIMS).then().statusCode(200);
 
     given()
         .header("Authorization", machineBearer)
@@ -322,6 +326,7 @@ class MachineGuardEnforcedTest {
         .then()
         .statusCode(403);
     given().header("Authorization", adminGroups).when().get(PINS).then().statusCode(403);
+    given().header("Authorization", adminGroups).when().get(CLAIMS).then().statusCode(403);
   }
 
   @Test
@@ -336,6 +341,21 @@ class MachineGuardEnforcedTest {
                 + MachineTokens.token("qits-platform-artifacts", AUDIENCE))
         .when()
         .get(PINS)
+        .then()
+        .statusCode(200);
+  }
+
+  @Test
+  void theClaimsEndpointAnswersTheSameThreeDoorsThePinsDo() {
+    // qits-idp's own garbage collection for service clients unused for a while is the one caller,
+    // and it is the pins door's own shape: a token minted for another service never reaches
+    // identity (401, covered above), a correctly addressed token with no roles authenticates and is
+    // refused (403, covered above), and the right token — minted here for qits-ci, which is standing
+    // in for qits-idp's client — goes through.
+    given()
+        .header("Authorization", "Bearer " + MachineTokens.token("qits-ci", AUDIENCE))
+        .when()
+        .get(CLAIMS)
         .then()
         .statusCode(200);
   }

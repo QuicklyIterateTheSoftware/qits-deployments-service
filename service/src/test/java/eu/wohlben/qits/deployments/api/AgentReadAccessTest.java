@@ -80,6 +80,11 @@ class AgentReadAccessTest {
   }
 
   @Test
+  void anAgentReadsTheIdpClientClaims() {
+    asAgent().when().get(BASE + "/claims/idp-clients").then().statusCode(200);
+  }
+
+  @Test
   void anAgentCannotWrite() {
     String environmentId = createEnvironment("agt-refused");
     asAgent()

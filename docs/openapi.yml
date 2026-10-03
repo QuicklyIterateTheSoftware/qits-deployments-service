@@ -84,6 +84,13 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PdEnvironmentDto"
+    ListIdpClientClaimsResponse:
+      type: object
+      properties:
+        claims:
+          type: array
+          items:
+            $ref: "#/components/schemas/PdIdpClientClaimDto"
     ListLinksResponse:
       type: object
       properties:
@@ -216,6 +223,17 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PdApplicationDto"
+    PdIdpClientClaimDto:
+      type: object
+      properties:
+        clientId:
+          type: string
+        applicationName:
+          type: string
+        environmentName:
+          type: string
+        createdAt:
+          $ref: "#/components/schemas/Instant"
     PdLinkedServiceDto:
       type: object
       properties:
@@ -428,6 +446,28 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+  /deployments/api/claims/idp-clients:
+    get:
+      summary: "Every idp-client row this component holds, ordered by clientId — qits-idp's\
+        \ read for telling a claimed client id apart from an orphaned one"
+      responses:
+        "200":
+          description: "One entry per pd_resource row of type idp-client, including\
+            \ the deployer's own boot row; never a secret"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListIdpClientClaimsResponse"
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Idp Client Claim Controller
+      security:
+      - SecurityScheme:
+        - qits:system
+        - qits:agent
   /deployments/api/deployment-requests:
     get:
       summary: "Deployment requests, newest-first — by environment, by project, or\
@@ -796,4 +836,4 @@ paths:
         - qits:system
 info:
   title: qits-platform-deployments API
-  version: 2026.1003.133413
+  version: 2026.1003.202514
