@@ -16,9 +16,8 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * Every {@code idp-client} row this component holds, across every application and tier:
  * {@code {"claims":[{"clientId","applicationName","environmentName","createdAt"}]}}.
  *
- * <p><b>Who asks.</b> qits-idp's own garbage collection for service clients unused for a while reads
- * this to tell a client id it issued that is still claimed by a live {@code pd_resource} row apart
- * from one nothing here answers for any more — the same "the owner of the fact answers the
+ * <p><b>Who asks.</b> qits-orchestrator's GC reads this and hands it, unchanged, to qits-idp, which
+ * deletes every service client no {@code pd_resource} row here claims — the same "the owner of the fact answers the
  * question" shape {@code GET /deployments/api/pins} carries for the image GC.
  *
  * <p><b>No secret, ever.</b> {@link PdResource} carries the credential itself — generated here for a
