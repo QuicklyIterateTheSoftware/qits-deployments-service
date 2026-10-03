@@ -155,8 +155,8 @@ The topology was `qits-serviceregistry` for one release, reached over HTTP. All 
 - **`RegistryBearer`** — the class. **The `quarkus-oidc-client` block came BACK**, and this entry is
   the promise being kept rather than broken: "if this service ever calls a guarded peer again, all
   three arrive in that commit". qits-configuration is that peer, and all three arrived —
-  `confighost/IdpExtrasBearer` over a **named** client, the shipped-off switch
-  (`quarkus.oidc-client.configuration.client-enabled=false`) and a secret a deployment supplies.
+  `confighost/IdpExtrasBearer` over a **named** client, `qits` (on wherever the deployer runs, off
+  under `%dev`/`%test`), and this component's own bootstrap secret.
   What stays gone is the topology client it used to serve. **The peer count is one**: a second named
   client is a second peer, and a second peer wants the argument this one made.
   **qits-idp is a peer too now, and it does not break the count** — it is reached a different way
@@ -1062,15 +1062,22 @@ Five things about it, each easy to undo by accident:
   refusal rather than an unbounded wait on `pd-deploy-worker`, which is single-threaded with every
   other event queued behind it. **A body that will not parse is never retried** — it will not parse
   a second time either.
-- **The credential is the named oidc client and its switch is the extension's own.**
-  `quarkus.oidc-client.configuration.client-enabled` is false shipped, and off the read carries the
-  `X-Qits-User`/`X-Qits-Roles` pair alone — the posture of a platform running qits-configuration
-  behind forward-auth on qits-net during the migration. There is no key of ours beside it, so two
-  spellings cannot disagree; the deployment-side family is `QUARKUS_OIDC_CLIENT_CONFIGURATION_*`,
-  the sibling shape qits-workspaces uses for its git-host client. **The default (unnamed) client is
-  disabled in `application.properties` and must stay disabled**: the extension creates it whether or
-  not anything injects it, and an enabled one with no `auth-server-url` fails the boot naming a key
-  nobody meant to set.
+- **The credential is the named oidc client `qits`, and its switch is the extension's own.**
+  `quarkus.oidc-client.qits.client-enabled` is true shipped and false under `%dev`/`%test`, where
+  the read carries the `X-Qits-User`/`X-Qits-Roles` pair alone. It mints at the derived
+  `<env>-qits-idp` (or `QITS_RESOURCE_IDP_URL`) for the platform's one audience, `qits-platform` (epic
+  qits-540 dossier, 'Plan (as of 2026-09-13)', C4). Its id and secret read `QITS_RESOURCE_IDP_*`
+  first and then `QUARKUS_OIDC_CLIENT_CONFIGURATION_{CLIENT_ID,CREDENTIALS_SECRET}` — raw env names
+  inside `${…}` — because this component keeps its bootstrap pair (D9) and that is how the pair
+  reaches the running deployer. **The client was called `configuration` until qits-719**, and the
+  old name is still NEUTRALISED in `application.properties` (`client-enabled=false`,
+  `discovery-enabled=false`, `token-path=token`): the container still carries the five
+  `QUARKUS_OIDC_CLIENT_CONFIGURATION_*` variables, one of them mints the map key, and the live
+  `_CLIENT_ENABLED=true` outranks the file's `false` — so discovery-off and a token path are what keep
+  that client from dialling or failing the boot. `confighost/QitsOidcClientEnvTest` pins all of it
+  against a real env source. **The default (unnamed) client is disabled in `application.properties`
+  and must stay disabled**: the extension creates it whether or not anything injects it, and an
+  enabled one with no `auth-server-url` fails the boot naming a key nobody meant to set.
 
 **What is NOT recorded, and it is an open debt rather than an omission.** The read logs
 `config-revision=<headRevision>` at INFO beside the url, and that is the only place the revision a
@@ -1241,7 +1248,7 @@ Four more things, each easy to undo by accident:
 
 **The deployer's own self-update is the regression to watch, and it is pinned by a test.** Its
 extras carry the flip — `QITS_PLATFORM_DEPLOYMENTS_EXTRAS_URL` and the
-`QUARKUS_OIDC_CLIENT_CONFIGURATION_*` credential the read presents — so they survive because they
+`QUARKUS_OIDC_CLIENT_CONFIGURATION_*` pair the `qits` client presents — so they survive because they
 ARE extras. A deployer that env-rm'd its own extras-url mid-self-deploy would come back reading the
 file it was demoted from, silently, on a green deployment.
 `theDeployersOwnSelfUpdateKeepsTheKeysThatPointItAtQitsConfiguration` holds it. **Anything the seed
@@ -2565,9 +2572,10 @@ resource**, below.
 
 **`quarkus-oidc-client` is back and it is one peer's**, `service/` only: the bearer
 `confighost/IdpExtrasBearer` presents to qits-configuration. It is the other direction from
-`quarkus-oidc`, which validates what arrives. It ships disabled in both spellings — the named client
-and the default one — so a clone-alone build needs no idp, reaches no network and holds no secret;
-see the extras section above for the switch and the deployment-side family.
+`quarkus-oidc`, which validates what arrives. The named client, `qits`, is on wherever the deployer
+runs and off under `%dev`/`%test`; the default one is off everywhere — so a clone-alone build needs
+no idp, reaches no network and holds no secret. See the extras section above for the switch, the
+credential's env names and the neutralised old `configuration` name.
 
 **`quarkus-undertow` must never be on the classpath.** Its presence breaks Quinoa's production static
 serving — the client 404s from a build that was green — and it arrives *transitively* from anything

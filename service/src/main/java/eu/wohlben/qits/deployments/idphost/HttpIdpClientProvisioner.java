@@ -46,8 +46,10 @@ import org.jboss.logging.Logger;
  * {@code qits:system} — so this reads {@code QITS_RESOURCE_IDP_CLIENT_ID}/{@code
  * QITS_RESOURCE_IDP_CLIENT_SECRET}, falling back to {@code
  * QUARKUS_OIDC_CLIENT_CONFIGURATION_CLIENT_ID}/{@code
- * QUARKUS_OIDC_CLIENT_CONFIGURATION_CREDENTIALS_SECRET} — today's extras pair, since this component
- * does not declare {@code idp:client} for itself yet (D10). Neither is ever logged.
+ * QUARKUS_OIDC_CLIENT_CONFIGURATION_CREDENTIALS_SECRET}, the extras pair that still carries it —
+ * the same pair the {@code qits} oidc client presents. This component does not declare {@code
+ * idp:client} for itself: it keeps its bootstrap pair (epic qits-540 dossier, 'Plan (as of
+ * 2026-09-13)', D9). Neither is ever logged.
  *
  * <p><b>A returned secret is validated before it leaves this class</b>: at most 128 characters (the
  * registry column's own width) and no control character. A secret that fails either check is

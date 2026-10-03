@@ -70,11 +70,9 @@ import org.junit.jupiter.api.TestMethodOrder;
  * config, not to anything read earlier. A stale extras value ships invisibly, as a green deployment,
  * and that failure cost a day on 2026-08-16.
  *
- * <p><b>The credential is the {@code configuration} named oidc client and the peer count is one.</b>
- * It ships disabled, because a platform running qits-configuration behind forward-auth on qits-net
- * is a supported migration posture; {@code StoryProfile} turns it on, so these diagrams carry the
- * hop that fail-closed reading actually costs — a token minted at the idp before the read that
- * presents it.
+ * <p><b>The credential is the {@code qits} named oidc client and the peer count is one.</b>
+ * {@code StoryProfile} points it at the stub, so these diagrams carry the hop that fail-closed
+ * reading actually costs — a token minted at the idp before the read that presents it.
  */
 @QuarkusIntegrationTest
 @TestProfile(StoryProfile.class)

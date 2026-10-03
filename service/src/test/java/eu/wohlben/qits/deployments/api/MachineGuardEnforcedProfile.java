@@ -5,7 +5,7 @@ import java.util.Map;
 
 /**
  * The deployment posture after the gate flips: {@code qits.auth.machine.required=true}. Everything
- * else here exists to make that posture testable without a qits-platform-idp.
+ * else here exists to make that posture testable without a qits-idp.
  *
  * <p><b>The verification key is inlined instead of fetched.</b> {@code quarkus.oidc.public-key} puts
  * the extension into local verification, and {@code auth-server-url} is cleared beside it — the key
@@ -14,12 +14,6 @@ import java.util.Map;
  * so {@code token.issuer} is stated explicitly and {@code iss} stays checked. Everything else — the
  * signature, and {@code aud=qits-platform} from application.properties — is the shipped configuration,
  * checked by the real extension exactly as it will be against the real idp.
- *
- * <p><b>{@code qits.auth.machine.audience} is stated here and nowhere else.</b> The shipped
- * properties carry no such key — there is one audience on this platform and
- * {@code quarkus.oidc.token.audience} names it as a literal — but qits-auth-core refuses to start
- * with the gate on and the key unset, so the posture this profile reaches needs it. The value is
- * that same one audience, which is also what {@code MachineAuth} then re-asks the token for.
  *
  * <p><b>The dev user is switched off</b>, and that is load-bearing rather than tidy. Under
  * {@code %test} qits-auth-core ships {@code qits.auth.forward.dev-user=dev}, so forward-auth
@@ -33,7 +27,6 @@ public class MachineGuardEnforcedProfile implements QuarkusTestProfile {
   public Map<String, String> getConfigOverrides() {
     return Map.of(
         "qits.auth.machine.required", "true",
-        "qits.auth.machine.audience", "qits-platform",
         "qits.auth.forward.dev-user", "",
         "quarkus.oidc.auth-server-url", "",
         "quarkus.oidc.token.issuer", MachineTokens.ISSUER,

@@ -60,6 +60,14 @@
 # stack's own compose environment (never through `qits.deployments.extras.qits-deployments.*`,
 # confirmed against ComposeTemplate.java), so qits-configuration's import never picked it up and there
 # is nothing to flag either way.
+#   * QUARKUS_OIDC_CLIENT_CONFIGURATION_{CLIENT_ENABLED,GRANT_OPTIONS_CLIENT_AUDIENCE} and
+#     QITS_AUTH_MACHINE_AUDIENCE show as orphaned on purpose: nothing reads them. The outbound client
+#     is `qits` now (epic qits-540 dossier, 'Plan (as of 2026-09-13)', C4) — on wherever the deployer
+#     runs, its audience the literal qits-platform — and the inbound audience is qits-auth-core's own
+#     shipped qits-platform. The other three keys under the old client name ARE declared below,
+#     because code still reads them by their raw env names: this component keeps its bootstrap pair
+#     (D9). application.properties neutralises the old client name while any of the five still
+#     reaches the container.
 #   * mounts[0] / mounts[1] / groups[0] are declared below, as `string`, exactly as the store already
 #     spells them (`ConfigurationKeys.INDEXED_KEY`) — the config volume, the docker-socket bind, and
 #     the socket's group id. Declaring them is what stops the coming orphan-delete UI from offering
@@ -124,32 +132,20 @@ keys:
     type: boolean
     description: "The machine gate. Off there is no OIDC tenant at all; on, a machine token is validated and its audience re-asked at the write paths."
 
-  env.QITS_AUTH_MACHINE_AUDIENCE:
-    type: string
-    description: "The audience a machine token addressed to this component must carry."
-
   env.QUARKUS_OIDC_AUTH_SERVER_URL:
     type: string
     description: "The issuer whose JWKS validates what arrives here."
 
-  # --- the credential the extras read PRESENTS: the one named client, one peer ------------------
-
-  env.QUARKUS_OIDC_CLIENT_CONFIGURATION_CLIENT_ENABLED:
-    type: boolean
-    description: "The named configuration client. Off, the read goes out on the X-Qits-User/X-Qits-Roles pair alone."
+  # --- this deployer's own idp identity, still spelled under the old client name --------------
 
   env.QUARKUS_OIDC_CLIENT_CONFIGURATION_AUTH_SERVER_URL:
     type: string
-    description: "The idp the configuration client mints its bearer at."
+    description: "The idp address BootResourceRegistration records on this deployer's own idp row when QITS_RESOURCE_IDP_URL is unset; without it no row is recorded. The qits client itself derives <env>-qits-idp and does not read it."
 
   env.QUARKUS_OIDC_CLIENT_CONFIGURATION_CLIENT_ID:
     type: string
-    description: "This deployer's own idp client id, never a borrowed one: a refused read has to name the service that was refused."
+    description: "This deployer's own idp client id, read by the qits client, the idp provisioner and BootResourceRegistration when QITS_RESOURCE_IDP_CLIENT_ID is unset. Never a borrowed one: a refused read has to name the service that was refused."
 
   env.QUARKUS_OIDC_CLIENT_CONFIGURATION_CREDENTIALS_SECRET:
     type: string
-    description: "The configuration client's secret."
-
-  env.QUARKUS_OIDC_CLIENT_CONFIGURATION_GRANT_OPTIONS_CLIENT_AUDIENCE:
-    type: string
-    description: "The audience the minted bearer is addressed to, which is the tier's qits-configuration."
+    description: "A secret: this deployer's own idp client secret, read by the qits client, the idp provisioner and BootResourceRegistration when QITS_RESOURCE_IDP_CLIENT_SECRET is unset."

@@ -49,7 +49,7 @@ import java.util.Optional;
  *       months stale, and a declaration it will not take refuses the deployment before anything
  *       runs;
  *   <li><b>qits-platform-idp</b> — {@code POST /idp/token}, the machine credential the read above
- *       presents. It is the {@code configuration} NAMED oidc client, and the peer count is one.
+ *       presents. It is the {@code qits} NAMED oidc client, and the peer count is one.
  * </ul>
  *
  * <p><b>One process impersonates all three, and the diagram is drawn from the PATH.</b> The three

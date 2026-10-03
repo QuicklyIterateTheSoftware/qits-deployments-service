@@ -133,8 +133,9 @@
                  again, all three arrive in that commit." qits-configuration is that peer, and this
                  is that commit; the switch and the secret are in application.properties.
 
-                 It ships DISABLED (quarkus.oidc-client.configuration.client-enabled=false), so a
-                 clone-alone build needs no idp and reaches no network. -->
+                 The client is `qits`, on wherever the deployer runs and off under %dev and %test
+                 (quarkus.oidc-client.qits.client-enabled), so a clone-alone build needs no idp and
+                 reaches no network. -->
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-oidc-client</artifactId>
         </dependency>

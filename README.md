@@ -139,7 +139,7 @@ for a postgres resource of its own, since there is one idp per platform and noth
 starts the container with the same generic shape, three variables instead:
 
 ```
-QITS_RESOURCE_IDP_URL            http://qits-platform-idp:8080/idp          # derived, like the postgres host
+QITS_RESOURCE_IDP_URL            http://<env>-qits-idp:8080/idp             # derived, like the postgres host
 QITS_RESOURCE_IDP_CLIENT_ID      this deployment's own wire alias (PdNetworks.alias)
 QITS_RESOURCE_IDP_CLIENT_SECRET  issued by qits-idp, stored in pd_resource, never in a file
 ```

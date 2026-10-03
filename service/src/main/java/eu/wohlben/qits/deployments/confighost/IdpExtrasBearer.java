@@ -11,20 +11,21 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /**
- * The {@code configuration} named oidc client, and the reason this component holds one at all.
+ * The {@code qits} named oidc client, and the reason this component holds one at all.
  *
  * <p>AGENTS.md records that {@code RegistryBearer} and the whole {@code quarkus-oidc-client} block
  * were deleted when the topology stopped being a peer — "if this service ever calls a guarded peer
  * again, all three arrive in that commit". qits-configuration is that peer: its read surface takes a
- * machine bearer for the {@code <env>-qits-configuration} audience, so the extension, the shipped-off
- * switch and the secret a deployment supplies are back, and they are back for exactly one caller.
+ * machine bearer, so the extension and the credential are back, and they are back for exactly one
+ * caller. The client is named {@code qits} like every other service's single outbound client (epic
+ * qits-540 dossier, 'Plan (as of 2026-09-13)', C4), and the bearer carries the platform's one
+ * audience, {@code qits-platform}. It was called {@code configuration}, after its peer, and asked for
+ * the per-peer {@code <env>-qits-configuration} audience until that ruling.
  *
- * <p><b>The switch is the extension's own</b>, {@code
- * quarkus.oidc-client.configuration.client-enabled}, false in the shipped properties. There is no
- * key of ours beside it — the sibling arrangement in qits-workspaces, and one switch cannot
- * disagree with itself. Off, this answers empty and the read goes out anonymous; a platform running
- * qits-configuration behind forward-auth on its own network is a supported posture during the
- * migration.
+ * <p><b>The switch is the extension's own</b>, {@code quarkus.oidc-client.qits.client-enabled}:
+ * true wherever the deployer runs, false under {@code %dev} and {@code %test}. There is no key of
+ * ours beside it — one switch cannot disagree with itself. Off, this answers empty and the read goes
+ * out on the forward-auth headers alone.
  *
  * <p><b>A token this cannot mint is empty rather than an exception.</b> The refusal that matters
  * belongs to the read itself: an anonymous read of a guarded service comes back 401, and {@link
@@ -39,11 +40,11 @@ public class IdpExtrasBearer implements ExtrasBearer {
   /** The mint is not the read: this bounds the hop to idp, not the hop to qits-configuration. */
   private static final Duration TOKEN_TIMEOUT = Duration.ofSeconds(5);
 
-  @ConfigProperty(name = "quarkus.oidc-client.configuration.client-enabled")
+  @ConfigProperty(name = "quarkus.oidc-client.qits.client-enabled")
   boolean enabled;
 
   @Inject
-  @NamedOidcClient("configuration")
+  @NamedOidcClient("qits")
   OidcClient oidcClient;
 
   /** Caches and refreshes the token, so one read per deployment is not one token request. */

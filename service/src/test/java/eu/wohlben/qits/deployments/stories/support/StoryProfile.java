@@ -40,11 +40,9 @@ import java.util.Map;
  *   <li><b>{@code qits.auth.machine.required=true}</b> — the gate. The shipped tenant is {@code
  *       quarkus.oidc.tenant-enabled=${qits.auth.machine.required:false}}, so this one key is the
  *       difference between a service that validates machine bearers and one that does not. Every
- *       refusal in this catalogue is a claim only a gate-on packaged run can make. {@code
- *       qits.auth.machine.audience} rides with it: the shipped properties carry no such key — there
- *       is one audience on this platform and {@code quarkus.oidc.token.audience} names it as a
- *       literal — but qits-auth-core refuses to start with the gate on and the key unset, so the
- *       value here is that same one audience.
+ *       refusal in this catalogue is a claim only a gate-on packaged run can make. No audience key
+ *       rides with it: there is one audience on this platform, {@code quarkus.oidc.token.audience}
+ *       names it as a literal, and qits-auth-core ships the same one for {@code MachineAuth}.
  *   <li><b>{@code quarkus.oidc.auth-server-url}</b> — where the idp is. Discovery stays off and
  *       {@code jwks-path} stays {@code jwks}, joined onto this URL, so the shipped boot-time fetch
  *       is exercised rather than replaced.
@@ -53,11 +51,12 @@ import java.util.Map;
  *   <li><b>{@code git-host-url} and {@code extras-url}</b> — {@link StoryPeers}. The extras url being
  *       SET is itself the posture under test: qits-configuration is then authoritative, meaning
  *       sole, and the config volume's file is not read at all.
- *   <li><b>the {@code configuration} oidc client, ENABLED</b> — shipped off, because a platform
- *       running qits-configuration behind forward-auth on qits-net is a supported migration posture.
- *       Turning it on is what puts the deployer's own machine credential in the diagram, which is
- *       the fail-closed half of the handoff: the read presents an identity, and a service that
- *       refused it would refuse the deployment rather than deploy something stale.
+ *   <li><b>the {@code qits} oidc client, pointed at the stub</b> — shipped on, so this only
+ *       states the address it mints at and the secret it presents (the key is spelled anyway, so
+ *       the story does not lean on which profile a packaged run resolves). It is what puts the
+ *       deployer's own machine credential in the diagram, which is the fail-closed half of the
+ *       handoff: the read presents an identity, and a service that refused it would refuse the
+ *       deployment rather than deploy something stale.
  *   <li><b>{@code observe-interval-seconds=0}</b> — see below.
  *   <li><b>{@code otel} and {@code eventstream} dark</b> — a step container has no qits-observability
  *       and no qits-events, and an exporter retrying against an unresolvable host would bury the
@@ -89,7 +88,7 @@ public class StoryProfile extends PdPackagedSurfaceIT.PackagedUnderTarget {
   private static final String EVENTSTREAM_PROPERTY = "qits.test.stories.eventstream-url";
 
   /**
-   * The secret the {@code configuration} client presents with its {@code client_credentials} grant.
+   * The secret the {@code qits} client presents with its {@code client_credentials} grant.
    * It is a fixture rather than a credential — {@link StoryPeers} mints for anybody — and it is here
    * because the extension refuses to start a client that has no way to authenticate.
    */
@@ -110,7 +109,6 @@ public class StoryProfile extends PdPackagedSurfaceIT.PackagedUnderTarget {
 
     // The gate, and where the keys it validates against come from.
     overrides.put("qits.auth.machine.required", "true");
-    overrides.put("qits.auth.machine.audience", StoryIdentities.AUDIENCE);
     overrides.put("quarkus.oidc.auth-server-url", idp.baseUrl());
 
     // Dark outside a deployment, like %dev/%test. Both are runtime keys, and both ship ENABLED
@@ -125,9 +123,9 @@ public class StoryProfile extends PdPackagedSurfaceIT.PackagedUnderTarget {
     // The two peers a deployment reads from, and the credential it presents to the second.
     overrides.put("qits.deployments.git-host-url", peers);
     overrides.put("qits.deployments.extras-url", peers);
-    overrides.put("quarkus.oidc-client.configuration.client-enabled", "true");
-    overrides.put("quarkus.oidc-client.configuration.auth-server-url", peers + "/idp");
-    overrides.put("quarkus.oidc-client.configuration.credentials.secret", CLIENT_SECRET);
+    overrides.put("quarkus.oidc-client.qits.client-enabled", "true");
+    overrides.put("quarkus.oidc-client.qits.auth-server-url", peers + "/idp");
+    overrides.put("quarkus.oidc-client.qits.credentials.secret", CLIENT_SECRET);
 
     // The timer whose pass a recording cannot tell from a deployment's own. See the class javadoc.
     overrides.put("qits.deployments.observe-interval-seconds", "0");
