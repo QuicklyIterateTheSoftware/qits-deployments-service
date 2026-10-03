@@ -2,9 +2,11 @@ package eu.wohlben.qits.deployments.deployments.control;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -37,12 +39,26 @@ public final class PdProcess {
 
   private PdProcess() {}
 
+  /** The variable the docker CLI reads its config directory from. */
+  static final String DOCKER_CONFIG = "DOCKER_CONFIG";
+
   public static Result run(Path cwd, List<String> command, Duration timeout, int maxChars) {
+    return run(cwd, command, null, timeout, maxChars);
+  }
+
+  /**
+   * {@link #run(Path, List, Duration, int)}, with {@code DOCKER_CONFIG} pointed at {@code
+   * dockerConfigDir} when — and only when — {@link #dockerConfig} says so. Otherwise the child
+   * inherits this process's environment untouched, which is the mounted {@code /work/config}.
+   */
+  public static Result run(
+      Path cwd, List<String> command, Path dockerConfigDir, Duration timeout, int maxChars) {
     try {
       ProcessBuilder pb = new ProcessBuilder(command);
       if (cwd != null) {
         pb.directory(cwd.toFile());
       }
+      dockerConfig(dockerConfigDir).ifPresent(dir -> pb.environment().put(DOCKER_CONFIG, dir));
       pb.redirectErrorStream(true);
       Process process = pb.start();
       Tail tail = new Tail(maxChars);
@@ -73,6 +89,20 @@ public final class PdProcess {
     } catch (Exception e) {
       return new Result(-1, String.valueOf(e.getMessage()), false, false);
     }
+  }
+
+  /**
+   * The {@code DOCKER_CONFIG} a docker child is given: {@code dir} when {@link
+   * DockerCredentialFile} has written a {@code config.json} there, nothing otherwise — and nothing
+   * means the child inherits the container's own value. Decided per child rather than once at boot,
+   * so a call that races the startup write keeps the mounted credential instead of naming an empty
+   * directory, and the next one picks the file up.
+   */
+  public static Optional<String> dockerConfig(Path dir) {
+    if (dir == null || !Files.isRegularFile(dir.resolve(DockerCredentialFile.FILE_NAME))) {
+      return Optional.empty();
+    }
+    return Optional.of(dir.toString());
   }
 
   /** A synchronized rolling tail — appends are trimmed so memory stays O(maxChars). */

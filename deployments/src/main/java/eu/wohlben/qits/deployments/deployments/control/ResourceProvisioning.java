@@ -94,6 +94,16 @@ public class ResourceProvisioning {
   String adminUsername;
 
   /**
+   * The idp client this process is itself signed in as — the very key {@code
+   * HttpIdpClientProvisioner} presents as its Basic id, declared beside the {@code qits} oidc
+   * client's own chain in the service module's {@code application.properties} so the three can only
+   * name one pair. Read here for {@link #rotateGuarded} alone. {@code Optional} because the key
+   * resolves to empty where no pair was handed over (the suite, a developer's jar).
+   */
+  @ConfigProperty(name = "qits.deployments.idp.client-id")
+  Optional<String> ownClientId;
+
+  /**
    * Deliberately without a default. There is no password this repository could ship that would be
    * right, and a wrong one fails at the first CREATE ROLE with an authentication error nobody reads
    * as "nothing configured this". Absent, a deployment that declares a postgres resource fails
@@ -442,6 +452,11 @@ public class ResourceProvisioning {
    *       once)</td></tr>
    * </table>
    *
+   * <p><b>"Present" means a row FOR the derived client id.</b> A stored row naming another client id
+   * is "absent" — see {@link #storedForThisClient} for the rollback that produces one — and the
+   * write arms then overwrite it with the derived client. Both rotate paths are guarded by {@link
+   * #rotateGuarded}, which refuses only the id this process is itself signed in as.
+   *
    * <p>The presence check is one {@code GET} and is always made — it is what tells "nothing to do"
    * apart from "the row is stale", which a caller cannot see from its own registry alone.
    *
@@ -487,6 +502,7 @@ public class ResourceProvisioning {
                   }
                   return resources
                       .findOne(applicationName, environmentName, IDP_RESOURCE_NAME)
+                      .filter(row -> storedForThisClient(row, clientId))
                       .map(row -> row.password)
                       .orElse(null);
                 });
@@ -528,18 +544,75 @@ public class ResourceProvisioning {
   }
 
   /**
-   * The rotate arm, refused for this component's own client (D9): rotating the deployer's own
-   * secret mid-deployment would wedge the platform — no extras read, no idp call and no image pull
-   * work without it, and there is no third party left to redeploy it.
+   * Whether a stored {@code idp} row is the credential FOR {@code clientId}. A row whose client id
+   * differs from the derived one is treated as no row at all — its secret belongs to some other
+   * client, and handing it out under this id is a credential that cannot work.
+   *
+   * <p><b>The case this exists for is this component's own row, after a self-deploy rollback</b>
+   * (the wedge D9 guards against, reached from the other side). {@link BootResourceRegistration}
+   * rewrites {@code (qits-deployments, <tier>, idp)} on every boot from whatever pair the running
+   * container was started with. While the deployer still runs as its bootstrap client that is
+   * {@code qits-deployments}; once it declares {@code idp:client} for itself the derived id is
+   * {@code <tier>-qits-deployments}. A successor that fails its gate is rolled back by swarm to the
+   * old spec, the old container boots and writes {@code qits-deployments} and ITS secret back onto
+   * the row — and the next self-deploy, reusing the stored secret without comparing ids, would start
+   * the successor as {@code <tier>-qits-deployments} holding {@code qits-deployments}' secret. No
+   * extras read, no idp call and no image pull would work, and nothing is left to redeploy it.
+   * Treated as no row, the matrix instead takes the create or the rotate arm for the derived id, and
+   * {@link #storeIdpRow} overwrites the mismatched row IN PLACE: it is the same {@code
+   * uq_pd_resource} key {@code (application, tier, idp)}, so the re-keyed client id is an update of
+   * one row and never a second insert.
+   */
+  private static boolean storedForThisClient(PdResource row, String clientId) {
+    if (clientId.equals(row.clientId)) {
+      return true;
+    }
+    LOG.warnf(
+        "The stored idp row of %s (%s) holds the client %s, not the derived %s — treated as no row,"
+            + " so the derived client is created or rotated and the row is overwritten with it",
+        row.applicationName, row.environmentName, row.clientId, clientId);
+    return false;
+  }
+
+  /**
+   * The rotate arm, refused for the client this process is ITSELF signed in as (D9): rotating the
+   * deployer's own live secret mid-deployment would wedge the platform — no extras read, no idp call
+   * and no image pull work without it, and there is no third party left to redeploy it.
+   *
+   * <p><b>The id is compared, not the application.</b> This used to refuse every client of {@code
+   * qits-deployments}, which was the same statement while the deployer only ever had one. It stops
+   * being one once the deployer declares {@code idp:client} for itself: running as its bootstrap
+   * client {@code qits-deployments}, the recovery path — rotating {@code <tier>-qits-deployments},
+   * which no running process holds, after a rollback (see {@link #storedForThisClient}) — is a
+   * rotate of a client of this application that is NOT this process's identity, and refusing it
+   * would leave the self-deploy failing forever. See {@link #rotationRefused}.
    */
   private IdpClientProvisioner.Result rotateGuarded(String applicationName, String clientId) {
-    if (BootResourceRegistration.APPLICATION.equals(applicationName)) {
+    if (rotationRefused(applicationName, clientId, ownClientId)) {
       throw new ResourceException(
-          "this is qits-deployments' own idp client, and it never rotates its own secret — a"
-              + " lost row is recovered by BootResourceRegistration from its own environment, not"
-              + " by asking qits-idp for a new one");
+          "the idp client "
+              + clientId
+              + " is the one qits-deployments is itself signed in as, and it never rotates its own"
+              + " secret — a lost row is recovered by BootResourceRegistration from its own"
+              + " environment, not by asking qits-idp for a new one");
     }
     return idpClients.rotate(clientId);
+  }
+
+  /**
+   * The guard's decision, pure so it can be held without a booted application. The id this process
+   * is signed in as is refused; any other is allowed. When this process cannot say who it is (the
+   * key resolved to nothing — a developer's jar, never a deployment, which always carries the pair)
+   * it falls back to the old, wider refusal of every client of {@code qits-deployments}: not knowing
+   * its own identity is no reason to risk rotating it.
+   */
+  static boolean rotationRefused(
+      String applicationName, String clientId, Optional<String> signedInAs) {
+    Optional<String> own = signedInAs.map(String::strip).filter(v -> !v.isEmpty());
+    if (own.isPresent()) {
+      return own.get().equals(clientId);
+    }
+    return BootResourceRegistration.APPLICATION.equals(applicationName);
   }
 
   private void storeIdpRow(

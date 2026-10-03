@@ -161,6 +161,27 @@ class QitsOidcClientEnvTest {
   }
 
   @Test
+  void noVariableOfItsOwnCanSplitTheProvisionerPairFromTheQitsClient() throws IOException {
+    // The provisioner's Basic pair and the rotate guard's "who am I" are the qits client's own
+    // chain and nothing else: the retired QITS_PLATFORM_DEPLOYMENTS_IDP_* spelling, set by a stray
+    // entry next to the injected resource pair, must not shadow it.
+    Map<String, String> env = liveEnvironment();
+    env.put("QITS_RESOURCE_IDP_CLIENT_ID", "resource-client-id");
+    env.put("QITS_RESOURCE_IDP_CLIENT_SECRET", "resource-secret");
+    env.put("QITS_PLATFORM_DEPLOYMENTS_IDP_CLIENT_ID", "stray-client-id");
+    env.put("QITS_PLATFORM_DEPLOYMENTS_IDP_CLIENT_SECRET", "stray-secret");
+    SmallRyeConfig config = config(env);
+
+    assertEquals(
+        value(config, "quarkus.oidc-client.qits.client-id"),
+        value(config, "qits.deployments.idp.client-id"));
+    assertEquals(
+        value(config, "quarkus.oidc-client.qits.credentials.secret"),
+        value(config, "qits.deployments.idp.client-secret"));
+    assertEquals("resource-client-id", value(config, "qits.deployments.idp.client-id"));
+  }
+
+  @Test
   void theConfigurationStubIsNeutralisedAgainstTheLiveVariables() throws IOException {
     SmallRyeConfig config = config(liveEnvironment());
 

@@ -142,8 +142,10 @@ public class IdpClientProvisioningTest {
 
   @Test
   void theRotateArmIsRefusedForTheDeployersOwnClient() {
-    // D9: qits-deployments never rotates its own idp client. idp already knows it (the row is
-    // absent, which would otherwise take the rotate arm) — the refusal happens before any call.
+    // D9: qits-deployments never rotates the idp client it is itself signed in as —
+    // `idp-self-qits-deployments`, the suite's qits.deployments.idp.client-id. idp already knows it
+    // (the row is absent, which would otherwise take the rotate arm) — the refusal happens before
+    // any call.
     idpProvisioner.seedDatabaseClient(
         "idp-self-" + BootResourceRegistration.APPLICATION); // matches the derived alias below
 
@@ -155,13 +157,151 @@ public class IdpClientProvisioningTest {
                     BootResourceRegistration.APPLICATION, "idp-self", idpClient()));
 
     assertTrue(refused.getMessage().contains("never rotates"), refused.getMessage());
+    assertTrue(refused.getMessage().contains("idp-self-qits-deployments"), refused.getMessage());
     assertEquals(List.of(), idpProvisioner.rotateCalls(), "the seam's rotate was never called");
     assertTrue(row(BootResourceRegistration.APPLICATION, "idp-self").isEmpty());
   }
 
   @Test
+  void anotherClientOfQitsDeploymentsIsRotatedRatherThanRefused() {
+    // The guard compares the id, not the application. `idp-other-qits-deployments` is a client of
+    // qits-deployments that this process is NOT signed in as — the recovery path's shape, where the
+    // deployer still runs as its bootstrap client and its derived client has to be rotated.
+    idpProvisioner.seedDatabaseClient("idp-other-" + BootResourceRegistration.APPLICATION);
+
+    List<DeploymentDriver.ResourceBinding> bindings =
+        provisioning.ensureAll(BootResourceRegistration.APPLICATION, "idp-other", idpClient());
+
+    assertEquals(
+        List.of("idp-other-qits-deployments"), idpProvisioner.rotateCalls(), "rotated, not refused");
+    assertEquals(
+        bindings.get(0).value("CLIENT_SECRET"),
+        row(BootResourceRegistration.APPLICATION, "idp-other").orElseThrow().password);
+  }
+
+  @Test
+  void aRowNamingAnotherClientIsNoRowSoTheDerivedClientIsRotatedAndTheRowReKeyed() {
+    // The rollback D9 has to survive from the other side: BootResourceRegistration wrote the old
+    // container's pair (`qits-deployments`) back onto the deployer's own row, while the derived id is
+    // `<tier>-qits-deployments` and idp already holds that client. Reusing the stored secret would
+    // start the successor as one client holding another's secret. The row counts as absent, the
+    // derived client is rotated (it is not the id this process is signed in as), and the SAME row is
+    // overwritten — one row, re-keyed, no second insert against uq_pd_resource.
+    existingIdpRow(
+        BootResourceRegistration.APPLICATION, "idp-rb", "qits-deployments", "the-bootstrap-secret");
+    idpProvisioner.seedDatabaseClient("idp-rb-qits-deployments");
+    String rowId = row(BootResourceRegistration.APPLICATION, "idp-rb").orElseThrow().id;
+
+    List<String> logged =
+        logsOf(
+            () -> {
+              List<DeploymentDriver.ResourceBinding> bindings =
+                  provisioning.ensureAll(
+                      BootResourceRegistration.APPLICATION, "idp-rb", idpClient());
+              String injected = bindings.get(0).value("CLIENT_SECRET");
+              assertEquals("idp-rb-qits-deployments", bindings.get(0).value("CLIENT_ID"));
+              assertFalse("the-bootstrap-secret".equals(injected), "never the other client's");
+              PdResource row = row(BootResourceRegistration.APPLICATION, "idp-rb").orElseThrow();
+              assertEquals(rowId, row.id, "the same row, updated in place");
+              assertEquals("idp-rb-qits-deployments", row.clientId);
+              assertEquals(injected, row.password);
+              assertFalse(String.join("\n", logsSoFar).contains(injected), "fresh secret logged");
+            });
+
+    assertEquals(List.of("idp-rb-qits-deployments"), idpProvisioner.rotateCalls());
+    assertEquals(List.of(), idpProvisioner.createCalls());
+    assertTrue(
+        logged.stream().anyMatch(l -> l.contains("qits-deployments") && l.contains("idp-rb")),
+        String.valueOf(logged));
+    assertTrue(
+        logged.stream().noneMatch(l -> l.contains("the-bootstrap-secret")),
+        "a secret was logged: " + logged);
+  }
+
+  @Test
+  void aRowNamingAnotherClientWithNothingAtIdpCreatesTheDerivedClient() {
+    // The same mismatch where idp has never heard of the derived client — the first self-deploy that
+    // declares idp:client, run by a deployer still signed in as its bootstrap client.
+    existingIdpRow(
+        BootResourceRegistration.APPLICATION, "idp-first", "qits-deployments", "the-bootstrap-secret");
+
+    List<DeploymentDriver.ResourceBinding> bindings =
+        provisioning.ensureAll(BootResourceRegistration.APPLICATION, "idp-first", idpClient());
+
+    assertEquals(List.of("idp-first-qits-deployments"), idpProvisioner.createCalls());
+    assertEquals(List.of(), idpProvisioner.rotateCalls());
+    PdResource row = row(BootResourceRegistration.APPLICATION, "idp-first").orElseThrow();
+    assertEquals("idp-first-qits-deployments", row.clientId);
+    assertEquals(bindings.get(0).value("CLIENT_SECRET"), row.password);
+    assertFalse("the-bootstrap-secret".equals(row.password));
+  }
+
+  @Test
+  void aMatchingRowStillShortCircuitsForTheDeployersOwnClient() {
+    // The steady state after the deployer declares idp:client: BootResourceRegistration wrote the
+    // derived pair it runs on, idp has it, and the self-deploy injects exactly that — no write.
+    existingIdpRow(
+        BootResourceRegistration.APPLICATION, "idp-self", "idp-self-qits-deployments", "running-on");
+    idpProvisioner.seedDatabaseClient("idp-self-qits-deployments");
+    try {
+      List<DeploymentDriver.ResourceBinding> bindings =
+          provisioning.ensureAll(BootResourceRegistration.APPLICATION, "idp-self", idpClient());
+
+      assertEquals("running-on", bindings.get(0).value("CLIENT_SECRET"));
+      assertEquals(List.of(), idpProvisioner.createCalls());
+      assertEquals(List.of(), idpProvisioner.rotateCalls());
+    } finally {
+      QuarkusTransaction.requiringNew()
+          .run(
+              () ->
+                  resources
+                      .findOne(BootResourceRegistration.APPLICATION, "idp-self", "idp")
+                      .ifPresent(resources::delete));
+    }
+  }
+
+  /** What has been captured so far by the {@link #logsOf} in progress. */
+  private final List<String> logsSoFar = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+  /**
+   * Everything {@link ResourceProvisioning} logs while {@code body} runs, as message plus
+   * parameters plus any throwable's message — so a secret cannot hide in a format argument whether
+   * or not the log manager formats before the handler sees the record.
+   */
+  private List<String> logsOf(Runnable body) {
+    logsSoFar.clear();
+    java.util.logging.Logger logger =
+        java.util.logging.Logger.getLogger(ResourceProvisioning.class.getName());
+    java.util.logging.Handler handler =
+        new java.util.logging.Handler() {
+          @Override
+          public void publish(java.util.logging.LogRecord record) {
+            logsSoFar.add(
+                record.getMessage()
+                    + " "
+                    + java.util.Arrays.toString(record.getParameters())
+                    + (record.getThrown() == null ? "" : " " + record.getThrown()));
+          }
+
+          @Override
+          public void flush() {}
+
+          @Override
+          public void close() {}
+        };
+    logger.addHandler(handler);
+    try {
+      body.run();
+    } finally {
+      logger.removeHandler(handler);
+    }
+    return List.copyOf(logsSoFar);
+  }
+
+  @Test
   void createFallingBackToRotateIsAlsoRefusedForTheDeployersOwnClient() {
-    // The other path into the rotate arm — the 409 fallback — carries the same refusal.
+    // The other path into the rotate arm — the 409 fallback — carries the same refusal. The same
+    // tier as above: the guard refuses the one id this process is signed in as, and only that one.
     idpProvisioner.scriptCreateResult(
         new IdpClientProvisioner.Result(false, true, null, "a database row already exists"));
 
@@ -170,7 +310,7 @@ public class IdpClientProvisioningTest {
             ResourceException.class,
             () ->
                 provisioning.ensureAll(
-                    BootResourceRegistration.APPLICATION, "idp-self-b", idpClient()));
+                    BootResourceRegistration.APPLICATION, "idp-self", idpClient()));
 
     assertTrue(refused.getMessage().contains("never rotates"), refused.getMessage());
     assertEquals(List.of(), idpProvisioner.rotateCalls());

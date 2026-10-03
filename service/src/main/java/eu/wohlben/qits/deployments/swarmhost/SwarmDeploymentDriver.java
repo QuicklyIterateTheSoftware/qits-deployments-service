@@ -421,6 +421,16 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   int outputMaxChars;
 
   /**
+   * Where this component's own docker credential is written when it was handed an idp client — see
+   * {@code DockerCredentialFile}. Every CLI call here passes it to {@link PdProcess}, which sets
+   * {@code DOCKER_CONFIG} to it only when a {@code config.json} is actually there, so the warm-up
+   * pull and the {@code --with-registry-auth} the create and update serialise for the agents read
+   * the same credential.
+   */
+  @ConfigProperty(name = "qits.deployments.docker-config-dir")
+  Optional<String> dockerConfigDir;
+
+  /**
    * Where the extras are read from, ONCE PER ARGV — see {@link DeploymentExtrasSource} and, for the
    * staleness a boot snapshot costs, {@link ExtrasSnapshot}. It is a seam because the answer may be
    * qits-configuration's rather than the config volume's, and an HTTP call does not belong in a
@@ -451,7 +461,12 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     Cli scripted = cli;
     return scripted != null
         ? scripted.run(argv, timeout)
-        : PdProcess.run(null, argv, timeout, outputMaxChars);
+        : PdProcess.run(
+            null,
+            argv,
+            dockerConfigDir == null ? null : dockerConfigDir.map(Path::of).orElse(null),
+            timeout,
+            outputMaxChars);
   }
 
   /** A swarm service's name IS its address, so the wire alias is the name. */
