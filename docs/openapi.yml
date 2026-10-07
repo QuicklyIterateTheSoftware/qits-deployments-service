@@ -350,6 +350,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:admin-agent
         - qits:agent
   /deployments/api/applications/{applicationId}/decommission:
     post:
@@ -384,6 +385,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:admin-agent
   /deployments/api/applications/{applicationId}/restart:
     post:
       summary: "Restart an application in place — its tasks are replaced, its deployment\
@@ -412,6 +414,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:admin-agent
   /deployments/api/applications/{applicationId}/scale:
     post:
       summary: "Scale an application's workload — 0 stops it, 1 runs it"
@@ -446,6 +449,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:admin-agent
   /deployments/api/claims/idp-clients:
     get:
       summary: "Every idp-client row this component holds, ordered by clientId — qits-idp's\
@@ -513,6 +517,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:admin-agent
         - qits:agent
         - qits:system
   /deployments/api/deployment-requests/{id}:
@@ -542,6 +547,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:admin-agent
         - qits:agent
         - qits:system
   /deployments/api/deployments:
@@ -572,6 +578,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:admin-agent
         - qits:agent
   /deployments/api/environments:
     get:
@@ -592,6 +599,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:admin-agent
         - qits:agent
     post:
       summary: "Create an environment: a name and a bundle network"
@@ -681,6 +689,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:admin-agent
         - qits:agent
     delete:
       summary: "Tear an environment down (rows, containers, networks)"
@@ -734,6 +743,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:admin-agent
         - qits:agent
   /deployments/api/pins:
     get:
@@ -775,6 +785,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:admin-agent
         - qits:agent
   /deployments/api/services/{name}:
     put:

@@ -448,7 +448,9 @@ Eight things about it, each easy to undo by accident:
 oversight: this is a person's operational action driven from this component's own client through the
 edge's forwarded header. `qits:system` is deliberately not granted — nothing on the
 platform should be able to stop an application as a side effect of holding a service token, and the
-two sets do not overlap. `MachineGuardEnforcedTest` arms it in both directions.
+two sets do not overlap. `qits:admin-agent` is admitted too (qits-628 follow-up): an ADMIN
+workspace's coding agent carries it alongside `qits:agent`, and for now it may use everything
+`qits:admin` may use. `MachineGuardEnforcedTest` arms it in both directions.
 
 **Neither door announces an event**, and that is `DeploymentObserver`'s rule rather than an
 omission: the four events describe a *deployment's* lifecycle, and a bounce is not one. A consumer
@@ -508,8 +510,9 @@ Six things about it:
   that knows it.
 
 **Role: `qits:admin`**, for the reason the other two levers carry it — a service bearer must
-no more be able to declare an application retired than to stop one. `MachineGuardEnforcedTest` arms
-it in both directions.
+no more be able to declare an application retired than to stop one. `qits:admin-agent` is admitted
+too (qits-628 follow-up), for the same reason it is on the other two. `MachineGuardEnforcedTest`
+arms it in both directions.
 
 ## One orchestrator, one seam
 
@@ -1405,11 +1408,12 @@ new path as `2026.926.151155`, so the class, the second entry in
 nobody has to migrate off.
 
 **Nothing on this surface is open, and the role says who a caller is meant to be.** Every endpoint
-carries a `@RolesAllowed`, and there are exactly three roles:
+carries a `@RolesAllowed`, and there are exactly four roles:
 
 | role | endpoints | how a caller holds it |
 | --- | --- | --- |
 | `qits:admin` | every read — applications, deployments, the environment listing/aggregate/links, the service listing — **and the operator's two levers**, `POST /applications/{id}/scale` and `/restart` | the forwarded `X-Qits-Roles` header only: the platform edge asserts it for an authenticated admin session, and the bootstrap asserts it on its own qits-net hop (`PdApi.ADMIN_HEADERS`) |
+| `qits:admin-agent` | wherever `qits:admin` is (qits-628 follow-up) | an ADMIN workspace's coding agent's credential, alongside `qits:agent`; for now it may use everything `qits:admin` may use |
 | `qits:system` | the pins, the **idp-client claims** (`GET /claims/idp-clients`, qits-idp's read for its service-client garbage collection), the **deployment-request listing** (`GET /deployment-requests`, the read qits-projects draws a release's deploy phase from), every topology **write** (environment create/patch/delete, service upsert/delete) and the release intake | a machine bearer: qits-platform-idp copies `qits.idp.client.<id>.roles` into the token's `groups` claim, which quarkus-oidc reads as roles with no configuration at all. It is the open calling model's role — "a service calling a service" |
 | `qits:agent` | every read — the ones `qits:admin` has, plus the pins and the idp-client claims — and no write | an agent's own bearer: a commissioned client whose kind maps to this role (`principal-bound-git-refs-plan.md`, C7) |
 
@@ -1429,9 +1433,10 @@ or an agent. Without the grant its only way in would be to forward somebody's se
 service impersonating a user to read a listing it is itself entitled to. What the non-overlap
 forbids is a TOKEN holding both roles, and that is untouched: no machine bearer carries
 `qits:admin`, the rest of the read surface is still a person's, and the operator's levers on
-`PdApplicationController` — scale, restart and decommission — stay `qits:admin`-only, because
-nothing on the platform should be able to stop or retire an application as a side effect of holding
-a service token. Granting one read says who may ask it; it says nothing about what is answered.
+`PdApplicationController` — scale, restart and decommission — stay `qits:admin`/`qits:admin-agent`-only,
+because nothing on the platform should be able to stop or retire an application as a side effect of
+holding a service token. Granting one read says who may ask it; it says nothing about what is
+answered.
 
 **Where `machineAuth.require()` goes** is the same question one layer in: on the paths whose callers
 are machines — the intake and every topology write. It re-asks the audience question the token

@@ -89,10 +89,14 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * PdApplicationController} are {@code qits:admin}-only, because nothing on the platform should be
  * able to stop or retire an application as a side effect of holding a service token. What this
  * listing does is join {@code GET /pins} as a guarded READ a machine peer may also ask.
+ *
+ * <p>{@code qits:admin-agent} is admitted too (qits-628 follow-up): an ADMIN workspace's coding
+ * agent carries it alongside {@code qits:agent}, and for now it may use everything {@code
+ * qits:admin} may use.
  */
 @Path("/deployment-requests")
 @Produces(MediaType.APPLICATION_JSON)
-@jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:agent", "qits:system"})
+@jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:agent", "qits:system"})
 public class PdDeploymentRequestController {
 
   @Inject DeployService deployService;

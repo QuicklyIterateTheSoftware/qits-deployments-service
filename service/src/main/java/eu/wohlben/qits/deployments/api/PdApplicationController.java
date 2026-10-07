@@ -54,6 +54,8 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * has. The machine role {@code qits:system} is deliberately NOT granted: the two sets do
  * not overlap, and nothing on the platform should be able to stop an application as a side effect of
  * holding a service token. A machine door for this is a separate decision with a separate argument.
+ * {@code qits:admin-agent} is admitted too (qits-628 follow-up); remove it here if this door must
+ * stay human-only.
  *
  * <p><b>How it differs from {@code GET /services}</b>, which is the same data: this one has one
  * entry per (service, tier) and carries a derived {@code id} the client joins against a
@@ -62,7 +64,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  */
 @Path("/applications")
 @Produces(MediaType.APPLICATION_JSON)
-@jakarta.annotation.security.RolesAllowed("qits:admin")
+@jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent"})
 public class PdApplicationController {
 
   @Inject ServiceCatalog catalog;
@@ -113,7 +115,7 @@ public class PdApplicationController {
   @GET
   @Operation(summary = "Every application deployed here — environment applications and platform services")
   @APIResponse(responseCode = "200", description = "The applications, one entry per tier")
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:agent"})
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:agent"})
   public ListApplicationsResponse list() {
     return new ListApplicationsResponse(
         reads.call("The application listing", catalog::allApplications).stream()
