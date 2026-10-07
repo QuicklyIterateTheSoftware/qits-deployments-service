@@ -1496,6 +1496,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // A deployed application outlives the daemon's restart.
     argv.add("--restart-condition");
     argv.add("any");
+    // PID 1 in the image is this repository's own binary, not an init that reaps orphans: a
+    // detached grandchild adopted by PID 1 — `git maintenance run --auto --detach`, which git
+    // 2.47+ leaves behind on every fetch and commit — is never reaped and piles up as a zombie.
+    // qits-projects held 3,639 of them after 3.5h (qits-1066); qits-ci hit the same mechanism
+    // (qits-965). `--init` runs docker-init/tini as PID 1 instead, which reaps on every SIGCHLD.
+    // Unconditional: there is no application here for which an unreaped grandchild is desired.
+    argv.add("--init");
     for (String label : labels(spec)) {
       argv.add("--label");
       argv.add(label);
@@ -1695,6 +1702,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     }
     healthFlags(argv, spec, "--health-cmd");
     updateFlags(argv, spec, "--update-order");
+    // Unconditional, same as the create and for the same reason — see that flag's own comment: a
+    // service created before this line shipped is still running its old PID 1, so the update has
+    // to restate `--init` for an already-live service to converge onto a reaping one.
+    argv.add("--init");
     for (String variable : environment(spec)) {
       argv.add("--env-add");
       argv.add(variable);

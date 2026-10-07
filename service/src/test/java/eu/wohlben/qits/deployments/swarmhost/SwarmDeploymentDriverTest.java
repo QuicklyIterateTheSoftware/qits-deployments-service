@@ -226,6 +226,9 @@ class SwarmDeploymentDriverTest {
     assertTrue(argv.contains("--no-resolve-image"));
     assertTrue(argv.containsAll(List.of("--network", "qits-net")));
     assertTrue(argv.containsAll(List.of("--restart-condition", "any")));
+    // PID 1 has to be an init that reaps orphans, or a detached `git maintenance` grandchild
+    // accumulates as a zombie for as long as the service runs (qits-1066).
+    assertTrue(argv.contains("--init"), argv.toString());
     // The gate is docker's own healthcheck, enforced inside the container.
     assertTrue(argv.contains("curl -fsS http://localhost:8080/q/health/ready || exit 1"));
     assertTrue(argv.containsAll(List.of("--health-interval", "3s")));
@@ -638,6 +641,9 @@ class SwarmDeploymentDriverTest {
     assertTrue(update.containsAll(List.of("--update-order", "start-first")));
     assertTrue(update.containsAll(List.of("--update-failure-action", "rollback")));
     assertTrue(update.contains("--env-add"));
+    // Unconditional, same as the create: a service created before this flag shipped converges onto
+    // an init PID 1 on its next deployment, with no `service rm` needed (qits-1066).
+    assertTrue(update.contains("--init"), update.toString());
   }
 
   @Test
