@@ -47,6 +47,9 @@ import org.jboss.logging.Logger;
  * X-Qits-Roles} header carries. Neither caller can reach the other's half — {@code qits:system} and
  * {@code qits:admin} do not overlap. {@code MachineAuth} alone is gated off by {@code
  * qits.auth.machine.required} until qits-platform-idp grants this audience; the roles are not.
+ * {@code qits:admin-agent} is admitted on the reads too (qits-628 follow-up): an ADMIN workspace's
+ * coding agent carries it alongside {@code qits:agent}, and for now it may use everything {@code
+ * qits:admin} may use.
  */
 @Path("/environments")
 @Produces(MediaType.APPLICATION_JSON)
@@ -200,7 +203,7 @@ public class PdEnvironmentController {
   // The 200 is spelled out because declaring ANY response suppresses the generated one, and this
   // operation had only the generated one — leaving it off would drop the schema from the document.
   @APIResponse(responseCode = "200", description = "The environments")
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:agent"})
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:agent"})
   public ListEnvironmentsResponse list() {
     return new ListEnvironmentsResponse(
         reads.call("The environment listing", environments::list).stream()
@@ -213,7 +216,7 @@ public class PdEnvironmentController {
   @Operation(summary = "One environment with the applications it tracks")
   @APIResponse(responseCode = "200", description = "The environment")
   @APIResponse(responseCode = "404", description = "No such environment")
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:agent"})
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:agent"})
   public EnvironmentResponse get(@PathParam("environmentId") String environmentId) {
     // Both reads inside one bracket — the tier row and the applications it holds are one answer,
     // and a cutover between them would fail the half that ran second.
@@ -237,7 +240,7 @@ public class PdEnvironmentController {
   @Operation(summary = "Every service present in this environment: its links, plus every platform service")
   @APIResponse(responseCode = "200", description = "The services present in this environment")
   @APIResponse(responseCode = "404", description = "No such environment")
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:agent"})
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:agent"})
   public ListLinksResponse links(@PathParam("environmentId") String environmentId) {
     return new ListLinksResponse(
         reads

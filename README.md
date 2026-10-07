@@ -390,7 +390,8 @@ serving, and the sha a rollback would put back.
   statement containing a password is ever logged, and no failure message names one.
 - **Every endpoint carries a role, and the role says who the caller is meant to be.** The reads
   need `qits:admin`, which reaches this service only as a forwarded header — an admin
-  session through the edge, or the bootstrap's own hop. The pins, the deployment-request listing,
+  session through the edge, or the bootstrap's own hop. `qits:admin-agent` (an ADMIN workspace's
+  coding agent) is admitted too, wherever `qits:admin` is (qits-628 follow-up). The pins, the deployment-request listing,
   the topology writes and the build-succeeded intake need `qits:system`, which qits-platform-idp
   puts in a machine token's `groups` claim — the open calling model's "a service calling a service"
   role. The two sets — `qits:system` and `qits:admin` — do not overlap: no token holds both, so a

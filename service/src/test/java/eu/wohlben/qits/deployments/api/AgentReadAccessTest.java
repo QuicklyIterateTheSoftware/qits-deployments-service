@@ -127,4 +127,50 @@ class AgentReadAccessTest {
     asAgent().when().post(BASE + "/applications/agt-refused/restart").then().statusCode(403);
     asAgent().when().post(BASE + "/applications/agt-refused/decommission").then().statusCode(403);
   }
+
+  private static RequestSpecification asAdminAgent() {
+    return given()
+        .header("X-Qits-User", "dyn-admin-workspace")
+        .header("X-Qits-Roles", "qits:admin-agent");
+  }
+
+  /**
+   * qits-628 follow-up: an ADMIN workspace's coding agent's credential, carrying {@code
+   * qits:admin-agent} and NOT {@code qits:admin}, passes {@code PdApplicationController}'s
+   * operator levers exactly as {@code qits:admin} does — they inherit the class-level role list,
+   * which names no {@code qits:agent} at all, so the id names nobody deployed and the answer is the
+   * door's own 404 rather than the role gate's 403. Plain {@code qits:agent}, as {@link
+   * #anAgentCannotWrite} already proved on the same three routes, still gets 403.
+   */
+  @Test
+  void anAdminAgentOperatesTheApplicationLeversAndPlainAgentStillCannot() {
+    // A well-formed <environmentId>:<name> key that nothing was ever deployed under: past the
+    // role gate, resolve() reads a real NotFoundException (404) rather than the malformed-id 400.
+    String noSuchApplication = "no-such-env:admin-agent-refused";
+    asAdminAgent()
+        .contentType(ContentType.JSON)
+        .body("{\"replicas\":0}")
+        .when()
+        .post(BASE + "/applications/" + noSuchApplication + "/scale")
+        .then()
+        .statusCode(404);
+    asAdminAgent()
+        .when()
+        .post(BASE + "/applications/" + noSuchApplication + "/restart")
+        .then()
+        .statusCode(404);
+    asAdminAgent()
+        .when()
+        .post(BASE + "/applications/" + noSuchApplication + "/decommission")
+        .then()
+        .statusCode(404);
+
+    asAgent()
+        .contentType(ContentType.JSON)
+        .body("{\"replicas\":0}")
+        .when()
+        .post(BASE + "/applications/" + noSuchApplication + "/scale")
+        .then()
+        .statusCode(403);
+  }
 }
