@@ -235,12 +235,16 @@ class SwarmDeploymentDriverTest {
     assertTrue(argv.containsAll(List.of("--health-retries", "3")));
     // 60s of grace, measured against qits-projects' ~45s worst-case boot rather than derived.
     assertTrue(argv.containsAll(List.of("--health-start-period", "60s")));
-    // ...and the cutover is three flags rather than four hundred lines.
+    // ...and the cutover is four flags rather than four hundred lines.
     assertTrue(argv.containsAll(List.of("--update-order", "start-first")));
     // The other half of the same window: the monitor moves with the start period or the raise only
     // changes which of the two binds.
     assertTrue(argv.containsAll(List.of("--update-monitor", "60s")));
     assertTrue(argv.containsAll(List.of("--update-failure-action", "rollback")));
+    // Fixed, not a deployments.yml key: applications drain in-flight responses for up to 25s on
+    // SIGTERM (quarkus.shutdown.timeout=25s, qits-1117), and docker's default 10s grace would
+    // SIGKILL them mid-drain.
+    assertTrue(argv.containsAll(List.of("--stop-grace-period", "30s")));
     // The bookkeeping labels, on the service AND on its task container: everything that reads them
     // reads them by name and does not care what created them.
     assertTrue(argv.contains("qits.platform.deployments.environment=env-id"));
@@ -640,6 +644,7 @@ class SwarmDeploymentDriverTest {
     assertTrue(update.contains("--container-label-add"));
     assertTrue(update.containsAll(List.of("--update-order", "start-first")));
     assertTrue(update.containsAll(List.of("--update-failure-action", "rollback")));
+    assertTrue(update.containsAll(List.of("--stop-grace-period", "30s")));
     assertTrue(update.contains("--env-add"));
     // Unconditional, same as the create: a service created before this flag shipped converges onto
     // an init PID 1 on its next deployment, with no `service rm` needed (qits-1066).
@@ -998,6 +1003,9 @@ class SwarmDeploymentDriverTest {
     // It still rolls back — it just has a gap in service, which is what those applications have
     // today anyway.
     assertTrue(argv.containsAll(List.of("--update-failure-action", "rollback")));
+    // The grace period is unconditional too: an opt-out from the overlap is not an opt-out from a
+    // clean shutdown.
+    assertTrue(argv.containsAll(List.of("--stop-grace-period", "30s")));
   }
 
   @Test

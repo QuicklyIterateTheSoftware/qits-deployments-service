@@ -41,10 +41,11 @@ import org.jboss.logging.Logger;
  *
  * <p><b>The whole cutover is flags.</b> {@code --update-order start-first} is the overlap, {@code
  * --update-monitor} is the gate window, {@code --update-failure-action rollback} is the rollback,
- * and a task does not enter DNS until its healthcheck passes — measured on this host: while a task
- * was {@code Starting}, {@code getent hosts} answered nothing for its name while the VIP already
- * existed. So there is no predecessor to find, nothing to stop, nothing to restart and nobody to
- * referee: this class issues one command and then reads a verdict.
+ * {@code --stop-grace-period} is how long a stopped task is given before SIGKILL (see {@link
+ * #updateFlags}), and a task does not enter DNS until its healthcheck passes — measured on this
+ * host: while a task was {@code Starting}, {@code getent hosts} answered nothing for its name
+ * while the VIP already existed. So there is no predecessor to find, nothing to stop, nothing to
+ * restart and nobody to referee: this class issues one command and then reads a verdict.
  *
  * <p><b>The name is the address, and that is the one thing to keep in mind reading this.</b> {@code
  * container_name} does not exist in swarm — a task container is {@code
@@ -148,6 +149,14 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
 
   /** Lines of service log kept as a failed convergence's diagnosis. */
   private static final String LOG_TAIL_LINES = "200";
+
+  /**
+   * Fixed on purpose, not a {@code deployments.yml} key: every application drains in-flight
+   * responses for up to 25s on SIGTERM ({@code quarkus.shutdown.timeout=25s} in qits-mirror and
+   * qits-edge, qits-1117), and Docker's default 10s grace period would SIGKILL them mid-drain.
+   * Thirty seconds clears that with margin, for every service, uniformly.
+   */
+  private static final String STOP_GRACE_PERIOD = "30s";
 
   /**
    * What swarm calls the update it is in the middle of, what it says about it, and <b>when it
@@ -1796,10 +1805,15 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   }
 
   /**
-   * The cutover, as three flags.
+   * The cutover, as four flags.
    *
    * <p>{@code --update-failure-action rollback} is not configurable and is not meant to be: a
    * successor that never goes healthy must leave the platform running whatever it replaced.
+   *
+   * <p>{@code --stop-grace-period} is the fourth, and is likewise fixed rather than a {@code
+   * deployments.yml} key — see {@link #STOP_GRACE_PERIOD}. It is valid on both {@code service
+   * create} and {@code service update}, which is why it lives here beside the other three rather
+   * than only on one of the two argvs this method is shared by.
    */
   private void updateFlags(List<String> argv, ServiceSpec spec, String orderFlag) {
     argv.add(orderFlag);
@@ -1808,6 +1822,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     argv.add(updateMonitorSeconds + "s");
     argv.add("--update-failure-action");
     argv.add("rollback");
+    argv.add("--stop-grace-period");
+    argv.add(STOP_GRACE_PERIOD);
   }
 
   /**
