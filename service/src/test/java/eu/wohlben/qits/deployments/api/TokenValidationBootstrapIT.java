@@ -51,9 +51,9 @@ import org.junit.jupiter.api.TestMethodOrder;
  * browserless (no {@code Flow} parameter), so no Chromium is involved anywhere.
  *
  * <p><b>The two stories are ordered</b>, and that is load-bearing rather than tidiness: a cumulative
- * source is attributed by a cursor, so traffic that happened before any story ran — the startup JWKS
- * fetch, which is the whole subject of the first story — lands in whichever story drains
- * <i>first</i>. Pinning the order is what keeps that the story it belongs to, and this class sorting
+ * source is attributed by a cursor, so traffic that happened before any story ran — the startup
+ * discovery read and JWKS fetch, which are the whole subject of the first story — lands in whichever
+ * story drains <i>first</i>. Pinning the order is what keeps that the story it belongs to, and this class sorting
  * first among the catalogue's packages ({@code …deployments.api} before {@code …deployments.stories})
  * is what keeps it the first story of the run.
  *
@@ -153,7 +153,17 @@ public class TokenValidationBootstrapIT {
             + " qits-platform-idp");
     given().get("/deployments/q/health/ready").then().statusCode(200);
 
-    // End (a), the idp side: the JWKS was served during startup — before this story presented any
+    // End (a), the idp side: the discovery document was read during startup, and it is what names
+    // the jwks_uri fetched next.
+    assertTrue(
+        idp.recordedRequests().stream()
+            .anyMatch(r -> "/idp/.well-known/openid-configuration".equals(r.path())),
+        "the packaged service never read the idp's discovery document at startup");
+    story
+        .note("the idp's discovery document was read at startup, and it names the signing keys")
+        .as("discovery-read");
+
+    // The JWKS was served during startup — before this story presented any
     // token at all. That is the claim the inlined-key suite cannot make, because it clears
     // auth-server-url precisely so that nothing is ever fetched.
     assertTrue(
@@ -253,16 +263,24 @@ public class TokenValidationBootstrapIT {
     // Observed on the far side, drained from the mock's recording, and attributed to this story
     // because it is the first one that ran (see the class javadoc on ordering).
     ReportAssertions.assertEdge(
+        CATEGORY,
+        ACCEPTED_SLUG,
+        "http",
+        SERVICE,
+        MockIdp.SERVICE_NAME,
+        "GET /idp/.well-known/openid-configuration -> 200");
+    ReportAssertions.assertEdge(
         CATEGORY, ACCEPTED_SLUG, "http", SERVICE, MockIdp.SERVICE_NAME, "GET /idp/jwks -> 200");
     // Observed on the near side, by the shipped tap, with the actor this story set.
     ReportAssertions.assertEdge(
         CATEGORY, ACCEPTED_SLUG, "http", COLLECTOR, SERVICE, "GET " + PINS + " -> 200");
+    ReportAssertions.assertStepId(CATEGORY, ACCEPTED_SLUG, "discovery-read");
     ReportAssertions.assertStepId(CATEGORY, ACCEPTED_SLUG, "jwks-fetched");
     ReportAssertions.assertStepId(CATEGORY, ACCEPTED_SLUG, "pins-served");
-    // TWO, and the readiness probe is deliberately not among them: the shipped tap skips any path
-    // with a /q/ segment, and a diagram in which every node hangs off /q/health/ready documents
-    // nothing. Nothing else left this process either — the bearer is judged on keys already held.
-    ReportAssertions.assertEdgeCount(CATEGORY, ACCEPTED_SLUG, 2);
+    // THREE: the discovery read, the JWKS fetch it leads to, and the pin read. The readiness probe
+    // is deliberately not among them: the shipped tap skips any path with a /q/ segment, and a
+    // diagram in which every node hangs off /q/health/ready documents nothing. Nothing else left this process either — the bearer is judged on keys already held.
+    ReportAssertions.assertEdgeCount(CATEGORY, ACCEPTED_SLUG, 3);
     ReportAssertions.assertOnlyEdgesFrom(CATEGORY, ACCEPTED_SLUG, List.of(COLLECTOR, SERVICE));
 
     ReportAssertions.assertComplete(CATEGORY, DENIED_SLUG, UserflowReport.PASSED);
