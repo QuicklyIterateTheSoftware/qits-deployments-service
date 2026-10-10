@@ -1,6 +1,15 @@
 archetype: java-service
 artifacts:
   - { type: docker, name: qits/qits-deployments, sbom: .sbom/sbom.json }
+# THE PACTS (ticket qits-1149): this repository's consumer pacts, keyed by the provider's
+# repository name. They sit flat in `pacts/` as `qits-deployments-service_<provider>.json`; qits-ci
+# packs each into that provider's maven jar, eu.wohlben.qits:qits-deployments-service-pacts-<provider>,
+# and publishes it only when the file changed. A provider joins this list when its first row is
+# ready (`PactFileTest` writes no file before that).
+contracts:
+  application: qits-deployments
+  pacts:
+    qits-events-service: { packages: [maven] }
 # THE SITE IS SPELLED, AND IT NAMES THE COMPONENT. `true` derives it from the REPOSITORY name,
 # which would put the retired tier modifier in a storage id and then MOVE that id the day the
 # repository is renamed — a bundle's history stranded under a name nothing publishes to any

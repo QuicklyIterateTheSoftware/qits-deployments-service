@@ -113,8 +113,14 @@ public final class IdpStub implements AutoCloseable {
    * this is the package they are visible in — {@code ExtrasStub.source(...)}'s arrangement.
    */
   public HttpIdpClientProvisioner adapter(String ownClientId, String ownClientSecret) {
+    return adapterAt(url(), ownClientId, ownClientSecret);
+  }
+
+  /** The same, aimed at any base url — the pact mock server's, for one. */
+  public static HttpIdpClientProvisioner adapterAt(
+      String baseUrl, String ownClientId, String ownClientSecret) {
     HttpIdpClientProvisioner adapter = new HttpIdpClientProvisioner();
-    adapter.baseUrl = url();
+    adapter.baseUrl = baseUrl;
     adapter.timeoutSeconds = 2;
     adapter.attempts = 2;
     adapter.retryPauseMillis = 0;
