@@ -214,6 +214,12 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- ConsumerPactVerificationTest: verifies the consumer pacts this provider pins. -->
+            <groupId>au.com.dius.pact.provider</groupId>
+            <artifactId>junit5</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <!-- The consumer pacts (pacts/ in the tests): plain JUnit 5 against a pact mock server.
                  The clients talk over the JDK's HttpClient, so nothing needs Quarkus to run. -->
             <groupId>au.com.dius.pact.consumer</groupId>

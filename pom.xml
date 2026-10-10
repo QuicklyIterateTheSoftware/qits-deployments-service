@@ -79,8 +79,9 @@
              idp.MockIdp), published by qits-integrations-quarkus beside qits-auth-core,
              qits-arch-rules and qits-db-core above. -->
         <qits.service-mock.version>2026.1002.70617</qits.service-mock.version>
-        <!-- pact-jvm, for this repository's consumer pacts (service/src/test/.../pacts/): the version
-             every provider on the estate verifies with, so the pacts are read the same way. -->
+        <!-- pact-jvm, for this repository's consumer pacts (service/src/test/.../pacts/) and for
+             verifying the pacts its own consumers hold (.../contracts/): the version every provider
+             on the estate verifies with, so a pact is read the same way at both ends. -->
         <pact.version>4.6.21</pact.version>
         <!-- THE PROVIDERS' GOLDEN MASTERS, test scope: what each provider records for its states,
              read by the consumer pacts. Moves like every internal pin. -->
@@ -244,6 +245,13 @@
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-service-mock</artifactId>
                 <version>${qits.service-mock.version}</version>
+            </dependency>
+            <dependency>
+                <!-- The provider half: ConsumerPactVerificationTest verifies the pacts other
+                     repositories hold against this service. Test scope, `service/` only. -->
+                <groupId>au.com.dius.pact.provider</groupId>
+                <artifactId>junit5</artifactId>
+                <version>${pact.version}</version>
             </dependency>
             <dependency>
                 <!-- The consumer half of the pacts. Test scope, `service/` only. -->
