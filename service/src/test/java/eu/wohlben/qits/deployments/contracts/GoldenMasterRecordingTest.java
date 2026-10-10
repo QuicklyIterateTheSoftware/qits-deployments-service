@@ -209,7 +209,24 @@ class GoldenMasterRecordingTest {
               "/deployments/api/claims/idp-clients",
               200,
               "$.claims",
-              null));
+              null),
+          // Recorded by GatedGoldenMasterRecordingTest: only a gated application answers 401.
+          write(
+              ProviderStates.THE_MACHINE_GATE_IS_ON,
+              "softwareReleased",
+              "POST",
+              "/deployments/api/events/software-released",
+              401,
+              "{}"));
+
+  /** The headers a gated interaction sends: a bearer no idp issued. */
+  static final Map<String, String> GATED_HEADERS =
+      Map.of("Authorization", "Bearer not-an-idp-token");
+
+  /** Whether {@link GatedGoldenMasterRecordingTest} records this interaction instead of this test. */
+  static boolean gated(Interaction interaction) {
+    return ProviderStates.GATED.contains(interaction.state());
+  }
 
   private static final ObjectMapper JSON = new ObjectMapper();
   private static final Pattern TEMPLATE_PARAM = Pattern.compile("\\{([^}]+)}");
@@ -239,7 +256,8 @@ class GoldenMasterRecordingTest {
                     ? " takes no request body, but the recording sends one: record null."
                     : " takes a request body, but the recording sends none."));
       }
-      Recorded recorded = record(interaction);
+      // A gated answer is checked by the gated test; here only its index entry is built.
+      Recorded recorded = gated(interaction) ? recordGated(interaction) : record(interaction);
       String slug = ProviderStates.slug(interaction.state());
       String file = slug + "/" + interaction.operationId() + ".json";
 
@@ -266,6 +284,10 @@ class GoldenMasterRecordingTest {
       if (interaction.requestBody() != null) {
         operation.set("body", JSON.readTree(interaction.requestBody()));
       }
+      if (gated(interaction)) {
+        ObjectNode headers = operation.putObject("headers");
+        new TreeMap<>(GATED_HEADERS).forEach(headers::put);
+      }
       operation.put("status", interaction.status());
       operation.put("file", file);
       ObjectNode frozen = operation.putObject("frozen");
@@ -285,7 +307,9 @@ class GoldenMasterRecordingTest {
       }
 
       written.add(file);
-      check(dir.resolve(file), GoldenJson.render(recorded.body()), update, failures);
+      if (!gated(interaction)) {
+        check(dir.resolve(file), GoldenJson.render(recorded.body()), update, failures);
+      }
     }
 
     ObjectNode index = JsonNodeFactory.instance.objectNode();
@@ -333,16 +357,29 @@ class GoldenMasterRecordingTest {
   private Recorded record(Interaction interaction) throws IOException {
     ProviderStates.Setup setup = states.setUp(interaction.state());
     try {
-      return recordIn(interaction, setup);
+      return call(interaction, setup, Map.of());
     } finally {
       states.cleanUp();
     }
   }
 
-  private Recorded recordIn(Interaction interaction, ProviderStates.Setup setup) throws IOException {
+  /** A gated interaction's index entry: its state's params, and the 401's empty answer. */
+  private Recorded recordGated(Interaction interaction) {
+    ProviderStates.Setup setup = states.setUp(interaction.state());
+    try {
+      return frozen(NullNode.getInstance(), interaction, setup);
+    } finally {
+      states.cleanUp();
+    }
+  }
+
+  /** Calls the interaction against the running application, in a state already set up. */
+  static Recorded call(
+      Interaction interaction, ProviderStates.Setup setup, Map<String, String> headers)
+      throws IOException {
     Map<String, String> params = setup.params();
 
-    var request = given().queryParams(expandAll(interaction.query(), params));
+    var request = given().headers(headers).queryParams(expandAll(interaction.query(), params));
     if (interaction.requestBody() != null) {
       request =
           request
@@ -374,6 +411,12 @@ class GoldenMasterRecordingTest {
     if (body.isObject()) {
       interaction.dropped().forEach(((ObjectNode) body)::remove);
     }
+    return frozen(body, interaction, setup);
+  }
+
+  /** The answer reduced and frozen, with the state's params frozen the same way. */
+  static Recorded frozen(JsonNode body, Interaction interaction, ProviderStates.Setup setup) {
+    Map<String, String> params = setup.params();
     // An entry is the state's own when it mentions an id the state created or a unique token: a
     // pin carries only the application's name, and the name is where the token is. Other params
     // (a version) are shared by every state's entries, so they select nothing.

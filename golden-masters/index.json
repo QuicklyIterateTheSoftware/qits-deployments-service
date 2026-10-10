@@ -259,6 +259,31 @@
       ]
     },
     {
+      "name": "the machine gate is on",
+      "slug": "the-machine-gate-is-on",
+      "params": {},
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "softwareReleased",
+          "method": "POST",
+          "path": "/deployments/api/events/software-released",
+          "body": {},
+          "headers": {
+            "Authorization": "Bearer not-an-idp-token"
+          },
+          "status": 401,
+          "file": "the-machine-gate-is-on/softwareReleased.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "the platform environment exists",
       "slug": "the-platform-environment-exists",
       "params": {

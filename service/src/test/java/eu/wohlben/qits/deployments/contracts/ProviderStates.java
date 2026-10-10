@@ -46,6 +46,20 @@ public class ProviderStates {
   public static final String AN_APPLICATION_HOLDING_A_SERVICE_CLIENT =
       "an application holding a service client";
 
+  /**
+   * The machine gate is on: a bearer no idp issued answers 401. Only {@code
+   * MachineGuardEnforcedProfile} runs the service gated, so only {@link
+   * GatedGoldenMasterRecordingTest} and {@link GatedConsumerPactVerificationTest} use this state. It
+   * seeds nothing.
+   */
+  public static final String THE_MACHINE_GATE_IS_ON = "the machine gate is on";
+
+  /** States only a gated application can answer for. */
+  public static final Set<String> GATED = Set.of(THE_MACHINE_GATE_IS_ON);
+
+  /** A {@code @PactFilter} regex matching every state except the gated ones. */
+  public static final String UNGATED_STATES = "^(?!" + THE_MACHINE_GATE_IS_ON + "$).*";
+
   /** The released version the deployed states ship. */
   static final String VERSION = "2026.101.120000";
 
@@ -72,6 +86,7 @@ public class ProviderStates {
     states.put(A_RELEASED_VERSION, this::aReleasedVersion);
     states.put(AN_APPLICATION_WITH_A_ROLLBACK, this::anApplicationWithARollback);
     states.put(AN_APPLICATION_HOLDING_A_SERVICE_CLIENT, this::anApplicationHoldingAServiceClient);
+    states.put(THE_MACHINE_GATE_IS_ON, this::theMachineGateIsOn);
   }
 
   /** Every state name this provider answers for. */
@@ -243,6 +258,11 @@ public class ProviderStates {
     params.put("applicationName", application);
     params.put("environmentName", environmentName);
     return new Setup(params, List.of(token));
+  }
+
+  /** Nothing seeded: what this state stands for is the profile, not a row. */
+  private Setup theMachineGateIsOn() {
+    return new Setup(Map.of(), List.of());
   }
 
   private static void release(String application, String version) {
