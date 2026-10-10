@@ -227,9 +227,20 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <!-- qits-events' golden masters: the answers the events pact is built from. -->
+            <!-- The golden-master reader the consumer pacts are built with. -->
             <groupId>${project.groupId}</groupId>
-            <artifactId>qits-events-golden-masters</artifactId>
+            <artifactId>qits-pact-consumer</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- qits-idp's and qits-configuration's golden masters: the answers the pacts bind. -->
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-idp-golden-masters</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-configuration-golden-masters</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

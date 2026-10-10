@@ -13,7 +13,8 @@ contracts:
   application: qits-deployments
   golden-masters: { from: golden-masters/, packages: [maven, npm] }
   pacts:
-    qits-events-service: { packages: [maven] }
+    qits-configuration-service: { packages: [maven] }
+    qits-idp-service: { packages: [maven] }
 # THE SITE IS SPELLED, AND IT NAMES THE COMPONENT. `true` derives it from the REPOSITORY name,
 # which would put the retired tier modifier in a storage id and then MOVE that id the day the
 # repository is renamed — a bundle's history stranded under a name nothing publishes to any

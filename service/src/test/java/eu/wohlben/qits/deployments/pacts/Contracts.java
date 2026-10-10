@@ -3,7 +3,6 @@ package eu.wohlben.qits.deployments.pacts;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.deployments.confighost.ConfigHostDeclarationSeed;
@@ -11,16 +10,21 @@ import eu.wohlben.qits.deployments.confighost.ExtrasBearer;
 import eu.wohlben.qits.deployments.confighost.ExtrasStub;
 import eu.wohlben.qits.deployments.deployments.control.IdpClientProvisioner;
 import eu.wohlben.qits.deployments.idphost.IdpStub;
-import eu.wohlben.qits.deployments.pacts.Contract.Request;
-import eu.wohlben.qits.deployments.pacts.Contract.Row;
-import eu.wohlben.qits.deployments.pacts.Contract.Trigger;
-import eu.wohlben.qits.eventstream.control.EventEnvelope;
-import eu.wohlben.qits.eventstream.control.EventFrame;
-import eu.wohlben.qits.eventstream.control.EventsProbe;
+import eu.wohlben.qits.pact.consumer.ConsumerPact;
+import eu.wohlben.qits.pact.consumer.GoldenInteraction;
+import eu.wohlben.qits.pact.consumer.GoldenMasters;
+import eu.wohlben.qits.pact.consumer.Trigger;
+import io.quarkus.oidc.OidcConfigurationMetadata;
+import io.quarkus.oidc.runtime.JsonWebKeySet;
 import io.smallrye.config.PropertiesConfigSource;
 import io.smallrye.config.SmallRyeConfigBuilder;
-import java.time.Instant;
-import java.util.LinkedHashMap;
+import io.vertx.core.json.JsonObject;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -28,156 +32,44 @@ import org.eclipse.microprofile.config.Config;
 
 /**
  * <b>Every JSON REST call qits-deployments-service makes to another qits service</b> (ticket
- * qits-1149), one {@link Contract} per provider. The inventory beside this ticket lists where each
- * call is made; this is the same list as rows a pact can be built from.
+ * qits-1149), as {@code qits-pact-consumer} rows: one {@link ConsumerPact} per provider, and for
+ * each row the call this repository's real client makes against the pact mock server.
  *
  * <ul>
- *   <li>{@link #EVENTS} — the bus library's catch-up reads and its publish, which this service runs
- *       for its two durable listeners ({@code SoftwareRelease}, {@code RepositoryRenamed}) and its
- *       outbox;
  *   <li>{@link #CONFIGURATION} — {@code ConfigHostExtrasSource}'s resolved read and {@code
  *       ConfigHostDeclarationSeed}'s declaration POST;
- *   <li>{@link #IDP} — {@code HttpIdpClientProvisioner}'s three service-client calls.
+ *   <li>{@link #IDP} — {@code HttpIdpClientProvisioner}'s three service-client calls, and the two
+ *       reads quarkus-oidc makes at startup: the discovery document and the JWKS.
  * </ul>
  *
- * <p>qits-configuration and qits-idp publish no golden masters yet, so their rows wait, each naming
- * the provider state it needs. Their operationIds are the provider's Java method names: neither
- * provider declares an {@code @Operation} for these routes yet.
+ * <p>The bus library qits-eventstream owns its catch-up and publish pact, so no events row is here.
  */
 public final class Contracts {
 
   private Contracts() {}
 
-  /** Every contract this repository holds. */
-  public static List<Contract> all() {
-    return List.of(EVENTS, CONFIGURATION, IDP);
-  }
+  /** The consumer, as every pact names it: this repository. */
+  public static final String CONSUMER = "qits-deployments-service";
 
-  // --- qits-events -----------------------------------------------------------------------------
+  /** One row and the call that proves the client asks and understands it. */
+  public record Check(GoldenInteraction row, ConsumerPact.Call call) {}
 
-  static final String NO_EVENTS = "no events";
-  static final String A_PAGE_WITH_MORE_TO_COME = "a page of SoftwareRelease events with more to come";
-  static final String A_NEW_EVENT_ID = "an event id the log does not hold";
+  /** One provider's pact and the call for each of its rows. */
+  public record Contract(ConsumerPact pact, List<Check> checks) {
 
-  private static final String EVENTS_PATH = "/events/api/events";
-  private static final String PUBLISH_ID = "00000000-0000-4000-8000-0000000000aa";
-
-  private static final EventEnvelope PUBLISHED =
-      new EventEnvelope(
-          "DeploymentActive",
-          Instant.parse("2026-01-01T00:00:00Z"),
-          "{\"application\":\"qits-ci\"}",
-          "qits-ci is deployed",
-          null,
-          "dev");
-
-  /** What the catch-up sweep reads of a page: every frame field it hands on, and the cursor. */
-  private static final List<String> PAGE_READ =
-      List.of(
-          "events[].id",
-          "events[].name",
-          "events[].occurredAt",
-          "events[].payload",
-          "events[].description",
-          "events[].parentId",
-          "events[].environment",
-          "nextCursor");
-
-  private static Map<String, String> query(String... pairs) {
-    Map<String, String> query = new LinkedHashMap<>();
-    for (int i = 0; i < pairs.length; i += 2) {
-      query.put(pairs[i], pairs[i + 1]);
+    static Contract of(GoldenMasters masters, Check... checks) {
+      List<Check> all = List.of(checks);
+      return new Contract(
+          ConsumerPact.of(CONSUMER, masters, all.stream().map(Check::row).toList()), all);
     }
-    return query;
   }
-
-  public static final Contract EVENTS =
-      new Contract(
-          "qits-events-service",
-          "qits-events",
-          List.of(
-              // A durable listener that has never run starts at the head: the newest matching event.
-              new Row(
-                  Trigger.schedule("CatchupSweeper.initialize"),
-                  NO_EVENTS,
-                  "listEvents",
-                  Request.get(EVENTS_PATH, query("limit", "1", "name", "SoftwareRelease")),
-                  List.of("events[].id", "events[].occurredAt"),
-                  (url, params) ->
-                      assertNull(EventsProbe.newest(url, List.of("SoftwareRelease")), "an empty log has no head")),
-              // RepositoryRenamed replays from the epoch: the first page, no cursor, oldest first.
-              new Row(
-                  Trigger.schedule("CatchupSweeper.catchUp"),
-                  NO_EVENTS,
-                  "listEvents",
-                  Request.get(
-                      EVENTS_PATH,
-                      query("order", "asc", "limit", String.valueOf(EventsProbe.pageSize()), "name", "RepositoryRenamed")),
-                  PAGE_READ,
-                  (url, params) -> {
-                    EventsProbe.Page page =
-                        EventsProbe.after(url, List.of("RepositoryRenamed"), null, EventsProbe.pageSize());
-                    assertTrue(page.events().isEmpty(), "an empty log is an empty page");
-                    assertNull(page.nextCursor(), "and the last one");
-                  }),
-              // A page that is not the last: frames to hand on, and the cursor to the next page.
-              new Row(
-                  Trigger.schedule("CatchupSweeper.catchUp"),
-                  A_PAGE_WITH_MORE_TO_COME,
-                  "listEvents",
-                  Request.get(
-                      EVENTS_PATH,
-                      query(
-                          "order", "asc",
-                          "limit", String.valueOf(EventsProbe.pageSize()),
-                          "name", "SoftwareRelease",
-                          "cursor", "2026-01-01T00:00:00Z,00000000-0000-4000-8000-000000000001")),
-                  PAGE_READ,
-                  (url, params) -> {
-                    EventsProbe.Page page =
-                        EventsProbe.after(
-                            url,
-                            List.of("SoftwareRelease"),
-                            "2026-01-01T00:00:00Z,00000000-0000-4000-8000-000000000001",
-                            EventsProbe.pageSize());
-                    assertFalse(page.events().isEmpty(), "a page with more to come holds events");
-                    EventFrame first = page.events().get(0);
-                    assertNotNull(first.id());
-                    assertEquals("SoftwareRelease", first.name());
-                    assertNotNull(first.occurredAt());
-                    assertNotNull(page.nextCursor(), "and names the next page");
-                  }),
-              // The outbox delivers each event once, under the id it was stored with.
-              new Row(
-                  Trigger.schedule("OutboxSweeper.sweep"),
-                  A_NEW_EVENT_ID,
-                  "publish",
-                  Request.send(
-                      "PUT",
-                      EVENTS_PATH + "/" + PUBLISH_ID,
-                      Map.of(),
-                      EventsProbe.body(PUBLISHED),
-                      "application/json"),
-                  List.of(),
-                  (url, params) ->
-                      assertTrue(
-                          EventsProbe.put(url, params.getOrDefault("eventId", PUBLISH_ID), PUBLISHED).delivered(),
-                          "a new id is delivered"))));
 
   // --- qits-configuration ----------------------------------------------------------------------
 
-  static final String A_RESOLVED_CONFIGURATION_AT_A_VERSION =
-      "an application with a declaration and stored entries at a version";
-  static final String A_RESOLVED_CONFIGURATION_WITHOUT_A_DECLARATION =
-      "an application with stored entries and no declaration";
-  static final String AN_APPLICATION_WITH_NO_DECLARATION_AT_THE_VERSION =
-      "an application with no declaration at the version";
+  static final GoldenMasters CONFIGURATION_MASTERS =
+      GoldenMasters.of("qits-configuration-service", "qits-configuration");
 
   private static final ExtrasBearer NO_BEARER = Optional::empty;
-  private static final String APPLICATION = "qits-ci";
-  private static final String ENVIRONMENT = "dev";
-  private static final String VERSION = "2026.101.120000";
-  private static final String DECLARATION = "entries: {}\n";
 
   private static Config boot() {
     return new SmallRyeConfigBuilder()
@@ -185,116 +77,136 @@ public final class Contracts {
         .build();
   }
 
-  /** What the resolved read binds: the properties map (every value a string), and the revision it logs. */
-  private static final List<String> RESOLVED_READ = List.of("properties", "headRevision");
+  private static Config resolved(String url, Map<String, String> params, boolean declared) {
+    return ExtrasStub.source(boot(), "config/application.properties", NO_BEARER, url)
+        .forDeployment(params.get("application"), params.get("env"), params.getOrDefault("version", "2026.101.1"), declared);
+  }
 
   public static final Contract CONFIGURATION =
-      new Contract(
-          "qits-configuration-service",
-          "qits-configuration",
-          List.of(
-              new Row(
-                  Trigger.event("SoftwareRelease"),
-                  A_RESOLVED_CONFIGURATION_AT_A_VERSION,
-                  "resolvedIn",
-                  Request.get(
-                      "/configuration/api/applications/" + APPLICATION + "/envs/" + ENVIRONMENT + "/resolved",
-                      query("version", VERSION)),
-                  RESOLVED_READ,
-                  (url, params) -> {
-                    Config served =
-                        ExtrasStub.source(boot(), "config/application.properties", NO_BEARER, url)
-                            .forDeployment(
-                                params.getOrDefault("application", APPLICATION),
-                                params.getOrDefault("env", ENVIRONMENT),
-                                params.getOrDefault("version", VERSION),
-                                true);
-                    assertNotNull(served);
-                  }),
-              // A release that declared nothing reads the stored entries alone.
-              new Row(
-                  Trigger.event("SoftwareRelease"),
-                  A_RESOLVED_CONFIGURATION_WITHOUT_A_DECLARATION,
-                  "resolvedIn",
-                  Request.get(
-                      "/configuration/api/applications/" + APPLICATION + "/envs/" + ENVIRONMENT + "/resolved",
-                      Map.of()),
-                  RESOLVED_READ,
-                  (url, params) -> {
-                    Config served =
-                        ExtrasStub.source(boot(), "config/application.properties", NO_BEARER, url)
-                            .forDeployment(
-                                params.getOrDefault("application", APPLICATION),
-                                params.getOrDefault("env", ENVIRONMENT),
-                                params.getOrDefault("version", VERSION),
-                                false);
-                    assertNotNull(served);
-                  }),
-              // The seed reads the status alone: 2xx is stored, 409/422 is the file's own fault.
-              new Row(
-                  Trigger.event("SoftwareRelease"),
-                  AN_APPLICATION_WITH_NO_DECLARATION_AT_THE_VERSION,
-                  "declare",
-                  Request.send(
-                      "POST",
-                      "/configuration/api/applications/" + APPLICATION + "/declarations/" + VERSION,
-                      query("deploymentTarget", "environment"),
-                      DECLARATION,
-                      "application/yaml"),
-                  List.of(),
-                  (url, params) -> {
-                    ConfigHostDeclarationSeed seed = ExtrasStub.seed(NO_BEARER, url);
-                    seed.seed(
-                        params.getOrDefault("application", APPLICATION),
-                        params.getOrDefault("version", VERSION),
-                        DECLARATION);
-                  })));
+      Contract.of(
+          CONFIGURATION_MASTERS,
+          // A release that seeded a declaration reads the overrides resolved against it.
+          new Check(
+              GoldenInteraction.of(
+                      Trigger.event("SoftwareRelease"),
+                      "a declared application with entries",
+                      "resolveConfiguration")
+                  .consumes("properties", "headRevision"),
+              (url, recorded) -> {
+                Config served = resolved(url, recorded.params(), true);
+                assertEquals(
+                    "hello from the store",
+                    served.getValue(
+                        "qits.platform.deployments.extras.golden-declared-app.env.QITS_GREETING",
+                        String.class));
+              }),
+          // A release that declared nothing reads the stored entries alone.
+          new Check(
+              GoldenInteraction.of(
+                      Trigger.event("SoftwareRelease"),
+                      "an application with stored entries and no declaration",
+                      "resolveConfiguration")
+                  .consumes("properties", "headRevision"),
+              (url, recorded) -> assertNotNull(resolved(url, recorded.params(), false))),
+          // The seed reads the status alone: 2xx is stored, 409/422 is the file's own fault.
+          new Check(
+              GoldenInteraction.of(
+                  Trigger.event("SoftwareRelease"), "an application with no declaration", "declareKeys"),
+              (url, recorded) -> {
+                ConfigHostDeclarationSeed seed = ExtrasStub.seed(NO_BEARER, url);
+                seed.seed(
+                    recorded.params().get("application"),
+                    recorded.params().get("version"),
+                    recorded.body().asText());
+              }));
 
   // --- qits-idp --------------------------------------------------------------------------------
 
+  static final GoldenMasters IDP_MASTERS = GoldenMasters.of("qits-idp-service", "qits-idp");
+
   static final String A_DATABASE_SERVICE_CLIENT = "a database service client";
-  static final String NO_SERVICE_CLIENT = "no service client with the id";
+  static final String NO_SERVICE_CLIENT = "no service client with the given id";
+  static final String A_PUBLISHED_SIGNING_KEY = "a published signing key";
 
-  private static final String CLIENT_ID = "dev-qits-ci";
-  private static final String SERVICE_CLIENTS = "/idp/api/service-clients";
+  /** The discovery read, whose {@code issuer} the pact binds by value: see {@link PactFileTest}. */
+  static final GoldenInteraction DISCOVERY =
+      GoldenInteraction.of(
+              Trigger.event("StartupEvent"), A_PUBLISHED_SIGNING_KEY, "getOpenIdConfiguration")
+          .consumes("issuer", "jwks_uri", "token_endpoint");
 
-  private static IdpClientProvisioner idp(String url) {
-    return IdpStub.adapterAt(url + SERVICE_CLIENTS, "dev-qits-deployments", "secret");
+  /** The adapter, presenting the caller the state's {@code authorization} param names. */
+  private static IdpClientProvisioner idp(String url, Map<String, String> params) {
+    String basic = params.get("authorization").substring("Basic ".length());
+    String[] pair = new String(Base64.getDecoder().decode(basic), StandardCharsets.UTF_8).split(":", 2);
+    return IdpStub.adapterAt(url + "/idp/api/service-clients", pair[0], pair[1]);
+  }
+
+  private static GoldenInteraction serviceClients(String state, String operationId) {
+    return GoldenInteraction.of(Trigger.event("SoftwareRelease"), state, operationId)
+        .header("Authorization", "{authorization}");
+  }
+
+  private static String get(String url) throws Exception {
+    HttpResponse<String> answer =
+        HttpClient.newHttpClient()
+            .send(
+                HttpRequest.newBuilder(URI.create(url)).header("Accept", "application/json").build(),
+                HttpResponse.BodyHandlers.ofString());
+    assertEquals(200, answer.statusCode(), url);
+    return answer.body();
   }
 
   public static final Contract IDP =
-      new Contract(
-          "qits-idp-service",
-          "qits-idp",
-          List.of(
-              new Row(
-                  Trigger.event("SoftwareRelease"),
-                  A_DATABASE_SERVICE_CLIENT,
-                  "get",
-                  Request.get(SERVICE_CLIENTS + "/" + CLIENT_ID, Map.of()),
-                  List.of("source"),
-                  (url, params) ->
-                      assertTrue(idp(url).databaseClientPresent(params.getOrDefault("clientId", CLIENT_ID)))),
-              new Row(
-                  Trigger.event("SoftwareRelease"),
-                  NO_SERVICE_CLIENT,
-                  "create",
-                  Request.send(
-                      "POST",
-                      SERVICE_CLIENTS,
-                      Map.of(),
-                      "{\"clientId\":\"" + CLIENT_ID + "\"}",
-                      "application/json"),
-                  List.of("secret"),
-                  (url, params) ->
-                      assertTrue(idp(url).create(params.getOrDefault("clientId", CLIENT_ID)).ok())),
-              new Row(
-                  Trigger.event("SoftwareRelease"),
-                  A_DATABASE_SERVICE_CLIENT,
-                  "rotate",
-                  Request.send(
-                      "POST", SERVICE_CLIENTS + "/" + CLIENT_ID + "/secret", Map.of(), "", "application/json"),
-                  List.of("secret"),
-                  (url, params) ->
-                      assertTrue(idp(url).rotate(params.getOrDefault("clientId", CLIENT_ID)).ok()))));
+      Contract.of(
+          IDP_MASTERS,
+          new Check(
+              serviceClients(A_DATABASE_SERVICE_CLIENT, "getServiceClient").consumes("source"),
+              (url, recorded) ->
+                  assertTrue(idp(url, recorded.params()).databaseClientPresent(recorded.params().get("clientId")))),
+          new Check(
+              serviceClients(NO_SERVICE_CLIENT, "getServiceClient"),
+              (url, recorded) ->
+                  assertFalse(idp(url, recorded.params()).databaseClientPresent(recorded.params().get("clientId")))),
+          new Check(
+              serviceClients(NO_SERVICE_CLIENT, "createServiceClient").consumes("secret"),
+              (url, recorded) ->
+                  assertTrue(idp(url, recorded.params()).create(recorded.params().get("clientId")).ok())),
+          new Check(
+              serviceClients(A_DATABASE_SERVICE_CLIENT, "createServiceClient"),
+              (url, recorded) ->
+                  assertTrue(idp(url, recorded.params()).create(recorded.params().get("clientId")).conflict())),
+          new Check(
+              serviceClients(A_DATABASE_SERVICE_CLIENT, "rotateServiceClientSecret").consumes("secret"),
+              (url, recorded) ->
+                  assertTrue(idp(url, recorded.params()).rotate(recorded.params().get("clientId")).ok())),
+          new Check(
+              serviceClients(NO_SERVICE_CLIENT, "rotateServiceClientSecret"),
+              (url, recorded) ->
+                  assertFalse(idp(url, recorded.params()).rotate(recorded.params().get("clientId")).ok())),
+          // quarkus-oidc reads the discovery document at startup, as quarkus-oidc parses it.
+          new Check(
+              DISCOVERY,
+              (url, recorded) -> {
+                OidcConfigurationMetadata metadata =
+                    new OidcConfigurationMetadata(new JsonObject(get(url + recorded.path())));
+                assertEquals(
+                    IDP_MASTERS.json(A_PUBLISHED_SIGNING_KEY, "getOpenIdConfiguration").path("issuer").asText(),
+                    metadata.getIssuer());
+                assertNotNull(metadata.getJsonWebKeySetUri());
+                assertNotNull(metadata.getTokenUri());
+              }),
+          // ...then the keys at the jwks_uri it names, and finds the signing key by kid.
+          new Check(
+              GoldenInteraction.of(Trigger.event("StartupEvent"), A_PUBLISHED_SIGNING_KEY, "getJwks")
+                  .consumes(
+                      "keys[].kid", "keys[].kty", "keys[].n", "keys[].e", "keys[].alg", "keys[].use"),
+              (url, recorded) -> {
+                JsonWebKeySet keys = new JsonWebKeySet(get(url + recorded.path()));
+                assertNotNull(keys.getKeyWithId(recorded.params().get("kid")), "the state's signing key");
+              }));
+
+  /** Every contract this repository holds. */
+  public static List<Contract> all() {
+    return List.of(CONFIGURATION, IDP);
+  }
 }

@@ -1,0 +1,705 @@
+{
+  "consumer": {
+    "name": "qits-deployments-service"
+  },
+  "interactions": [
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-idp-service",
+            "operationId": "createServiceClient"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "event": "SoftwareRelease",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "SoftwareRelease: createServiceClient",
+      "key": "b944b5ca",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a database service client",
+          "params": {
+            "authorization": "Basic dGVzdC1icm9hZDp0ZXN0LWJyb2FkLXNlY3JldA==",
+            "callerClientId": "test-broad",
+            "clientId": "contract-00000001"
+          }
+        }
+      ],
+      "request": {
+        "body": {
+          "content": {
+            "clientId": "contract-00000001"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "generators": {
+          "body": {
+            "$.clientId": {
+              "dataType": "STRING",
+              "expression": "${clientId}",
+              "type": "ProviderState"
+            }
+          },
+          "header": {
+            "Authorization": {
+              "dataType": "RAW",
+              "expression": "${authorization}",
+              "type": "ProviderState"
+            }
+          }
+        },
+        "headers": {
+          "Authorization": [
+            "Basic dGVzdC1icm9hZDp0ZXN0LWJyb2FkLXNlY3JldA=="
+          ],
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.clientId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          }
+        },
+        "method": "POST",
+        "path": "/idp/api/service-clients"
+      },
+      "response": {
+        "status": 409
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-idp-service",
+            "operationId": "createServiceClient"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "event": "SoftwareRelease",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "SoftwareRelease: createServiceClient",
+      "key": "126c72ea",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "no service client with the given id",
+          "params": {
+            "authorization": "Basic dGVzdC1icm9hZDp0ZXN0LWJyb2FkLXNlY3JldA==",
+            "callerClientId": "test-broad",
+            "clientId": "contract-00000001"
+          }
+        }
+      ],
+      "request": {
+        "body": {
+          "content": {
+            "clientId": "contract-00000001"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "generators": {
+          "body": {
+            "$.clientId": {
+              "dataType": "STRING",
+              "expression": "${clientId}",
+              "type": "ProviderState"
+            }
+          },
+          "header": {
+            "Authorization": {
+              "dataType": "RAW",
+              "expression": "${authorization}",
+              "type": "ProviderState"
+            }
+          }
+        },
+        "headers": {
+          "Authorization": [
+            "Basic dGVzdC1icm9hZDp0ZXN0LWJyb2FkLXNlY3JldA=="
+          ],
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.clientId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          }
+        },
+        "method": "POST",
+        "path": "/idp/api/service-clients"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "secret": "opaque"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.secret": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 201
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-idp-service",
+            "operationId": "getServiceClient"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "event": "SoftwareRelease",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "SoftwareRelease: getServiceClient",
+      "key": "421ce6b0",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a database service client",
+          "params": {
+            "authorization": "Basic dGVzdC1icm9hZDp0ZXN0LWJyb2FkLXNlY3JldA==",
+            "callerClientId": "test-broad",
+            "clientId": "contract-00000001"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "header": {
+            "Authorization": {
+              "dataType": "RAW",
+              "expression": "${authorization}",
+              "type": "ProviderState"
+            }
+          },
+          "path": {
+            "dataType": "RAW",
+            "expression": "/idp/api/service-clients/${clientId}",
+            "type": "ProviderState"
+          }
+        },
+        "headers": {
+          "Authorization": [
+            "Basic dGVzdC1icm9hZDp0ZXN0LWJyb2FkLXNlY3JldA=="
+          ]
+        },
+        "method": "GET",
+        "path": "/idp/api/service-clients/contract-00000001"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "source": "database"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.source": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-idp-service",
+            "operationId": "getServiceClient"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "event": "SoftwareRelease",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "SoftwareRelease: getServiceClient",
+      "key": "9b44a3d0",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "no service client with the given id",
+          "params": {
+            "authorization": "Basic dGVzdC1icm9hZDp0ZXN0LWJyb2FkLXNlY3JldA==",
+            "callerClientId": "test-broad",
+            "clientId": "contract-00000001"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "header": {
+            "Authorization": {
+              "dataType": "RAW",
+              "expression": "${authorization}",
+              "type": "ProviderState"
+            }
+          },
+          "path": {
+            "dataType": "RAW",
+            "expression": "/idp/api/service-clients/${clientId}",
+            "type": "ProviderState"
+          }
+        },
+        "headers": {
+          "Authorization": [
+            "Basic dGVzdC1icm9hZDp0ZXN0LWJyb2FkLXNlY3JldA=="
+          ]
+        },
+        "method": "GET",
+        "path": "/idp/api/service-clients/contract-00000001"
+      },
+      "response": {
+        "status": 404
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-idp-service",
+            "operationId": "rotateServiceClientSecret"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "event": "SoftwareRelease",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "SoftwareRelease: rotateServiceClientSecret",
+      "key": "c4331b05",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a database service client",
+          "params": {
+            "authorization": "Basic dGVzdC1icm9hZDp0ZXN0LWJyb2FkLXNlY3JldA==",
+            "callerClientId": "test-broad",
+            "clientId": "contract-00000001"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "header": {
+            "Authorization": {
+              "dataType": "RAW",
+              "expression": "${authorization}",
+              "type": "ProviderState"
+            }
+          },
+          "path": {
+            "dataType": "RAW",
+            "expression": "/idp/api/service-clients/${clientId}/secret",
+            "type": "ProviderState"
+          }
+        },
+        "headers": {
+          "Authorization": [
+            "Basic dGVzdC1icm9hZDp0ZXN0LWJyb2FkLXNlY3JldA=="
+          ]
+        },
+        "method": "POST",
+        "path": "/idp/api/service-clients/contract-00000001/secret"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "secret": "opaque"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.secret": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-idp-service",
+            "operationId": "rotateServiceClientSecret"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "event": "SoftwareRelease",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "SoftwareRelease: rotateServiceClientSecret",
+      "key": "1d5ad825",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "no service client with the given id",
+          "params": {
+            "authorization": "Basic dGVzdC1icm9hZDp0ZXN0LWJyb2FkLXNlY3JldA==",
+            "callerClientId": "test-broad",
+            "clientId": "contract-00000001"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "header": {
+            "Authorization": {
+              "dataType": "RAW",
+              "expression": "${authorization}",
+              "type": "ProviderState"
+            }
+          },
+          "path": {
+            "dataType": "RAW",
+            "expression": "/idp/api/service-clients/${clientId}/secret",
+            "type": "ProviderState"
+          }
+        },
+        "headers": {
+          "Authorization": [
+            "Basic dGVzdC1icm9hZDp0ZXN0LWJyb2FkLXNlY3JldA=="
+          ]
+        },
+        "method": "POST",
+        "path": "/idp/api/service-clients/contract-00000001/secret"
+      },
+      "response": {
+        "status": 404
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-idp-service",
+            "operationId": "getJwks"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "event": "StartupEvent",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "StartupEvent: getJwks",
+      "key": "30aa1a6f",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a published signing key",
+          "params": {
+            "kid": "contract-signing-key"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/idp/jwks"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "keys": [
+              {
+                "alg": "RS256",
+                "e": "AQAB",
+                "kid": "contract-signing-key",
+                "kty": "RSA",
+                "n": "w22O_ObglnNG60PveaNoDYurV2UhwvgMnL91tE4wBuWFY1yaEujIejjq2Qy-zvOuwYm2QKvHU-KhQ4nXWGJ8I-lXRaCPlmoFYXFXelBMp7abSkerNqBf_Bpc_Zj_cW7r4e69gDkK-3cChOTpsUhXzyuNanKh-h840YqhAPld9lz2Akr4T5hTMlgjjOagWaX_BkIMPmudiMQ8Uv5ppR2pETcAUi2D35L2OwVMBzqjQyykBcIIZgHM9qNUSQmJy-NjdSM4MJfjguxR23Yn4Dpp5HknGbhTOQ-Z90_neU8UVOKhhzDl_tUbpT9Q9ihqJmRmXsIySx2hXECmChLIoOqMlw",
+                "use": "sig"
+              }
+            ]
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.keys": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 1
+                }
+              ]
+            },
+            "$.keys[*].alg": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.keys[*].e": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.keys[*].kid": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.keys[*].kty": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.keys[*].n": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.keys[*].use": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-idp-service",
+            "operationId": "getOpenIdConfiguration"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "event": "StartupEvent",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "StartupEvent: getOpenIdConfiguration",
+      "key": "b2edec1",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a published signing key",
+          "params": {
+            "kid": "contract-signing-key"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/idp/.well-known/openid-configuration"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "issuer": "https://idp.qits.localhost",
+            "jwks_uri": "http://dev-qits-idp:8080/idp/jwks",
+            "token_endpoint": "http://dev-qits-idp:8080/idp/token"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.jwks_uri": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.token_endpoint": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "4.0"
+    },
+    "plugins": []
+  },
+  "provider": {
+    "name": "qits-idp-service"
+  }
+}

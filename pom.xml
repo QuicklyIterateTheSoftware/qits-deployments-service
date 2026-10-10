@@ -85,7 +85,10 @@
         <pact.version>4.6.21</pact.version>
         <!-- THE PROVIDERS' GOLDEN MASTERS, test scope: what each provider records for its states,
              read by the consumer pacts. Moves like every internal pin. -->
-        <qits.events-golden-masters.version>2026.1002.210125</qits.events-golden-masters.version>
+        <qits.idp-golden-masters.version>2026.1010.134259</qits.idp-golden-masters.version>
+        <qits.configuration-golden-masters.version>2026.1010.143209</qits.configuration-golden-masters.version>
+        <!-- The one golden-master reader for Java consumers, from qits-integrations-quarkus. -->
+        <qits.pact-consumer.version>2026.1010.141817</qits.pact-consumer.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -260,10 +263,22 @@
                 <version>${pact.version}</version>
             </dependency>
             <dependency>
-                <!-- qits-events' recorded answers. Test scope: recordings, never code. -->
+                <!-- Reads the golden masters below into consumer pact rows. Test scope. -->
                 <groupId>${project.groupId}</groupId>
-                <artifactId>qits-events-golden-masters</artifactId>
-                <version>${qits.events-golden-masters.version}</version>
+                <artifactId>qits-pact-consumer</artifactId>
+                <version>${qits.pact-consumer.version}</version>
+            </dependency>
+            <dependency>
+                <!-- qits-idp's recorded answers. Test scope: recordings, never code. -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-idp-golden-masters</artifactId>
+                <version>${qits.idp-golden-masters.version}</version>
+            </dependency>
+            <dependency>
+                <!-- qits-configuration's recorded answers. Test scope: recordings, never code. -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-configuration-golden-masters</artifactId>
+                <version>${qits.configuration-golden-masters.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

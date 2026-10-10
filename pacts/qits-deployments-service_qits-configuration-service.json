@@ -1,0 +1,275 @@
+{
+  "consumer": {
+    "name": "qits-deployments-service"
+  },
+  "interactions": [
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-configuration-service",
+            "operationId": "declareKeys"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "event": "SoftwareRelease",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "SoftwareRelease: declareKeys",
+      "key": "fae98055",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "an application with no declaration",
+          "params": {
+            "application": "golden-undeclared-app",
+            "env": "test",
+            "version": "2026.1010.1"
+          }
+        }
+      ],
+      "request": {
+        "body": {
+          "content": "a2V5czoKICBlbnYuUUlUU19HUkVFVElORzoKICAgIHR5cGU6IHN0cmluZwogICAgZGVmYXVsdDogaGVsbG8KICBlbnYuUUlUU19QRUVSX1VSTDoKICAgIHR5cGU6IHNlcnZpY2VBZGRyZXNzCiAgICBzZXJ2aWNlOiBnb2xkZW4tcGVlcgogICAgcG9ydDogODA4MAogIGVudi5RSVRTX0lNQUdFX1ZFUlNJT046CiAgICB0eXBlOiBwYWNrYWdlVmVyc2lvbgogICAgcGFja2FnZToKICAgICAgdHlwZTogZG9ja2VyCiAgICAgIG5hbWU6IHFpdHMvZ29sZGVuLWltYWdlCg==",
+          "contentType": "application/yaml",
+          "contentTypeHint": "DEFAULT",
+          "encoded": "base64"
+        },
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/configuration/api/applications/${application}/declarations/${version}",
+            "type": "ProviderState"
+          }
+        },
+        "headers": {
+          "Content-Type": [
+            "application/yaml"
+          ]
+        },
+        "method": "POST",
+        "path": "/configuration/api/applications/golden-undeclared-app/declarations/2026.1010.1",
+        "query": {
+          "deploymentTarget": [
+            "environment"
+          ]
+        }
+      },
+      "response": {
+        "status": 201
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-configuration-service",
+            "operationId": "resolveConfiguration"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "event": "SoftwareRelease",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "SoftwareRelease: resolveConfiguration",
+      "key": "cfd1e9",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a declared application with entries",
+          "params": {
+            "application": "golden-declared-app",
+            "env": "test",
+            "version": "2026.1010.1"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/configuration/api/applications/${application}/envs/${env}/resolved",
+            "type": "ProviderState"
+          }
+        },
+        "method": "GET",
+        "path": "/configuration/api/applications/golden-declared-app/envs/test/resolved",
+        "query": {
+          "version": [
+            "2026.1010.1"
+          ]
+        }
+      },
+      "response": {
+        "body": {
+          "content": {
+            "headRevision": 1,
+            "properties": {
+              "qits.platform.deployments.extras.golden-declared-app.env.QITS_GREETING": "hello from the store",
+              "qits.platform.deployments.extras.golden-declared-app.env.QITS_IMAGE_VERSION": "2026.1010.120000",
+              "qits.platform.deployments.extras.golden-declared-app.env.QITS_PEER_URL": "http://test-golden-peer:8080"
+            }
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.headRevision": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "number"
+                }
+              ]
+            },
+            "$.properties['qits.platform.deployments.extras.golden-declared-app.env.QITS_GREETING']": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.properties['qits.platform.deployments.extras.golden-declared-app.env.QITS_IMAGE_VERSION']": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.properties['qits.platform.deployments.extras.golden-declared-app.env.QITS_PEER_URL']": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-configuration-service",
+            "operationId": "resolveConfiguration"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "event": "SoftwareRelease",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "SoftwareRelease: resolveConfiguration",
+      "key": "90aae3f6",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "an application with stored entries and no declaration",
+          "params": {
+            "application": "golden-entries-only-app",
+            "env": "test"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/configuration/api/applications/${application}/envs/${env}/resolved",
+            "type": "ProviderState"
+          }
+        },
+        "method": "GET",
+        "path": "/configuration/api/applications/golden-entries-only-app/envs/test/resolved"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "headRevision": 1,
+            "properties": {
+              "qits.platform.deployments.extras.golden-entries-only-app.env.QITS_GREETING": "hello from the store"
+            }
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.headRevision": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "number"
+                }
+              ]
+            },
+            "$.properties['qits.platform.deployments.extras.golden-entries-only-app.env.QITS_GREETING']": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "4.0"
+    },
+    "plugins": []
+  },
+  "provider": {
+    "name": "qits-configuration-service"
+  }
+}
