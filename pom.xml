@@ -85,7 +85,7 @@
         <pact.version>4.6.21</pact.version>
         <!-- THE PROVIDERS' GOLDEN MASTERS, test scope: what each provider records for its states,
              read by the consumer pacts. Moves like every internal pin. -->
-        <qits.events-golden-masters.version>2026.1002.210125</qits.events-golden-masters.version>
+        <qits.events-golden-masters.version>2026.1010.121628</qits.events-golden-masters.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
