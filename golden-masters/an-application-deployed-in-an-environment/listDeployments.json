@@ -1,0 +1,17 @@
+{
+  "deployments": [
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "applicationId": "00000000-0000-4000-8000-000000000001:contract-app-00000001",
+      "applicationName": "contract-app-00000001",
+      "version": "2026.101.120000",
+      "commitSha": "0f1e2d3c4b5a69788796a5b4c3d2e1f009182736",
+      "runId": "run-contract",
+      "status": "ACTIVE",
+      "containerName": "contract-00000001-contract-app-00000001",
+      "detail": null,
+      "createdAt": "2026-01-01T00:00:00Z",
+      "finishedAt": "2026-01-01T00:00:00Z"
+    }
+  ]
+}

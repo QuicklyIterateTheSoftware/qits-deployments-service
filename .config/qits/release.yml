@@ -6,8 +6,12 @@ artifacts:
 # packs each into that provider's maven jar, eu.wohlben.qits:qits-deployments-service-pacts-<provider>,
 # and publishes it only when the file changed. A provider joins this list when its first row is
 # ready (`PactFileTest` writes no file before that).
+# The provider golden masters: the platform packages `golden-masters/` as
+# `eu.wohlben.qits:qits-deployments-golden-masters` and `@qits/deployments-golden-masters`, each
+# published only when its content changed. `GoldenMasterRecordingTest` records them.
 contracts:
   application: qits-deployments
+  golden-masters: { from: golden-masters/, packages: [maven, npm] }
   pacts:
     qits-events-service: { packages: [maven] }
 # THE SITE IS SPELLED, AND IT NAMES THE COMPONENT. `true` derives it from the REPOSITORY name,

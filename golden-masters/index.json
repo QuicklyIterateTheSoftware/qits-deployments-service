@@ -1,0 +1,106 @@
+{
+  "formatVersion": 1,
+  "provider": "qits-deployments",
+  "states": [
+    {
+      "name": "an application deployed in an environment",
+      "slug": "an-application-deployed-in-an-environment",
+      "params": {
+        "environmentId": "00000000-0000-4000-8000-000000000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listDeployments",
+          "method": "GET",
+          "path": "/deployments/api/deployments",
+          "query": {
+            "environmentId": "{environmentId}"
+          },
+          "status": 200,
+          "file": "an-application-deployed-in-an-environment/listDeployments.json",
+          "frozen": {
+            "ids": [
+              "$.deployments[*].id"
+            ],
+            "instants": [
+              "$.deployments[*].createdAt",
+              "$.deployments[*].finishedAt"
+            ],
+            "strings": [
+              "$.deployments[*].applicationId",
+              "$.deployments[*].applicationName",
+              "$.deployments[*].containerName"
+            ],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "listPins",
+          "method": "GET",
+          "path": "/deployments/api/pins",
+          "status": 200,
+          "file": "an-application-deployed-in-an-environment/listPins.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [
+              "$.pins[*].applicationName"
+            ],
+            "listFilteredTo": "$.pins"
+          }
+        }
+      ]
+    },
+    {
+      "name": "an environment",
+      "slug": "an-environment",
+      "params": {
+        "environmentId": "00000000-0000-4000-8000-000000000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getEnvironment",
+          "method": "GET",
+          "path": "/deployments/api/environments/{environmentId}",
+          "status": 200,
+          "file": "an-environment/getEnvironment.json",
+          "frozen": {
+            "ids": [
+              "$.environment.id"
+            ],
+            "instants": [
+              "$.environment.createdAt"
+            ],
+            "strings": [
+              "$.environment.name",
+              "$.environment.network"
+            ],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "listEnvironments",
+          "method": "GET",
+          "path": "/deployments/api/environments",
+          "status": 200,
+          "file": "an-environment/listEnvironments.json",
+          "frozen": {
+            "ids": [
+              "$.environments[*].id"
+            ],
+            "instants": [
+              "$.environments[*].createdAt"
+            ],
+            "strings": [
+              "$.environments[*].name",
+              "$.environments[*].network"
+            ],
+            "listFilteredTo": "$.environments"
+          }
+        }
+      ]
+    }
+  ]
+}

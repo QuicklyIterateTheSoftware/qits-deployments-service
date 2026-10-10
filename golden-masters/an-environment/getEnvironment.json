@@ -1,0 +1,11 @@
+{
+  "environment": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "name": "contract-00000001",
+    "network": "qits-env-contract-00000001",
+    "designated": false,
+    "platform": false,
+    "createdAt": "2026-01-01T00:00:00Z",
+    "applications": []
+  }
+}
