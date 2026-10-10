@@ -43,9 +43,9 @@ import java.util.Map;
  *       refusal in this catalogue is a claim only a gate-on packaged run can make. No audience key
  *       rides with it: there is one audience on this platform, {@code quarkus.oidc.token.audience}
  *       names it as a literal, and qits-auth-core ships the same one for {@code MachineAuth}.
- *   <li><b>{@code quarkus.oidc.auth-server-url}</b> — where the idp is. Discovery stays off and
- *       {@code jwks-path} stays {@code jwks}, joined onto this URL, so the shipped boot-time fetch
- *       is exercised rather than replaced.
+ *   <li><b>{@code quarkus.oidc.auth-server-url}</b> — where the idp is. Discovery is on, as
+ *       shipped: the boot reads the mock's discovery document and then the JWKS it names, so the
+ *       shipped boot-time fetch is exercised rather than replaced.
  *   <li><b>{@code qits.deployments.container-runtime}</b> — {@link StorySwarm}, a recording
  *       executable. This is the seam that makes the orchestrator hop evidence instead of a claim.
  *   <li><b>{@code git-host-url} and {@code extras-url}</b> — {@link StoryPeers}. The extras url being

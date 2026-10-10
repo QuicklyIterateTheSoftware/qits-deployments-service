@@ -33,8 +33,8 @@ import org.junit.jupiter.api.TestMethodOrder;
  * repository leaves that gate shut but one — and that one, {@link MachineGuardEnforcedTest}, opens
  * it by <b>inlining the verification key</b> and clearing {@code auth-server-url}, precisely so it
  * needs no idp. So the half of the shipped {@code quarkus.oidc.*} block that is about REACHING
- * qits-platform-idp — the auth-server-url, {@code discovery-enabled=false} with {@code
- * jwks-path=jwks} joined onto it, the boot-time fetch that {@code connection-delay} retries — is
+ * qits-idp — the auth-server-url, the discovery document read from it and the JWKS that document
+ * names, the boot-time fetch that {@code connection-delay} retries — is
  * exercised nowhere else at all. The far side here is {@link MockIdp}, whose recordings make the
  * interaction assertable on <b>both ends</b>.
  *
@@ -139,8 +139,8 @@ public class TokenValidationBootstrapIT {
   @UserStoryDescription(
       """
       A freshly deployed qits-platform-deployments must validate service bearers before any
-      caller arrives: at startup it fetches the signing keys (JWKS) from qits-platform-idp —
-      discovery stays off, the path is configured — so the very first machine request is
+      caller arrives: at startup it reads qits-idp's discovery document and fetches the
+      signing keys (JWKS) it names, so the very first machine request is
       accepted. qits-platform-artifacts' image collector reads the rollback pins with exactly
       this credential before it deletes anything.
       """)

@@ -2689,7 +2689,7 @@ against.
   `quarkus.oidc.auth-server-url` at `MockIdp`. That is the half of the shipped OIDC block no other
   test reaches: `MachineGuardEnforcedTest` opens the same gate but **inlines the verification key and
   clears `auth-server-url`**, precisely so it needs no idp — so the boot-time JWKS fetch,
-  `discovery-enabled=false` with `jwks-path=jwks` joined onto the URL, and `connection-delay` are
+  the discovery read and the JWKS address it names, and `connection-delay` are
   exercised here or nowhere. Both its stories drive `GET /deployments/api/pins`, the one
   guarded read whose caller is a machine (`qits:system`, qits-platform-artifacts' image
   collector) and which reads nothing but deployment rows.
