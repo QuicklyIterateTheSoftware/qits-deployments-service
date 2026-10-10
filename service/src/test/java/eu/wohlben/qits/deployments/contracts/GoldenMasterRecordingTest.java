@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.NullNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.response.Response;
@@ -57,6 +58,11 @@ class GoldenMasterRecordingTest {
    *     <$.path-to-array>:<field.path in each entry>}, sorted by that field's (seed-fixed) value
    *     before freezing, so ids are numbered in a stable order. Null when the order is the
    *     provider's own.
+   * @param requestBody the JSON a write sends, recorded unexpanded into the index as the
+   *     operation's {@code body} so a consumer's pact sends the same; null for a read and for a
+   *     write whose operation takes no body (the served openapi says which, and the recording fails
+   *     on a mismatch). A string value that is exactly {@code "{param}"} is expanded from the
+   *     state's params.
    */
   record Interaction(
       String state,
@@ -67,7 +73,22 @@ class GoldenMasterRecordingTest {
       int status,
       String listFilteredTo,
       String sortedBy,
-      List<String> dropped) {
+      List<String> dropped,
+      String requestBody) {
+
+    /** A read, or a body-less write. */
+    Interaction(
+        String state,
+        String operationId,
+        String method,
+        String path,
+        Map<String, String> query,
+        int status,
+        String listFilteredTo,
+        String sortedBy,
+        List<String> dropped) {
+      this(state, operationId, method, path, query, status, listFilteredTo, sortedBy, dropped, null);
+    }
 
     /** An interaction with no query and nothing dropped. */
     Interaction(
@@ -82,11 +103,20 @@ class GoldenMasterRecordingTest {
     }
   }
 
+  /** A write that sends {@code body}, with no query and nothing filtered. */
+  static Interaction write(
+      String state, String operationId, String method, String path, int status, String body) {
+    return new Interaction(
+        state, operationId, method, path, Map.of(), status, null, null, List.of(), body);
+  }
+
   /**
-   * What the consumers on the estate read (ticket qits-1149): the environment list and one
-   * environment (qits-deployments-frontend, qits-bootstrap-cli), and one tier's deployments and the
-   * image pins (qits-bootstrap-cli, qits-artifacts' image GC). Instance-wide lists keep only the
-   * state's own entries. A query value may name a state param as {@code {param}}.
+   * What the consumers on the estate call (ticket qits-1149, rounds 1 and 2): the environments
+   * (qits-deployments-frontend, qits-bootstrap-cli), one tier's deployments (qits-bootstrap-cli),
+   * the release intake (qits-bootstrap-cli, qits-projects-service), a release's deployment requests
+   * (qits-projects-service), the image pins (qits-artifacts' and qits-orchestrator's GC) and the
+   * service-client claims (qits-orchestrator's GC). Instance-wide lists keep only the state's own
+   * entries. A query value may name a state param as {@code {param}}.
    */
   static final List<Interaction> INTERACTIONS =
       List.of(
@@ -123,10 +153,69 @@ class GoldenMasterRecordingTest {
               "/deployments/api/pins",
               200,
               "$.pins",
+              null),
+          new Interaction(
+              ProviderStates.AN_APPLICATION_DEPLOYED,
+              "listDeploymentRequests",
+              "GET",
+              "/deployments/api/deployment-requests",
+              Map.of("repoId", "{repoId}", "version", "{version}"),
+              200,
+              null,
+              null,
+              List.of()),
+          new Interaction(
+              ProviderStates.THE_PLATFORM_ENVIRONMENT,
+              "listEnvironments",
+              "GET",
+              "/deployments/api/environments",
+              200,
+              "$.environments",
+              null),
+          write(
+              ProviderStates.THE_PLATFORM_ENVIRONMENT,
+              "updateEnvironment",
+              "PATCH",
+              "/deployments/api/environments/{environmentId}",
+              200,
+              "{\"platform\":true}"),
+          write(
+              ProviderStates.NO_ENVIRONMENT_OF_THE_NAME,
+              "createEnvironment",
+              "POST",
+              "/deployments/api/environments",
+              201,
+              "{\"name\":\"{environmentName}\",\"network\":\"{network}\",\"platform\":true}"),
+          write(
+              ProviderStates.A_RELEASED_VERSION,
+              "softwareReleased",
+              "POST",
+              "/deployments/api/events/software-released",
+              202,
+              "{\"repoId\":\"{repoId}\",\"projectId\":\"{projectId}\",\"repoName\":\"{repoName}\","
+                  + "\"application\":\"{application}\",\"version\":\"{version}\"}"),
+          new Interaction(
+              ProviderStates.AN_APPLICATION_WITH_A_ROLLBACK,
+              "listPins",
+              "GET",
+              "/deployments/api/pins",
+              200,
+              "$.pins",
+              null),
+          new Interaction(
+              ProviderStates.AN_APPLICATION_HOLDING_A_SERVICE_CLIENT,
+              "listIdpClientClaims",
+              "GET",
+              "/deployments/api/claims/idp-clients",
+              200,
+              "$.claims",
               null));
 
   private static final ObjectMapper JSON = new ObjectMapper();
   private static final Pattern TEMPLATE_PARAM = Pattern.compile("\\{([^}]+)}");
+
+  /** A {@code {param}} in a request body: a whole JSON string value. */
+  private static final Pattern BODY_PARAM = Pattern.compile("\"\\{([A-Za-z][A-Za-z0-9]*)}\"");
 
   @Inject ProviderStates states;
 
@@ -141,7 +230,15 @@ class GoldenMasterRecordingTest {
     Map<String, ObjectNode> indexStates = new TreeMap<>();
     Map<String, Map<String, ObjectNode>> indexOperations = new TreeMap<>();
 
+    Set<String> takesBody = operationsTakingABody();
     for (Interaction interaction : INTERACTIONS) {
+      if ((interaction.requestBody() != null) != takesBody.contains(interaction.operationId())) {
+        failures.add(
+            interaction.operationId()
+                + (interaction.requestBody() != null
+                    ? " takes no request body, but the recording sends one: record null."
+                    : " takes a request body, but the recording sends none."));
+      }
       Recorded recorded = record(interaction);
       String slug = ProviderStates.slug(interaction.state());
       String file = slug + "/" + interaction.operationId() + ".json";
@@ -165,6 +262,9 @@ class GoldenMasterRecordingTest {
       if (!interaction.query().isEmpty()) {
         ObjectNode query = operation.putObject("query");
         new TreeMap<>(interaction.query()).forEach(query::put);
+      }
+      if (interaction.requestBody() != null) {
+        operation.set("body", JSON.readTree(interaction.requestBody()));
       }
       operation.put("status", interaction.status());
       operation.put("file", file);
@@ -242,11 +342,18 @@ class GoldenMasterRecordingTest {
   private Recorded recordIn(Interaction interaction, ProviderStates.Setup setup) throws IOException {
     Map<String, String> params = setup.params();
 
+    var request = given().queryParams(expandAll(interaction.query(), params));
+    if (interaction.requestBody() != null) {
+      request =
+          request
+              .contentType("application/json")
+              .body(expand(interaction.requestBody(), params, BODY_PARAM));
+    } else {
+      // As a body-less call is sent: RestAssured would otherwise add a form content type.
+      request = request.noContentType();
+    }
     Response response =
-        given()
-            .queryParams(expandAll(interaction.query(), params))
-            .when()
-            .request(interaction.method(), expand(interaction.path(), params));
+        request.when().request(interaction.method(), expand(interaction.path(), params));
     String raw = response.asString();
     if (response.statusCode() != interaction.status()) {
       throw new AssertionError(
@@ -262,13 +369,16 @@ class GoldenMasterRecordingTest {
               + ": "
               + raw);
     }
-    JsonNode body = JSON.readTree(raw);
+    // An answer with no body (the intake's 202) is recorded as null: there is nothing to bind.
+    JsonNode body = raw.isBlank() ? NullNode.getInstance() : JSON.readTree(raw);
     if (body.isObject()) {
       interaction.dropped().forEach(((ObjectNode) body)::remove);
     }
-    // An entry is the state's own when it mentions a param or a unique token: a pin carries only
-    // the application's name, and the name is where the token is.
-    List<String> mine = new ArrayList<>(params.values());
+    // An entry is the state's own when it mentions an id the state created or a unique token: a
+    // pin carries only the application's name, and the name is where the token is. Other params
+    // (a version) are shared by every state's entries, so they select nothing.
+    List<String> mine = new ArrayList<>();
+    params.values().stream().filter(v -> Freezer.UUID.matcher(v).matches()).forEach(mine::add);
     mine.addAll(setup.uniqueTokens());
     body = recordable(body, interaction, mine, setup.uniqueTokens());
 
@@ -350,7 +460,11 @@ class GoldenMasterRecordingTest {
   }
 
   private static String expand(String template, Map<String, String> params) {
-    Matcher m = TEMPLATE_PARAM.matcher(template);
+    return expand(template, params, TEMPLATE_PARAM);
+  }
+
+  private static String expand(String template, Map<String, String> params, Pattern param) {
+    Matcher m = param.matcher(template);
     StringBuilder out = new StringBuilder();
     while (m.find()) {
       String value = params.get(m.group(1));
@@ -358,10 +472,36 @@ class GoldenMasterRecordingTest {
         throw new IllegalStateException(
             "Path " + template + " names {" + m.group(1) + "}, which the state does not return");
       }
-      m.appendReplacement(out, Matcher.quoteReplacement(value));
+      String replacement =
+          param == BODY_PARAM ? JsonNodeFactory.instance.textNode(value).toString() : value;
+      m.appendReplacement(out, Matcher.quoteReplacement(replacement));
     }
     m.appendTail(out);
     return out.toString();
+  }
+
+  /** The operationIds whose operation declares a request body, read off the served openapi. */
+  private static Set<String> operationsTakingABody() throws IOException {
+    JsonNode paths =
+        JSON.readTree(
+                given()
+                    .when()
+                    .get("/deployments/q/openapi?format=json")
+                    .then()
+                    .statusCode(200)
+                    .extract()
+                    .asString())
+            .path("paths");
+    Set<String> ids = new TreeSet<>();
+    paths.forEach(
+        path ->
+            path.forEach(
+                operation -> {
+                  if (operation.has("operationId") && operation.has("requestBody")) {
+                    ids.add(operation.get("operationId").asText());
+                  }
+                }));
+    return ids;
   }
 
   private static ArrayNode strings(List<String> values) {

@@ -1,0 +1,10 @@
+{
+  "claims": [
+    {
+      "clientId": "contract-00000001-contract-app-00000001",
+      "applicationName": "contract-app-00000001",
+      "environmentName": "contract-00000001",
+      "createdAt": "2026-01-01T00:00:00Z"
+    }
+  ]
+}

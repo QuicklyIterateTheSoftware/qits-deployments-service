@@ -118,4 +118,29 @@ class ConsumerPactVerificationTest {
   Map<String, String> anApplicationDeployed() {
     return states.params(ProviderStates.AN_APPLICATION_DEPLOYED);
   }
+
+  @State(ProviderStates.THE_PLATFORM_ENVIRONMENT)
+  Map<String, String> thePlatformEnvironment() {
+    return states.params(ProviderStates.THE_PLATFORM_ENVIRONMENT);
+  }
+
+  @State(ProviderStates.NO_ENVIRONMENT_OF_THE_NAME)
+  Map<String, String> noEnvironmentOfTheName() {
+    return states.params(ProviderStates.NO_ENVIRONMENT_OF_THE_NAME);
+  }
+
+  @State(ProviderStates.A_RELEASED_VERSION)
+  Map<String, String> aReleasedVersion() {
+    return states.params(ProviderStates.A_RELEASED_VERSION);
+  }
+
+  @State(ProviderStates.AN_APPLICATION_WITH_A_ROLLBACK)
+  Map<String, String> anApplicationWithARollback() {
+    return states.params(ProviderStates.AN_APPLICATION_WITH_A_ROLLBACK);
+  }
+
+  @State(ProviderStates.AN_APPLICATION_HOLDING_A_SERVICE_CLIENT)
+  Map<String, String> anApplicationHoldingAServiceClient() {
+    return states.params(ProviderStates.AN_APPLICATION_HOLDING_A_SERVICE_CLIENT);
+  }
 }

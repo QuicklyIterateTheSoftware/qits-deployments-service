@@ -79,9 +79,9 @@ public final class Freezer {
     return this;
   }
 
-  /** The frozen form of a param value: its UUIDs through the same mapping as the answer. */
+  /** A state param, frozen as an answer's string is: its ids and its unique tokens. */
   public String freezeParam(String value) {
-    return freezeIds(value);
+    return freezeTokens(freezeIds(value));
   }
 
   public JsonNode freeze(JsonNode node) {

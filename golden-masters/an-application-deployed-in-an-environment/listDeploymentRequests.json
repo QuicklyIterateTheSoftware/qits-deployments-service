@@ -1,0 +1,20 @@
+{
+  "deploymentRequests": [
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "applicationName": "contract-app-00000001",
+      "version": "2026.101.120000",
+      "environmentId": "00000000-0000-4000-8000-000000000001",
+      "packageName": null,
+      "priority": null,
+      "repoId": "contract-app-00000001",
+      "projectId": null,
+      "qualityGate": "MET",
+      "gateDetail": null,
+      "deploymentId": "00000000-0000-4000-8000-000000000003",
+      "createdAt": "2026-01-01T00:00:00Z",
+      "gateSettledAt": "2026-01-01T00:00:00Z",
+      "deploymentStatus": "ACTIVE"
+    }
+  ]
+}
