@@ -199,7 +199,7 @@ public class PdEnvironmentController {
    * Every read on this surface is; no write is.
    */
   @GET
-  @Operation(summary = "List environments")
+  @Operation(operationId = "listEnvironments", summary = "List environments")
   // The 200 is spelled out because declaring ANY response suppresses the generated one, and this
   // operation had only the generated one — leaving it off would drop the schema from the document.
   @APIResponse(responseCode = "200", description = "The environments")
@@ -213,7 +213,7 @@ public class PdEnvironmentController {
 
   @GET
   @Path("/{environmentId}")
-  @Operation(summary = "One environment with the applications it tracks")
+  @Operation(operationId = "getEnvironment", summary = "One environment with the applications it tracks")
   @APIResponse(responseCode = "200", description = "The environment")
   @APIResponse(responseCode = "404", description = "No such environment")
   @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:agent"})

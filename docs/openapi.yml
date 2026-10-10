@@ -553,6 +553,7 @@ paths:
   /deployments/api/deployments:
     get:
       summary: "One tier's recorded deployments, newest-first"
+      operationId: listDeployments
       parameters:
       - name: environmentId
         in: query
@@ -583,6 +584,7 @@ paths:
   /deployments/api/environments:
     get:
       summary: List environments
+      operationId: listEnvironments
       responses:
         "200":
           description: The environments
@@ -665,6 +667,7 @@ paths:
         - qits:system
     get:
       summary: One environment with the applications it tracks
+      operationId: getEnvironment
       parameters:
       - name: environmentId
         in: path
@@ -748,6 +751,7 @@ paths:
   /deployments/api/pins:
     get:
       summary: "The image shas deployments pin: what serves, and what a rollback restores"
+      operationId: listPins
       responses:
         "200":
           description: One entry per application name serving somewhere; an application
@@ -847,4 +851,4 @@ paths:
         - qits:system
 info:
   title: qits-platform-deployments API
-  version: 2026.1003.202514
+  version: 2026.1008.164327

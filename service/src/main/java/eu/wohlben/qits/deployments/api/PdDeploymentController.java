@@ -43,6 +43,7 @@ public class PdDeploymentController {
 
   @GET
   @Operation(
+      operationId = "listDeployments",
       summary = "One tier's recorded deployments, newest-first")
   @APIResponse(responseCode = "200", description = "The deployments")
   @APIResponse(responseCode = "400", description = "environmentId was not given")

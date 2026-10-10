@@ -49,7 +49,9 @@ public class PdPinController {
   public record ListPinsResponse(List<PdPinDto> pins) {}
 
   @GET
-  @Operation(summary = "The image shas deployments pin: what serves, and what a rollback restores")
+  @Operation(
+      operationId = "listPins",
+      summary = "The image shas deployments pin: what serves, and what a rollback restores")
   @APIResponse(
       responseCode = "200",
       description =
