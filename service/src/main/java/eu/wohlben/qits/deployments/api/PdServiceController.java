@@ -86,7 +86,7 @@ public class PdServiceController {
    */
   @PUT
   @Path("/{name}")
-  @Operation(summary = "Register or update one service, replacing its environment links")
+  @Operation(operationId = "upsertService", summary = "Register or update one service, replacing its environment links")
   @APIResponse(responseCode = "200", description = "The updated service")
   @APIResponse(responseCode = "201", description = "The newly registered service")
   @APIResponse(responseCode = "400", description = "Validation failed")
@@ -124,7 +124,7 @@ public class PdServiceController {
    * reporting would be a second row.
    */
   @GET
-  @Operation(summary = "Every service, with the environments each is linked into")
+  @Operation(operationId = "listServices", summary = "Every service, with the environments each is linked into")
   @APIResponse(responseCode = "200", description = "The services")
   @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:agent"})
   public ListServicesResponse list() {
@@ -144,7 +144,7 @@ public class PdServiceController {
    */
   @DELETE
   @Path("/{name}")
-  @Operation(summary = "Remove a service and its links")
+  @Operation(operationId = "deleteService", summary = "Remove a service and its links")
   @APIResponse(responseCode = "204", description = "Removed")
   @APIResponse(responseCode = "404", description = "No such service")
   @APIResponse(responseCode = "401", description = "Gate on and no machine token presented")

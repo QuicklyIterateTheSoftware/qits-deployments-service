@@ -119,6 +119,7 @@ public class PdDeploymentRequestController {
 
   @GET
   @Operation(
+      operationId = "listDeploymentRequests",
       summary =
           "Deployment requests, newest-first — by environment, by project, or by (repository,"
               + " version)")
@@ -165,7 +166,7 @@ public class PdDeploymentRequestController {
 
   @GET
   @Path("/{id}")
-  @Operation(summary = "One deployment request, with the deployment it produced")
+  @Operation(operationId = "getDeploymentRequest", summary = "One deployment request, with the deployment it produced")
   @APIResponse(responseCode = "200", description = "The request")
   @APIResponse(responseCode = "404", description = "No such deployment request")
   public DeploymentRequestResponse byId(@PathParam("id") String id) {

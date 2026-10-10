@@ -113,7 +113,7 @@ public class PdApplicationController {
 
   /** Held through a short database outage rather than answering 500 — see {@link PdReadPatience}. */
   @GET
-  @Operation(summary = "Every application deployed here — environment applications and platform services")
+  @Operation(operationId = "listApplications", summary = "Every application deployed here — environment applications and platform services")
   @APIResponse(responseCode = "200", description = "The applications, one entry per tier")
   @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:agent"})
   public ListApplicationsResponse list() {
@@ -136,7 +136,7 @@ public class PdApplicationController {
   @POST
   @Path("/{applicationId}/scale")
   @Consumes(MediaType.APPLICATION_JSON)
-  @Operation(summary = "Scale an application's workload — 0 stops it, 1 runs it")
+  @Operation(operationId = "scaleApplication", summary = "Scale an application's workload — 0 stops it, 1 runs it")
   @APIResponse(responseCode = "202", description = "Queued on the deploy worker")
   @APIResponse(responseCode = "400", description = "No replica count, a negative one, or one above the single task every application here is deployed as")
   @APIResponse(responseCode = "404", description = "Nothing has ever been deployed for this application")
@@ -161,7 +161,7 @@ public class PdApplicationController {
    */
   @POST
   @Path("/{applicationId}/restart")
-  @Operation(summary = "Restart an application in place — its tasks are replaced, its deployment is not")
+  @Operation(operationId = "restartApplication", summary = "Restart an application in place — its tasks are replaced, its deployment is not")
   @APIResponse(responseCode = "202", description = "Queued on the deploy worker")
   @APIResponse(responseCode = "400", description = "Not an application id")
   @APIResponse(responseCode = "404", description = "Nothing has ever been deployed for this application")
@@ -193,7 +193,7 @@ public class PdApplicationController {
    */
   @POST
   @Path("/{applicationId}/decommission")
-  @Operation(summary = "Retire an application — its current row becomes DECOMMISSIONED, nothing is deleted")
+  @Operation(operationId = "decommissionApplication", summary = "Retire an application — its current row becomes DECOMMISSIONED, nothing is deleted")
   @APIResponse(responseCode = "200", description = "Retired; the rows it settled are named")
   @APIResponse(responseCode = "400", description = "Not an application id")
   @APIResponse(responseCode = "404", description = "Nothing has ever been deployed for this application")

@@ -47,6 +47,7 @@ public class PdIdpClientClaimController {
 
   @GET
   @Operation(
+      operationId = "listIdpClientClaims",
       summary =
           "Every idp-client row this component holds, ordered by clientId — qits-idp's read for"
               + " telling a claimed client id apart from an orphaned one")

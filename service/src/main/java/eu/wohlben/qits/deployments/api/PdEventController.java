@@ -14,6 +14,7 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.openapi.annotations.Operation;
+import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 
 /**
  * The release intake — the <b>manual and bootstrap</b> door. {@code POST
@@ -40,7 +41,8 @@ import org.eclipse.microprofile.openapi.annotations.Operation;
  * service. Here it still deploys with the defaults: one of the things this door is for is a tag cut
  * before the file existed anywhere, and somebody typed this version on purpose.
  *
- * <p>Hidden from the OpenAPI document (a wire/system API).
+ * <p>In the OpenAPI document as {@code softwareReleased}, so consumer pacts (qits-bootstrap-cli,
+ * qits-projects-service) can name it. It is still a machine door: the role below says so.
  *
  * <p><b>{@code qits:system} and {@link MachineAuth#require()} are both here because nothing human
  * reaches this path</b> — its callers are machines and bootstraps, so a bearer is the only
@@ -118,7 +120,12 @@ public class PdEventController {
    */
   @POST
   @Path("/software-released")
-  @Operation(hidden = true)
+  @Operation(
+      operationId = "softwareReleased",
+      summary = "Announce one released version of one application; it deploys on the worker")
+  @APIResponse(responseCode = "202", description = "Accepted; the deployment runs on the worker")
+  @APIResponse(responseCode = "400", description = "No repoId or no version")
+  @APIResponse(responseCode = "401", description = "Gate on and no machine token presented")
   public Response softwareReleased(@Valid SoftwareReleasedEvent event) {
     machineAuth.require();
     // The cause is read HERE, on the request thread, because that is the only place it exists:

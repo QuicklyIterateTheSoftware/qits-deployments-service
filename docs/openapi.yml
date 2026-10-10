@@ -301,6 +301,28 @@ components:
         replicas:
           type: integer
           format: int32
+    SoftwareReleasedEvent:
+      type: object
+      required:
+      - repoId
+      - version
+      properties:
+        runId:
+          type: string
+        repoId:
+          type: string
+          pattern: \S
+        projectId:
+          type: string
+        repoName:
+          type: string
+        application:
+          type: string
+        version:
+          type: string
+          pattern: \S
+        priority:
+          type: string
     UpdateEnvironmentRequest:
       type: object
       properties:
@@ -334,6 +356,7 @@ paths:
     get:
       summary: Every application deployed here — environment applications and platform
         services
+      operationId: listApplications
       responses:
         "200":
           description: "The applications, one entry per tier"
@@ -356,6 +379,7 @@ paths:
     post:
       summary: "Retire an application — its current row becomes DECOMMISSIONED, nothing\
         \ is deleted"
+      operationId: decommissionApplication
       parameters:
       - name: applicationId
         in: path
@@ -390,6 +414,7 @@ paths:
     post:
       summary: "Restart an application in place — its tasks are replaced, its deployment\
         \ is not"
+      operationId: restartApplication
       parameters:
       - name: applicationId
         in: path
@@ -418,6 +443,7 @@ paths:
   /deployments/api/applications/{applicationId}/scale:
     post:
       summary: "Scale an application's workload — 0 stops it, 1 runs it"
+      operationId: scaleApplication
       parameters:
       - name: applicationId
         in: path
@@ -454,6 +480,7 @@ paths:
     get:
       summary: "Every idp-client row this component holds, ordered by clientId — qits-idp's\
         \ read for telling a claimed client id apart from an orphaned one"
+      operationId: listIdpClientClaims
       responses:
         "200":
           description: "One entry per pd_resource row of type idp-client, including\
@@ -476,6 +503,7 @@ paths:
     get:
       summary: "Deployment requests, newest-first — by environment, by project, or\
         \ by (repository, version)"
+      operationId: listDeploymentRequests
       parameters:
       - name: applicationName
         in: query
@@ -523,6 +551,7 @@ paths:
   /deployments/api/deployment-requests/{id}:
     get:
       summary: "One deployment request, with the deployment it produced"
+      operationId: getDeploymentRequest
       parameters:
       - name: id
         in: path
@@ -605,6 +634,7 @@ paths:
         - qits:agent
     post:
       summary: "Create an environment: a name and a bundle network"
+      operationId: createEnvironment
       requestBody:
         content:
           application/json:
@@ -630,6 +660,7 @@ paths:
   /deployments/api/environments/{environmentId}:
     patch:
       summary: "Rename an environment, or designate it the platform environment"
+      operationId: updateEnvironment
       parameters:
       - name: environmentId
         in: path
@@ -696,6 +727,7 @@ paths:
         - qits:agent
     delete:
       summary: "Tear an environment down (rows, containers, networks)"
+      operationId: deleteEnvironment
       parameters:
       - name: environmentId
         in: path
@@ -722,6 +754,7 @@ paths:
     get:
       summary: "Every service present in this environment: its links, plus every platform\
         \ service"
+      operationId: listEnvironmentLinks
       parameters:
       - name: environmentId
         in: path
@@ -748,6 +781,31 @@ paths:
         - qits:admin
         - qits:admin-agent
         - qits:agent
+  /deployments/api/events/software-released:
+    post:
+      summary: Announce one released version of one application; it deploys on the
+        worker
+      operationId: softwareReleased
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SoftwareReleasedEvent"
+        required: true
+      responses:
+        "202":
+          description: Accepted; the deployment runs on the worker
+        "400":
+          description: No repoId or no version
+        "401":
+          description: Gate on and no machine token presented
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Event Controller
+      security:
+      - SecurityScheme:
+        - qits:system
   /deployments/api/pins:
     get:
       summary: "The image shas deployments pin: what serves, and what a rollback restores"
@@ -773,6 +831,7 @@ paths:
   /deployments/api/services:
     get:
       summary: "Every service, with the environments each is linked into"
+      operationId: listServices
       responses:
         "200":
           description: The services
@@ -794,6 +853,7 @@ paths:
   /deployments/api/services/{name}:
     put:
       summary: "Register or update one service, replacing its environment links"
+      operationId: upsertService
       parameters:
       - name: name
         in: path
@@ -829,6 +889,7 @@ paths:
         - qits:system
     delete:
       summary: Remove a service and its links
+      operationId: deleteService
       parameters:
       - name: name
         in: path

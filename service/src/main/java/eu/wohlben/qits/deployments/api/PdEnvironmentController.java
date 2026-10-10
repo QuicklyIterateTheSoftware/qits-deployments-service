@@ -137,7 +137,7 @@ public class PdEnvironmentController {
   public record ListLinksResponse(List<PdLinkedServiceDto> services) {}
 
   @POST
-  @Operation(summary = "Create an environment: a name and a bundle network")
+  @Operation(operationId = "createEnvironment", summary = "Create an environment: a name and a bundle network")
   @APIResponse(responseCode = "201", description = "Created; a release may now be deployed into it")
   @APIResponse(responseCode = "400", description = "A name or network failed validation")
   @APIResponse(responseCode = "409", description = "An environment of that name already exists")
@@ -171,7 +171,7 @@ public class PdEnvironmentController {
    */
   @PATCH
   @Path("/{environmentId}")
-  @Operation(summary = "Rename an environment, or designate it the platform environment")
+  @Operation(operationId = "updateEnvironment", summary = "Rename an environment, or designate it the platform environment")
   @APIResponse(responseCode = "200", description = "The updated environment")
   @APIResponse(responseCode = "400", description = "A name failed validation")
   @APIResponse(responseCode = "404", description = "No such environment")
@@ -237,7 +237,7 @@ public class PdEnvironmentController {
    */
   @GET
   @Path("/{environmentId}/links")
-  @Operation(summary = "Every service present in this environment: its links, plus every platform service")
+  @Operation(operationId = "listEnvironmentLinks", summary = "Every service present in this environment: its links, plus every platform service")
   @APIResponse(responseCode = "200", description = "The services present in this environment")
   @APIResponse(responseCode = "404", description = "No such environment")
   @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:agent"})
@@ -261,7 +261,7 @@ public class PdEnvironmentController {
    */
   @DELETE
   @Path("/{environmentId}")
-  @Operation(summary = "Tear an environment down (rows, containers, networks)")
+  @Operation(operationId = "deleteEnvironment", summary = "Tear an environment down (rows, containers, networks)")
   @APIResponse(responseCode = "204", description = "Torn down")
   @APIResponse(responseCode = "404", description = "No such environment")
   @APIResponse(responseCode = "409", description = "This is the platform environment")
