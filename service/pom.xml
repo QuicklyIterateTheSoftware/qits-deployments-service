@@ -214,6 +214,19 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- The consumer pacts (pacts/ in the tests): plain JUnit 5 against a pact mock server.
+                 The clients talk over the JDK's HttpClient, so nothing needs Quarkus to run. -->
+            <groupId>au.com.dius.pact.consumer</groupId>
+            <artifactId>junit5</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- qits-events' golden masters: the answers the events pact is built from. -->
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-events-golden-masters</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <!-- The store every @QuarkusTest here boots against. Zonky spawns real postgres
                  binaries as a child process — a maven dependency rather than a container — which
                  is what keeps the clone-alone, docker-free rule true now that the component's

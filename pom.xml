@@ -79,6 +79,12 @@
              idp.MockIdp), published by qits-integrations-quarkus beside qits-auth-core,
              qits-arch-rules and qits-db-core above. -->
         <qits.service-mock.version>2026.1002.70617</qits.service-mock.version>
+        <!-- pact-jvm, for this repository's consumer pacts (service/src/test/.../pacts/): the version
+             every provider on the estate verifies with, so the pacts are read the same way. -->
+        <pact.version>4.6.21</pact.version>
+        <!-- THE PROVIDERS' GOLDEN MASTERS, test scope: what each provider records for its states,
+             read by the consumer pacts. Moves like every internal pin. -->
+        <qits.events-golden-masters.version>2026.1002.210125</qits.events-golden-masters.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -238,6 +244,18 @@
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-service-mock</artifactId>
                 <version>${qits.service-mock.version}</version>
+            </dependency>
+            <dependency>
+                <!-- The consumer half of the pacts. Test scope, `service/` only. -->
+                <groupId>au.com.dius.pact.consumer</groupId>
+                <artifactId>junit5</artifactId>
+                <version>${pact.version}</version>
+            </dependency>
+            <dependency>
+                <!-- qits-events' recorded answers. Test scope: recordings, never code. -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-events-golden-masters</artifactId>
+                <version>${qits.events-golden-masters.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
