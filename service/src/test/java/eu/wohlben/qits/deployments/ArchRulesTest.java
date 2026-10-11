@@ -5,6 +5,7 @@ import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
 import com.tngtech.archunit.junit.ArchTests;
 import eu.wohlben.qits.archrules.CausationRowRules;
+import eu.wohlben.qits.archrules.HttpClientRules;
 
 /**
  * The platform's shared ArchUnit rules over this component's classes. Today that is the
@@ -32,4 +33,6 @@ import eu.wohlben.qits.archrules.CausationRowRules;
 class ArchRulesTest {
 
   @ArchTest static final ArchTests CAUSATION = ArchTests.in(CausationRowRules.class);
+
+  @ArchTest static final ArchTests HTTP_CLIENTS = ArchTests.in(HttpClientRules.class);
 }
