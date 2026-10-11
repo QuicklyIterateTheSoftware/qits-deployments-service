@@ -73,7 +73,7 @@
              outbound java.net.http.HttpClient this repo builds to another qits service, the same
              way quarkus-opentelemetry already does for the REST client. Published by
              qits-integrations-quarkus, same publisher as qits-auth-core and qits-db-core above. -->
-        <qits.http-core.version>0-qits-1198-local</qits.http-core.version>
+        <qits.http-core.version>2026.1011.185745</qits.http-core.version>
         <!-- The user-story framework (test scope): this repo's story catalogue is written as
              @UserStory methods, so a `mvn verify -DskipITs=false` also regenerates
              service/target/userstories/ — the story logs and their network diagrams, which are
