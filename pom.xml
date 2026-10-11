@@ -61,11 +61,11 @@
              and it stays one line: the release train's follow-bump step
              (.config/qits/ci-event-upstream-eventstream.yml) rewrites exactly this element with a
              `sed`, so a second spelling of the version anywhere would be left behind. -->
-        <qits.eventstream.version>2026.1003.44717</qits.eventstream.version>
+        <qits.eventstream.version>2026.1011.64434</qits.eventstream.version>
         <qits.auth-core.version>2026.1002.70617</qits.auth-core.version>
         <!-- The platform's shared ArchUnit rules, published by qits-integrations-quarkus beside
              qits-auth-core. Test scope wherever entities live — see service/pom.xml. -->
-        <qits.arch-rules.version>2026.1002.70617</qits.arch-rules.version>
+        <qits.arch-rules.version>2026.1011.185745</qits.arch-rules.version>
         <!-- The platform's database patience, published beside the two above: PatientPgDriver (the
              datasource's driver line) and DbRetry (the worker's brackets). -->
         <qits.db-core.version>2026.1002.70617</qits.db-core.version>
@@ -91,7 +91,7 @@
         <!-- THE PROVIDERS' GOLDEN MASTERS, test scope: what each provider records for its states,
              read by the consumer pacts. Moves like every internal pin. -->
         <qits.idp-golden-masters.version>2026.1010.134259</qits.idp-golden-masters.version>
-        <qits.configuration-golden-masters.version>2026.1010.143209</qits.configuration-golden-masters.version>
+        <qits.configuration-golden-masters.version>2026.1011.84651</qits.configuration-golden-masters.version>
         <!-- The one golden-master reader for Java consumers, from qits-integrations-quarkus. -->
         <qits.pact-consumer.version>2026.1010.141817</qits.pact-consumer.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
