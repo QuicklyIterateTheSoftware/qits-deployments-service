@@ -116,6 +116,13 @@
             <artifactId>qits-db-core</artifactId>
         </dependency>
         <dependency>
+            <!-- The four internal raw clients (confighost, githost, idphost) wrap their outbound
+                 HttpClient through QitsHttpClients, and this is the app module whose jandex index
+                 CallerServerFilter / CallerClientFilter need to be discovered from. -->
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-http-core</artifactId>
+        </dependency>
+        <dependency>
             <!-- Bearer validation against qits-platform-idp. qits-auth-core deliberately does NOT
                  bring it: validating a token is each service's own choice of extension and config,
                  and the jar only reads the identity that validation leaves behind. Configured in

@@ -2,6 +2,8 @@ package eu.wohlben.qits.deployments.confighost;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import eu.wohlben.qits.http.QitsHttpClients;
+import io.opentelemetry.api.OpenTelemetry;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -179,6 +181,7 @@ public final class ExtrasStub implements AutoCloseable {
     source.attempts = 1;
     source.bearer = bearer;
     source.retryPauseMillis = 0;
+    source.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
     return source;
   }
 
@@ -201,6 +204,7 @@ public final class ExtrasStub implements AutoCloseable {
     seed.attempts = 1;
     seed.bearer = bearer;
     seed.retryPauseMillis = 0;
+    seed.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
     return seed;
   }
 

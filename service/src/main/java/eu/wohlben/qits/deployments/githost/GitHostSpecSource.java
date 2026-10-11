@@ -4,7 +4,9 @@ import eu.wohlben.qits.deployments.deployments.control.DeploymentSpecParser;
 import eu.wohlben.qits.deployments.deployments.control.RepositoryRef;
 import eu.wohlben.qits.deployments.deployments.control.SpecException;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource;
+import eu.wohlben.qits.http.QitsHttpClients;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -83,12 +85,16 @@ public class GitHostSpecSource implements SpecSource {
   @ConfigProperty(name = "qits.deployments.git-host-timeout-seconds")
   long timeoutSeconds;
 
+  @Inject QitsHttpClients clients;
+
   /**
    * One client for the life of the process, the sibling's arrangement (qits-ci's {@code
    * HttpGitConfigSource} holds one too). A {@code HttpClient} owns a selector thread and a
    * connection pool, so building one per green build spends both on a single request; built lazily
    * because the timeout it is configured with is a config value, and config is not injected yet
-   * when the field initialiser would run.
+   * when the field initialiser would run — {@code clients} is the same case, so the wrap happens
+   * here too. Wrapped through {@link QitsHttpClients} so this call to the git host opens a CLIENT
+   * span and carries {@code X-Qits-Caller}.
    */
   private volatile HttpClient client;
 
@@ -99,7 +105,8 @@ public class GitHostSpecSource implements SpecSource {
         existing = client;
         if (existing == null) {
           existing =
-              HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(timeoutSeconds)).build();
+              clients.wrap(
+                  HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(timeoutSeconds)).build());
           client = existing;
         }
       }

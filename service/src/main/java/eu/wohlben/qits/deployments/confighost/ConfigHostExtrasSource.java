@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentExtrasSource;
 import eu.wohlben.qits.deployments.deployments.control.ExtrasSnapshot;
 import eu.wohlben.qits.deployments.deployments.control.ServiceExtras;
+import eu.wohlben.qits.http.QitsHttpClients;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URI;
@@ -114,6 +115,8 @@ public class ConfigHostExtrasSource implements DeploymentExtrasSource {
 
   @Inject ExtrasBearer bearer;
 
+  @Inject QitsHttpClients clients;
+
   /**
    * How long a failed attempt waits before the next. Package-private rather than a key: it is an
    * implementation detail of the budget above, and the suite zeroes it so a refusal test costs no
@@ -121,7 +124,11 @@ public class ConfigHostExtrasSource implements DeploymentExtrasSource {
    */
   long retryPauseMillis = 1000;
 
-  /** One client for the life of the process, {@code GitHostSpecSource}'s arrangement and its why. */
+  /**
+   * One client for the life of the process, {@code GitHostSpecSource}'s arrangement and its why.
+   * Wrapped through {@link QitsHttpClients} so this call to qits-configuration opens a CLIENT span
+   * and carries {@code X-Qits-Caller}, like every other internal client in this component.
+   */
   private volatile HttpClient client;
 
   private HttpClient client() {
@@ -131,7 +138,8 @@ public class ConfigHostExtrasSource implements DeploymentExtrasSource {
         existing = client;
         if (existing == null) {
           existing =
-              HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(timeoutSeconds)).build();
+              clients.wrap(
+                  HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(timeoutSeconds)).build());
           client = existing;
         }
       }

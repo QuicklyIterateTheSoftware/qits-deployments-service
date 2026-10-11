@@ -69,6 +69,11 @@
         <!-- The platform's database patience, published beside the two above: PatientPgDriver (the
              datasource's driver line) and DbRetry (the worker's brackets). -->
         <qits.db-core.version>2026.1002.70617</qits.db-core.version>
+        <!-- qits-http-core: QitsHttpClients.wrap puts a CLIENT span and X-Qits-Caller on every
+             outbound java.net.http.HttpClient this repo builds to another qits service, the same
+             way quarkus-opentelemetry already does for the REST client. Published by
+             qits-integrations-quarkus, same publisher as qits-auth-core and qits-db-core above. -->
+        <qits.http-core.version>0-qits-1198-local</qits.http-core.version>
         <!-- The user-story framework (test scope): this repo's story catalogue is written as
              @UserStory methods, so a `mvn verify -DskipITs=false` also regenerates
              service/target/userstories/ — the story logs and their network diagrams, which are
@@ -234,6 +239,12 @@
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-db-core</artifactId>
                 <version>${qits.db-core.version}</version>
+            </dependency>
+            <dependency>
+                <!-- QitsHttpClients, CallerServerFilter/CallerClientFilter and @RawHttpClient. -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-http-core</artifactId>
+                <version>${qits.http-core.version}</version>
             </dependency>
             <dependency>
                 <!-- The userflow framework. Test scope, in `service/` only: the story runs against

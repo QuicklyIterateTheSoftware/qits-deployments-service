@@ -2,6 +2,7 @@ package eu.wohlben.qits.deployments.confighost;
 
 import eu.wohlben.qits.deployments.deployments.control.DeclarationRefused;
 import eu.wohlben.qits.deployments.deployments.control.DeclarationSeed;
+import eu.wohlben.qits.http.QitsHttpClients;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URI;
@@ -98,6 +99,8 @@ public class ConfigHostDeclarationSeed implements DeclarationSeed {
 
   @Inject ExtrasBearer bearer;
 
+  @Inject QitsHttpClients clients;
+
   /**
    * How long a failed attempt waits before the next. Package-private rather than a key, {@link
    * ConfigHostExtrasSource}'s arrangement: it is an implementation detail of the budget above, and
@@ -105,7 +108,11 @@ public class ConfigHostDeclarationSeed implements DeclarationSeed {
    */
   long retryPauseMillis = 1000;
 
-  /** One client for the life of the process, {@code GitHostSpecSource}'s arrangement and its why. */
+  /**
+   * One client for the life of the process, {@code GitHostSpecSource}'s arrangement and its why.
+   * Wrapped through {@link QitsHttpClients} so this call to qits-configuration opens a CLIENT span
+   * and carries {@code X-Qits-Caller}, like every other internal client in this component.
+   */
   private volatile HttpClient client;
 
   private HttpClient client() {
@@ -115,7 +122,8 @@ public class ConfigHostDeclarationSeed implements DeclarationSeed {
         existing = client;
         if (existing == null) {
           existing =
-              HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(timeoutSeconds)).build();
+              clients.wrap(
+                  HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(timeoutSeconds)).build());
           client = existing;
         }
       }

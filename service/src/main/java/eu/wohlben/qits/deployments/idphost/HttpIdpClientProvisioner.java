@@ -5,8 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.deployments.deployments.control.IdpClientProvisioner;
 import eu.wohlben.qits.deployments.deployments.control.ResourceException;
 import eu.wohlben.qits.deployments.environments.control.PdNetworks;
+import eu.wohlben.qits.http.QitsHttpClients;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -132,7 +134,13 @@ public class HttpIdpClientProvisioner implements IdpClientProvisioner {
   /** How long a failed attempt waits before the next — the declaration seed's arrangement. */
   long retryPauseMillis = 1000;
 
-  /** One client for the life of the process, {@code GitHostSpecSource}'s arrangement and its why. */
+  @Inject QitsHttpClients clients;
+
+  /**
+   * One client for the life of the process, {@code GitHostSpecSource}'s arrangement and its why.
+   * Wrapped through {@link QitsHttpClients} so this call to qits-idp opens a CLIENT span and
+   * carries {@code X-Qits-Caller}, like every other internal client in this component.
+   */
   private volatile HttpClient client;
 
   private HttpClient client() {
@@ -142,7 +150,8 @@ public class HttpIdpClientProvisioner implements IdpClientProvisioner {
         existing = client;
         if (existing == null) {
           existing =
-              HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(timeoutSeconds)).build();
+              clients.wrap(
+                  HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(timeoutSeconds)).build());
           client = existing;
         }
       }

@@ -11,6 +11,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import eu.wohlben.qits.deployments.deployments.control.RepositoryRef;
+import eu.wohlben.qits.http.QitsHttpClients;
+import io.opentelemetry.api.OpenTelemetry;
 import eu.wohlben.qits.deployments.deployments.control.SpecException;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource.DeploymentSpec;
@@ -369,6 +371,7 @@ public class GitHostSpecSourceTest {
     GitHostSpecSource source = new GitHostSpecSource();
     source.gitHostUrl = "http://127.0.0.1:" + server.getAddress().getPort();
     source.timeoutSeconds = 5;
+    source.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
     return source;
   }
 
