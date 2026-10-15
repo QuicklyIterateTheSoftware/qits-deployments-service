@@ -61,8 +61,8 @@
              and it stays one line: the release train's follow-bump step
              (.config/qits/ci-event-upstream-eventstream.yml) rewrites exactly this element with a
              `sed`, so a second spelling of the version anywhere would be left behind. -->
-        <qits.eventstream.version>2026.1011.202648</qits.eventstream.version>
-        <qits.auth-core.version>2026.1002.70617</qits.auth-core.version>
+        <qits.eventstream.version>2026.1014.223716</qits.eventstream.version>
+        <qits.auth-core.version>2026.1012.173247</qits.auth-core.version>
         <!-- The platform's shared ArchUnit rules, published by qits-integrations-quarkus beside
              qits-auth-core. Test scope wherever entities live — see service/pom.xml. -->
         <qits.arch-rules.version>2026.1011.185745</qits.arch-rules.version>
@@ -73,7 +73,7 @@
              outbound java.net.http.HttpClient this repo builds to another qits service, the same
              way quarkus-opentelemetry already does for the REST client. Published by
              qits-integrations-quarkus, same publisher as qits-auth-core and qits-db-core above. -->
-        <qits.http-core.version>2026.1011.185745</qits.http-core.version>
+        <qits.http-core.version>2026.1013.64811</qits.http-core.version>
         <!-- The user-story framework (test scope): this repo's story catalogue is written as
              @UserStory methods, so a `mvn verify -DskipITs=false` also regenerates
              service/target/userstories/ — the story logs and their network diagrams, which are
@@ -90,7 +90,7 @@
         <pact.version>4.7.5</pact.version>
         <!-- THE PROVIDERS' GOLDEN MASTERS, test scope: what each provider records for its states,
              read by the consumer pacts. Moves like every internal pin. -->
-        <qits.idp-golden-masters.version>2026.1010.134259</qits.idp-golden-masters.version>
+        <qits.idp-golden-masters.version>2026.1012.180836</qits.idp-golden-masters.version>
         <qits.configuration-golden-masters.version>2026.1011.84651</qits.configuration-golden-masters.version>
         <!-- The one golden-master reader for Java consumers, from qits-integrations-quarkus. -->
         <qits.pact-consumer.version>2026.1010.141817</qits.pact-consumer.version>
