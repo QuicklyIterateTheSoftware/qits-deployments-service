@@ -94,7 +94,7 @@
         <qits.configuration-golden-masters.version>2026.1011.84651</qits.configuration-golden-masters.version>
         <qits.githost-golden-masters.version>2026.1018.135253</qits.githost-golden-masters.version>
         <!-- The one golden-master reader for Java consumers, from qits-integrations-quarkus. -->
-        <qits.pact-consumer.version>2026.1010.141817</qits.pact-consumer.version>
+        <qits.pact-consumer.version>2026.1018.142240</qits.pact-consumer.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
