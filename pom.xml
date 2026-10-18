@@ -61,7 +61,7 @@
              and it stays one line: the release train's follow-bump step
              (.config/qits/ci-event-upstream-eventstream.yml) rewrites exactly this element with a
              `sed`, so a second spelling of the version anywhere would be left behind. -->
-        <qits.eventstream.version>2026.1014.223716</qits.eventstream.version>
+        <qits.eventstream.version>2026.1018.151251</qits.eventstream.version>
         <qits.auth-core.version>2026.1012.173247</qits.auth-core.version>
         <!-- The platform's shared ArchUnit rules, published by qits-integrations-quarkus beside
              qits-auth-core. Test scope wherever entities live — see service/pom.xml. -->
@@ -224,6 +224,14 @@
                      @Uncaused) — see AGENTS.md, "free of the bus's SEAMS". -->
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-eventstream</artifactId>
+                <version>${qits.eventstream.version}</version>
+            </dependency>
+            <dependency>
+                <!-- Test scope at its declaration site (qits-1163): the kit that pacts what
+                     qits-eventstream asks qits-events on this service's behalf. Same release, same
+                     property, as the jar. -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-eventstream-contracts</artifactId>
                 <version>${qits.eventstream.version}</version>
             </dependency>
             <dependency>
