@@ -7,7 +7,7 @@
     <parent>
         <groupId>eu.wohlben.qits</groupId>
         <artifactId>qits-platform-deployments</artifactId>
-        <version>2026.1015.11917</version>
+        <version>2026.1018.151611</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -251,7 +251,8 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <!-- qits-idp's and qits-configuration's golden masters: the answers the pacts bind. -->
+            <!-- qits-idp's, qits-configuration's and qits-githost's golden masters: the answers the
+                 pacts bind. -->
             <groupId>${project.groupId}</groupId>
             <artifactId>qits-idp-golden-masters</artifactId>
             <scope>test</scope>
@@ -259,6 +260,11 @@
         <dependency>
             <groupId>${project.groupId}</groupId>
             <artifactId>qits-configuration-golden-masters</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-githost-golden-masters</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

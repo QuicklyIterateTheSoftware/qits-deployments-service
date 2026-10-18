@@ -43,7 +43,7 @@
          value. It is deliberately NOT a `-SNAPSHOT`: the image build resolves this reactor from
          source, so a snapshot coordinate would only invite a resolver to look for one in a
          repository that will never hold it. -->
-    <version>2026.1015.11917</version>
+    <version>2026.1018.151611</version>
     <packaging>pom</packaging>
     <name>qits-platform-deployments</name>
 
@@ -90,10 +90,11 @@
         <pact.version>4.7.5</pact.version>
         <!-- THE PROVIDERS' GOLDEN MASTERS, test scope: what each provider records for its states,
              read by the consumer pacts. Moves like every internal pin. -->
-        <qits.idp-golden-masters.version>2026.1012.180836</qits.idp-golden-masters.version>
+        <qits.idp-golden-masters.version>2026.1018.142635</qits.idp-golden-masters.version>
         <qits.configuration-golden-masters.version>2026.1011.84651</qits.configuration-golden-masters.version>
+        <qits.githost-golden-masters.version>2026.1018.135253</qits.githost-golden-masters.version>
         <!-- The one golden-master reader for Java consumers, from qits-integrations-quarkus. -->
-        <qits.pact-consumer.version>2026.1010.141817</qits.pact-consumer.version>
+        <qits.pact-consumer.version>2026.1018.142240</qits.pact-consumer.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -298,6 +299,12 @@
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-configuration-golden-masters</artifactId>
                 <version>${qits.configuration-golden-masters.version}</version>
+            </dependency>
+            <dependency>
+                <!-- qits-githost's recorded answers. Test scope: recordings, never code. -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-githost-golden-masters</artifactId>
+                <version>${qits.githost-golden-masters.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
