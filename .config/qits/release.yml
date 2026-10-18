@@ -18,6 +18,8 @@ contracts:
     # (qits-1163), what the qits-eventstream library asks on this service's behalf, written by
     # service/src/test/.../pacts/EventstreamPactTest.
     qits-events-service: { packages: [maven] }
+    # GitHostSpecSource's blob reads of deployments.yml and configuration.yml (qits-1149).
+    qits-githost-service: { packages: [maven] }
     qits-idp-service: { packages: [maven] }
 # THE SITE IS SPELLED, AND IT NAMES THE COMPONENT. `true` derives it from the REPOSITORY name,
 # which would put the retired tier modifier in a storage id and then MOVE that id the day the

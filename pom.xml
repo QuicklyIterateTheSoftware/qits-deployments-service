@@ -90,11 +90,16 @@
         <pact.version>4.7.5</pact.version>
         <!-- THE PROVIDERS' GOLDEN MASTERS, test scope: what each provider records for its states,
              read by the consumer pacts. Moves like every internal pin. -->
-        <qits.idp-golden-masters.version>2026.1018.142635</qits.idp-golden-masters.version>
+        <qits.idp-golden-masters.version>2026.1018.165736</qits.idp-golden-masters.version>
         <qits.configuration-golden-masters.version>2026.1011.84651</qits.configuration-golden-masters.version>
-        <qits.githost-golden-masters.version>2026.1018.135253</qits.githost-golden-masters.version>
+        <qits.githost-golden-masters.version>2026.1018.160706</qits.githost-golden-masters.version>
+        <!-- THE CONSUMER PACTS ConsumerPactVerificationTest verifies (qits-1149): one jar per consumer
+             that commits `pacts/<consumer>_qits-deployments-service.json`, test scope. Exact pins;
+             qits-maintenance bumps each when its consumer releases a changed pact. -->
+        <qits.artifacts-service-pacts-qits-deployments-service.version>2026.1018.153037</qits.artifacts-service-pacts-qits-deployments-service.version>
+        <qits.maintenance-service-pacts-qits-deployments-service.version>2026.1018.165353</qits.maintenance-service-pacts-qits-deployments-service.version>
         <!-- The one golden-master reader for Java consumers, from qits-integrations-quarkus. -->
-        <qits.pact-consumer.version>2026.1018.142240</qits.pact-consumer.version>
+        <qits.pact-consumer.version>2026.1018.164604</qits.pact-consumer.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -305,6 +310,18 @@
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-githost-golden-masters</artifactId>
                 <version>${qits.githost-golden-masters.version}</version>
+            </dependency>
+            <dependency>
+                <!-- Test scope at every declaration site: a consumer's pact, verified by
+                     ConsumerPactVerificationTest. -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-artifacts-service-pacts-qits-deployments-service</artifactId>
+                <version>${qits.artifacts-service-pacts-qits-deployments-service.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-maintenance-service-pacts-qits-deployments-service</artifactId>
+                <version>${qits.maintenance-service-pacts-qits-deployments-service.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

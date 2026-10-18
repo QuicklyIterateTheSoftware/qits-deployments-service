@@ -25,6 +25,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
  * {@link ProviderStates#GATED}, against this application under {@link
  * MachineGuardEnforcedProfile}, where the machine gate is on and the dev user is off. {@link
  * ConsumerPactVerificationTest} verifies every other state.
+ *
+ * <p>{@code @IgnoreNoPactsToVerify} stays here on purpose: no pinned pact names the gated state yet
+ * (qits-bootstrap-cli's seed-health row will, once published), so the filter leaves nothing to run.
  */
 @QuarkusTest
 @TestProfile(MachineGuardEnforcedProfile.class)
