@@ -47,7 +47,8 @@ class IdpTokenMintPactTest {
   /**
    * The port the pact mock server listens on, chosen free once per JVM and kept in a system
    * property: a {@code QuarkusTestProfile} is instantiated in two classloaders, and a static field
-   * is not shared between them (the {@code PdPackagedSurfaceIT} note).
+   * is not shared between them (the {@code PdPackagedSurfaceIT} note). Not a {@code qits.*} name:
+   * the application's {@code qits} config mapping would refuse an unknown key (SRCFG00050).
    */
   static final int PORT = port();
 
@@ -62,7 +63,7 @@ class IdpTokenMintPactTest {
     }
   }
 
-  private static final String PORT_PROPERTY = "qits.test.idp-token-mint-port";
+  private static final String PORT_PROPERTY = "pact.idp-token-mint-port";
 
   /** The {@code qits} client on, as the state's caller, against the mock server. */
   public static class MockIdp implements QuarkusTestProfile {
