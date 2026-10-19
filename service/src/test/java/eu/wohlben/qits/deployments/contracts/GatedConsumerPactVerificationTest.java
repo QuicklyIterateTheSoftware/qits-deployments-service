@@ -3,7 +3,6 @@ package eu.wohlben.qits.deployments.contracts;
 import au.com.dius.pact.provider.junit5.HttpTestTarget;
 import au.com.dius.pact.provider.junit5.PactVerificationContext;
 import au.com.dius.pact.provider.junit5.PactVerificationInvocationContextProvider;
-import au.com.dius.pact.provider.junitsupport.IgnoreNoPactsToVerify;
 import au.com.dius.pact.provider.junitsupport.Provider;
 import au.com.dius.pact.provider.junitsupport.State;
 import au.com.dius.pact.provider.junitsupport.loader.PactFilter;
@@ -26,15 +25,14 @@ import org.junit.jupiter.api.extension.ExtendWith;
  * MachineGuardEnforcedProfile}, where the machine gate is on and the dev user is off. {@link
  * ConsumerPactVerificationTest} verifies every other state.
  *
- * <p>{@code @IgnoreNoPactsToVerify} stays here on purpose: no pinned pact names the gated state yet
- * (qits-bootstrap-cli's seed-health row will, once published), so the filter leaves nothing to run.
+ * <p>qits-bootstrap-cli's pinned pact names the gated state (its seed-health probe of the
+ * software-released door), so the filter always leaves something to run.
  */
 @QuarkusTest
 @TestProfile(MachineGuardEnforcedProfile.class)
 @Provider(ConsumerPactVerificationTest.PROVIDER)
 @PactSource(ClasspathPactLoader.class)
 @PactFilter(ProviderStates.THE_MACHINE_GATE_IS_ON)
-@IgnoreNoPactsToVerify
 class GatedConsumerPactVerificationTest {
 
   static {
@@ -48,17 +46,13 @@ class GatedConsumerPactVerificationTest {
 
   @BeforeEach
   void target(PactVerificationContext context) {
-    if (context != null) {
-      context.setTarget(new HttpTestTarget(base.getHost(), base.getPort()));
-    }
+    context.setTarget(new HttpTestTarget(base.getHost(), base.getPort()));
   }
 
   @TestTemplate
   @ExtendWith(PactVerificationInvocationContextProvider.class)
   void gatedConsumerPactHolds(PactVerificationContext context) {
-    if (context != null) {
-      context.verifyInteraction();
-    }
+    context.verifyInteraction();
   }
 
   @AfterEach

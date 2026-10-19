@@ -32,9 +32,12 @@ import org.junit.jupiter.api.extension.ExtendWith;
  * pins that jar as a test dependency, and qits-maintenance bumps the pin when the consumer releases
  * a changed pact. {@link ClasspathPactLoader} finds them all.
  *
- * <p><b>Pinned today:</b> qits-artifacts-service's pact (its GC plan's pin read) and
- * qits-maintenance-service's ({@code DeployedVersions}' pin read). {@link ClasspathPactLoader#REQUIRED}
- * is true, so a classpath that lost its pinned pacts fails rather than verifying nothing.
+ * <p><b>Pinned today:</b> qits-artifacts-service's pact (its GC plan's pin read),
+ * qits-maintenance-service's ({@code DeployedVersions}' pin read), qits-bootstrap-cli's (the
+ * platform environment's seed and its first release), qits-orchestrator-service's (the GC's pin
+ * and service-client claim reads) and qits-projects-service's (a release's deployment requests and
+ * its software-released notice). {@link ClasspathPactLoader#REQUIRED} is true, so a classpath that
+ * lost its pinned pacts fails rather than verifying nothing.
  *
  * <p>Each interaction runs against this {@code @QuarkusTest} application over real HTTP, as the
  * {@code %test} synthetic user — exactly as {@link GoldenMasterRecordingTest}'s calls run. Every

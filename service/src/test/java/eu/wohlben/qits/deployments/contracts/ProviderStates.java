@@ -5,6 +5,8 @@ import static io.restassured.RestAssured.given;
 import eu.wohlben.qits.deployments.deployments.control.FakeDeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.FakeSpecSource;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource;
+import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.restassured.http.ContentType;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -216,9 +218,16 @@ public class ProviderStates {
   /**
    * Two releases of one application deployed in turn: {@link #NEXT_VERSION} serves and {@link
    * #VERSION}, decommissioned by it, is what a rollback restores. Its pin holds both.
+   *
+   * <p><b>The only application serving anywhere.</b> {@code listPins} answers instance-wide, and
+   * the deployed states leave their designated environments behind, so every application an
+   * earlier state deployed would answer beside this one — with one sha, where a consumer that binds
+   * "a pin carries its serving and its rollback sha" (qits-orchestrator-service's GC) reads two.
+   * The state forgets every deployment row before it seeds, so the answer is its own.
    */
   private Setup anApplicationWithARollback() {
     driver.reset();
+    QuarkusTransaction.requiringNew().run(() -> PdDeployment.deleteAll());
     String token = token();
     String environmentId = createEnvironment("contract-" + token, true);
     String application = "contract-app-" + token;
