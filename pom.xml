@@ -61,7 +61,7 @@
              and it stays one line: the release train's follow-bump step
              (.config/qits/ci-event-upstream-eventstream.yml) rewrites exactly this element with a
              `sed`, so a second spelling of the version anywhere would be left behind. -->
-        <qits.eventstream.version>2026.1018.170159</qits.eventstream.version>
+        <qits.eventstream.version>2026.1019.123026</qits.eventstream.version>
         <qits.auth-core.version>2026.1012.173247</qits.auth-core.version>
         <!-- The platform's shared ArchUnit rules, published by qits-integrations-quarkus beside
              qits-auth-core. Test scope wherever entities live — see service/pom.xml. -->
@@ -90,7 +90,7 @@
         <pact.version>4.7.5</pact.version>
         <!-- THE PROVIDERS' GOLDEN MASTERS, test scope: what each provider records for its states,
              read by the consumer pacts. Moves like every internal pin. -->
-        <qits.idp-golden-masters.version>2026.1018.175524</qits.idp-golden-masters.version>
+        <qits.idp-golden-masters.version>2026.1019.100619</qits.idp-golden-masters.version>
         <qits.configuration-golden-masters.version>2026.1011.84651</qits.configuration-golden-masters.version>
         <qits.githost-golden-masters.version>2026.1019.94801</qits.githost-golden-masters.version>
         <!-- THE CONSUMER PACTS ConsumerPactVerificationTest verifies (qits-1149): one jar per consumer
