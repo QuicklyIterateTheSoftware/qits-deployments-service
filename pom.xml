@@ -92,7 +92,7 @@
              read by the consumer pacts. Moves like every internal pin. -->
         <qits.idp-golden-masters.version>2026.1019.100619</qits.idp-golden-masters.version>
         <qits.configuration-golden-masters.version>2026.1011.84651</qits.configuration-golden-masters.version>
-        <qits.githost-golden-masters.version>2026.1019.94801</qits.githost-golden-masters.version>
+        <qits.githost-golden-masters.version>2026.1020.204038</qits.githost-golden-masters.version>
         <!-- THE CONSUMER PACTS ConsumerPactVerificationTest verifies (qits-1149): one jar per consumer
              that commits `pacts/<consumer>_qits-deployments-service.json`, test scope. Exact pins;
              qits-maintenance bumps each when its consumer releases a changed pact. -->
