@@ -27,6 +27,7 @@ import io.quarkus.test.junit.TestProfile;
 import io.restassured.http.ContentType;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -109,6 +110,7 @@ public class PdDeployPublishTest {
 
     OutboxEvent queued = only("DeploymentQueued");
     OutboxEvent started = only("DeploymentStarted");
+    // Exactly one, and that is a claim: a file that declares no `renamed_from` retires nobody.
     OutboxEvent active = only("DeploymentActive");
 
     // One deployment, one id, three statements about it.
@@ -251,6 +253,69 @@ public class PdDeployPublishTest {
     String payload = only("DeploymentActive").payload;
     assertFalse(payload.contains("browserHost"), payload);
     assertTrue(payload.contains("\"label\":\"No host\""), payload);
+  }
+
+  @Test
+  public void aRenamedApplicationRetiresItsPredecessorsRoutesBeforeAnnouncingItsOwn() {
+    // Nothing else would ever replace the predecessor's snapshot, so the successor withdraws it —
+    // and FIRST, because until it is gone the successor's own paths are a conflict at the edge.
+    String environmentId = createEnvironment("pub-rename");
+    String cause = UUID.randomUUID().toString();
+    specs.script(
+        "repo-pub-rename",
+        new DeploymentSpec(
+            false,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            List.of("/rename"),
+            8080,
+            "rename",
+            true,
+            List.of(new NavigationEntry("platform", "Rename", 1)),
+            null,
+            null,
+            "qits-platform-pub-rename"));
+
+    postRelease("run-pub-rename", "repo-pub-rename", cause);
+    awaitSettled(environmentId, 1);
+
+    List<OutboxEvent> actives =
+        rows().stream()
+            .filter(row -> "DeploymentActive".equals(row.name))
+            .sorted(Comparator.comparing(row -> row.createdAt))
+            .toList();
+    assertEquals(2, actives.size(), "the predecessor's retirement, then the successor's own");
+    OutboxEvent retired = actives.get(0);
+    OutboxEvent active = actives.get(1);
+    assertTrue(retired.createdAt.isBefore(active.createdAt), "the retirement is published first");
+
+    // An explicit empty snapshot is removal at the edge; a host with no routes would be refused,
+    // and a version would have qits-projects finalize a release nobody deployed.
+    assertTrue(
+        retired.payload.contains("\"applicationName\":\"qits-platform-pub-rename\""),
+        retired.payload);
+    assertTrue(retired.payload.contains("\"environmentId\":\"" + environmentId + "\""),
+        retired.payload);
+    assertTrue(retired.payload.contains("\"endpoints\":[]"), retired.payload);
+    assertTrue(retired.payload.contains("\"navigation\":[]"), retired.payload);
+    assertFalse(retired.payload.contains("browserHost"), retired.payload);
+    assertFalse(retired.payload.contains("apiDocsPath"), retired.payload);
+    assertFalse(retired.payload.contains("\"version\""), retired.payload);
+    assertFalse(retired.payload.contains("containerName"), retired.payload);
+    // The successor's deployment, for traceability, and the successor's cause.
+    assertEquals(deploymentIdOf(active), deploymentIdOf(retired));
+    assertEquals(cause, retired.parentId, "the retirement is caused by what caused the successor");
+    assertEquals(cause, active.parentId);
+
+    assertTrue(active.payload.contains("\"applicationName\":\"repo-pub-rename\""), active.payload);
+    assertTrue(active.payload.contains("\"path\":\"/rename\""), active.payload);
+    assertTrue(active.payload.contains("\"browserHost\":\"rename\""), active.payload);
+    assertTrue(active.payload.contains("\"version\":\"" + VERSION + "\""), active.payload);
   }
 
   /** A spec that declares a public surface: routes, the host it asks for, and its placements. */

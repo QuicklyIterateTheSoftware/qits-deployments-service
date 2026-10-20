@@ -1208,8 +1208,9 @@ public class DeployService implements ReleaseAnnouncements {
    *
    * <p>{@code renamedFrom} is the newest of those and the narrowest: the application name this one
    * used to carry, read straight off the file, threaded here so {@code ResourceProvisioning} can
-   * tell a rename from a collision. Null is every file that exists today. It is carried per-place
-   * rather than once per event for the reason every other spec value is — the provisioning call is
+   * tell a rename from a collision and so a successful cutover can retire the predecessor's edge
+   * routes ({@link #announceRetired}). Null is every file that exists today. It is carried
+   * per-place rather than once per event for the reason every other spec value is — both uses are
    * made per target, and a {@link Plan} is plain values.
    */
   record Target(
@@ -2432,9 +2433,9 @@ public class DeployService implements ReleaseAnnouncements {
           resourceProvisioning.ensureAll(
               plan.applicationName(),
               plan.environmentName(),
-              // The declared predecessor, if the file named one. It reaches the provisioning call
-              // and nothing else: an application rename is a new application to every keyed thing
-              // here, and the one thing that MOVES is the resource claim.
+              // The declared predecessor, if the file named one. An application rename is a new
+              // application to every keyed thing here, and the one thing that MOVES is the resource
+              // claim; the only other use is the retirement announced after cutover.
               plan.renamedFrom(),
               plan.resources());
     } catch (RuntimeException e) {
@@ -2628,7 +2629,11 @@ public class DeployService implements ReleaseAnnouncements {
         "Deployed %s@%s into %s (%s)",
         plan.applicationName(), plan.version(), plan.environmentName(), name);
     // Last, so an unreachable qits-events delays nothing this deployment still has to do. The
-    // timestamp is the row's, so announcing late does not make the event late.
+    // timestamp is the row's, so announcing late does not make the event late. A declared
+    // predecessor is retired first — see announceRetired for why the order is the point.
+    if (plan.renamedFrom() != null && !plan.renamedFrom().isBlank()) {
+      announceRetired(plan, cutover.finishedAt());
+    }
     announceActive(plan, name, cutover.finishedAt());
   }
 
@@ -2857,6 +2862,59 @@ public class DeployService implements ReleaseAnnouncements {
                     plan.apiDocsPath(),
                     plan.navigation(),
                     plan.endpoints()),
+                plan.cause()));
+  }
+
+  /**
+   * The {@code renamed_from} predecessor's routes, withdrawn: a {@code DeploymentActive} in the
+   * predecessor's name carrying an explicitly EMPTY endpoint snapshot, which the edge reads as
+   * removal.
+   *
+   * <p><b>Nothing else would ever say it.</b> A rename is a new application to every keyed thing
+   * here, so the predecessor never deploys again and its last snapshot is never replaced — and the
+   * edge rebuilds its table by replaying the stream from epoch, so a route cleaned up by hand comes
+   * straight back on the next restart. Left alone, the edge keeps serving the predecessor's paths
+   * and refuses the successor's own frame as a conflict with them, for good.
+   *
+   * <p><b>It precedes the successor's frame, and the order is the fix.</b> The successor declares
+   * the paths and host the predecessor held, so until the predecessor is retired those are a
+   * conflict; and log order is exactly what a from-epoch replay walks, so the retirement has to sit
+   * before the frame it unblocks every time the log is read, not just this once.
+   *
+   * <p><b>Every field that could claim something is empty or null, each for a reason.</b> No
+   * {@code version}: qits-projects skips a versionless {@code DeploymentActive}, so no release is
+   * finalized for an application that was not deployed. No {@code browserHost} and no {@code
+   * apiDocsPath}: a host with no endpoints is refused by the edge, and a refused frame would poison
+   * the very removal it carries. No commit, run or container, because none of them is the
+   * predecessor's. The {@code deploymentId} is the successor's, for traceability only, and so is
+   * the cause — the retirement is a consequence of this deployment and says so.
+   *
+   * <p><b>It is sent on every cutover, not once.</b> It is idempotent — removing routes that are
+   * already gone is a no-op — so repeating it costs a frame, and it heals the rare case where an
+   * outbox fallback published it after the successor's frame: the next cutover puts it back in
+   * front. {@link #announceAdopted} deliberately does not send it: an adoption re-announces the
+   * snapshot a row recorded and claims nothing that row's own deployment did not, and the next
+   * cutover sends the retirement anyway.
+   */
+  private void announceRetired(Plan plan, Instant finishedAt) {
+    announce(
+        plan.deploymentId(),
+        announcer ->
+            announcer.onActive(
+                new DeploymentActive(
+                    plan.deploymentId(),
+                    plan.renamedFrom(),
+                    plan.environmentId(),
+                    plan.environmentName(),
+                    null,
+                    null,
+                    null,
+                    null,
+                    finishedAt,
+                    null,
+                    null,
+                    List.of(),
+                    List.of()),
                 plan.cause()));
   }
 

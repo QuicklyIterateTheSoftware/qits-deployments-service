@@ -235,8 +235,9 @@ public class ResourceProvisioning {
    * rotate the role, and the rename would take the predecessor down as a side effect. The transfer
    * therefore has to happen inside the same bracket and before that read, and it does.
    *
-   * <p><b>A declared predecessor buys nothing anywhere else, and that is deliberate</b> rather than
-   * an unfinished sweep. The idp-client arm has its own "already provisioned for" and is left exactly
+   * <p><b>A declared predecessor buys nothing else among the resources, and that is deliberate</b>
+   * rather than an unfinished sweep (outside them, {@code DeployService} retires its edge routes at
+   * cutover). The idp-client arm has its own "already provisioned for" and is left exactly
    * as it was — see {@link #ensureIdpClient}, where the reason is written down beside the check.
    *
    * @param renamedFrom the application this one used to be called, or null — which is every file

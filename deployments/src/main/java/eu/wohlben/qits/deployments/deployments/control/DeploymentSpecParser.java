@@ -91,9 +91,11 @@ import java.util.Set;
  * {@code application_name} is rewritten to this one — so the successor is provisioned against the
  * predecessor's database with the <b>stored</b> credential rather than a rotated one, which is the
  * half that keeps the predecessor's own connections working while both are running. Any other
- * mismatch throws exactly as it always did. Everything else about a rename is untouched: a fresh
+ * mismatch throws exactly as it always did. Everything else about a rename is untouched — a fresh
  * service, a fresh alias, fresh deployment rows, and a predecessor an operator scales to zero when
- * they are ready. See {@code ResourceProvisioning.ensureAll} for the transfer's own argument.
+ * they are ready — save one announcement: each successor cutover withdraws the predecessor's edge
+ * routes, which nothing else would ever replace. See {@code ResourceProvisioning.ensureAll} for the
+ * transfer's own argument.
  *
  * <p><b>It is a declaration and never an inference</b>, which is the whole reason it is a key. This
  * component could have guessed — a prefix rule, a similarity test, the previous holder of the

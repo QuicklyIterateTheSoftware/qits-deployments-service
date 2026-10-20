@@ -239,11 +239,12 @@ public interface SpecSource {
    * every file gives today. It is the OTHER half of the sentence above: {@code application} says a
    * repository may be renamed without the platform noticing, and this one says what to do when the
    * <b>application</b> is the thing being renamed — which is a new application to every keyed thing
-   * on the platform, and cannot be anything else. What it buys is one transfer and one only: the
-   * successor inherits the predecessor's {@code pd_resource} claim, so the database the predecessor
-   * is still serving from is the database the successor is provisioned against, with the stored
-   * credential rather than a rotated one. Everything else about a rename stays a new application
-   * beside the old one — see {@code ResourceProvisioning.ensureAll}.
+   * on the platform, and cannot be anything else. What it buys is one transfer: the successor
+   * inherits the predecessor's {@code pd_resource} claim, so the database the predecessor is still
+   * serving from is the database the successor is provisioned against, with the stored credential
+   * rather than a rotated one. Everything else about a rename stays a new application beside the
+   * old one — see {@code ResourceProvisioning.ensureAll} — save one announcement: every successor
+   * cutover withdraws the predecessor's edge routes, which nothing else would ever replace.
    *
    * <p><b>{@code deployBranches} is read and not used here</b>, and that is deliberate — see {@link
    * #deployBranches()}.

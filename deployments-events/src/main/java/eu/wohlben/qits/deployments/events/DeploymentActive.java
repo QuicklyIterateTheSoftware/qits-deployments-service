@@ -39,7 +39,10 @@ import java.util.UUID;
  * <p>{@code occurredAt} is {@code finishedAt}, the value the cutover bookkeeping wrote on the row.
  * The predecessor it decommissioned announces nothing: a deployment being replaced is this event
  * seen from the other side, and a consumer that wants "what is live" reads the newest event per
- * (application, tier).
+ * (application, tier). The one exception is a {@code renamed_from} predecessor, a different
+ * application that will never deploy again: it is announced once per successor cutover, just before
+ * the successor's own event, with an empty endpoint snapshot, no host and no version — its routes
+ * withdrawn rather than replaced.
  */
 public record DeploymentActive(
     UUID eventId,
