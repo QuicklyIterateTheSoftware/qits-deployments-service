@@ -37,6 +37,9 @@ class ConfigHostExtrasSourceTest {
 
   private static final String P = DeploymentDriver.EXTRAS_PREFIX;
 
+  /** The retired spelling, still read by {@code ServiceExtras.of} and still in the boot config. */
+  private static final String LEGACY_P = DeploymentDriver.LEGACY_EXTRAS_PREFIX;
+
   private static final ExtrasBearer NONE = Optional::empty;
 
   /** The tier this deployment is going into — a path segment of the resolved read's address. */
@@ -136,6 +139,11 @@ class ConfigHostExtrasSourceTest {
     // DELETED from the service came straight back out of a file nobody had emptied — the one
     // operation the service exists to make possible was the one it could not perform. With the url
     // set the file contributes nothing: not a shadowed value, not a value it alone states.
+    //
+    // The boot config carries the SAME keys the file does — production's shape, not a weaker one:
+    // Quarkus' config-dir read already put this file's last-boot contents into `config` before this
+    // class ever runs, so a stub that only put the stale value in the FILE and left the boot config
+    // clean would not be testing the layer qits-1468 actually came back out of.
     Path file = Files.createTempFile("qits-extras", ".properties");
     file.toFile().deleteOnExit();
     Files.writeString(
@@ -146,12 +154,44 @@ class ConfigHostExtrasSourceTest {
             + "qits-ci.env.ONLY_IN_THE_FILE=kept\n");
     stub.resolves(3, P + "qits-ci.env.QITS_EVENTS_URL", "http://dev-qits-events:8080");
 
-    ConfigHostExtrasSource source = stub.source(boot(Map.of()), file.toString(), NONE);
+    ConfigHostExtrasSource source =
+        stub.source(
+            boot(
+                Map.of(
+                    P + "qits-ci.env.QITS_EVENTS_URL", "http://stale:8080",
+                    P + "qits-ci.env.ONLY_IN_THE_FILE", "kept")),
+            file.toString(),
+            NONE);
 
     assertEquals(
         List.of("QITS_EVENTS_URL=http://dev-qits-events:8080"),
         env(source.forDeployment("qits-ci", ENV, VERSION, DECLARED)),
-        "the served map is the whole of it: the file's own key must not reach the argv");
+        "the served map is the whole of it: neither the file's own key nor the boot config's copy"
+            + " of it may reach the argv");
+  }
+
+  @Test
+  void aKeyDeletedFromTheServiceDoesNotComeBackOutOfTheBootConfigsOwnCopyOfTheFile() {
+    // qits-1468, reproduced end to end. The boot config here carries what Quarkus' config-dir read
+    // actually leaves on a deployment host: the config volume's file, read once at boot, at ordinal
+    // 260 — the `boot(...)` helper's own ordinal. The service has stopped stating the key (the stub
+    // answers an EMPTY document), so a correct read serves nothing for it; the bug served the boot
+    // config's copy of the file instead, which is how QUARKUS_OIDC_AUTH_SERVER_URL reached qits-ci
+    // with qits.deployments.extras-url set and no file anywhere in the path.
+    Config boot =
+        boot(
+            Map.of(
+                P + "qits-ci.env.QUARKUS_OIDC_AUTH_SERVER_URL", "http://qits-platform-idp:8080/idp",
+                LEGACY_P + "qits-ci.env.QUARKUS_OIDC_AUTH_SERVER_URL",
+                    "http://qits-platform-idp:8080/idp"));
+    stub.answers(200, "{\"headRevision\":1,\"properties\":{}}");
+    ConfigHostExtrasSource source = stub.source(boot, NO_FILE, NONE);
+
+    Config snapshot = source.forDeployment("qits-ci", ENV, VERSION, DECLARED);
+
+    assertFalse(
+        env(snapshot).stream().anyMatch(line -> line.startsWith("QUARKUS_OIDC_AUTH_SERVER_URL=")),
+        "no QUARKUS_OIDC_AUTH_SERVER_URL in " + env(snapshot));
   }
 
   @Test

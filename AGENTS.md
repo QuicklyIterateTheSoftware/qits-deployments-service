@@ -1047,6 +1047,13 @@ revision serving 2 properties, the file's stale third still winning at ordinal 1
 operation the service exists to make possible was the one it could not perform. Two sources cannot
 both be authoritative, and the one left on a volume is the stale one by construction.
 
+**"Not read at all" undersold what still had to happen, and qits-1468 is the correction to the
+correction.** The boot config this layer sits over is not a clean slate: Quarkus' own config-dir
+read already populated it from that same file, once, at boot — so a deleted key came back out of the
+boot config just as it had out of the file, with `QUARKUS_OIDC_AUTH_SERVER_URL` shipped to qits-ci
+as the measured instance. `ExtrasSnapshot.over(Config, Map, String)` now filters every extras key
+(both `DeploymentDriver` prefixes) out of that boot layer, which is what SOLE actually required.
+
 **The rollback is the key itself**: empty `extras-url` and the file is the source again — but it may
 be months out of date by then, so re-render or export it before leaning on it.
 

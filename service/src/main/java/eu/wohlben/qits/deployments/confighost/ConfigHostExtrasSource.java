@@ -52,13 +52,23 @@ import org.jboss.logging.Logger;
  * the service still get.
  *
  * <p><b>Set, the service is AUTHORITATIVE — and authoritative means SOLE.</b> The file is not read
- * at all: the served properties over this process's boot config are the whole snapshot. It used to
- * be layered above the file, which read well and deployed badly — a key DELETED from the service
- * came straight back out of a file nobody had emptied, so the one operation the service exists to
- * make possible was the one it could not perform. Two sources cannot both be authoritative, and a
- * file left on the volume is the stale one by construction. The map arrives in the full prefixed
- * spelling, so nothing here translates the extras grammar — {@code ServiceExtras} stays its single
- * parser.
+ * again: the served properties go over this process's boot config, and {@link
+ * ExtrasSnapshot#over(Config, Map, String)} filters every extras key — both {@code
+ * DeploymentDriver} prefixes — out of that boot layer before serving anything from it. The filter
+ * is the part that makes SOLE true, not merely "do not re-read the file": Quarkus' own config-dir
+ * convention already reads {@code <user.dir>/config/application.properties} into the boot config at
+ * ordinal 260, once, at boot — so the boot config handed to this layer already carries whatever
+ * that file said the last time this process started, extras included, whether or not anything asks
+ * for the file by name. Layering the served map over an UNFILTERED boot config read well and
+ * deployed badly twice over: once on 2026-08-17 (a key DELETED from the service came straight back
+ * out of a file nobody had emptied, a revision serving 2 properties with the file's stale third
+ * still winning at ordinal 1000), and again as the failure qits-1468 was paid for — a key
+ * qits-configuration had stopped stating, {@code QUARKUS_OIDC_AUTH_SERVER_URL}, reached qits-ci off
+ * this very boot layer with no file read anywhere in the path, because the boot config's own
+ * config-dir read had it the whole time. Two sources cannot both be authoritative, and the one
+ * surviving on a layer this class does not control is the stale one by construction. The map
+ * arrives in the full prefixed spelling, so nothing here translates the extras grammar — {@code
+ * ServiceExtras} stays its single parser.
  *
  * <p><b>The rollback is the key.</b> Emptying {@code extras-url} returns this to the file, which may
  * by then be stale — re-render or export it before leaning on it.
@@ -193,8 +203,11 @@ public class ConfigHostExtrasSource implements DeploymentExtrasSource {
             + application
             + " at config-revision="
             + revision(body));
-    // Over the BOOT config and not over the file: a deleted entry has to disappear, and a file
-    // under this layer would serve it again at the next deployment.
+    // Over the BOOT config, which ExtrasSnapshot.over(Config, Map, String) filters: `config`
+    // already carries the config volume's file (Quarkus' own config-dir read, ordinal 260), so
+    // passing it through unfiltered would let a deleted entry answer out of last boot's copy of
+    // that file instead of disappearing — the qits-1468 failure, which shipped
+    // QUARKUS_OIDC_AUTH_SERVER_URL to qits-ci with no file read anywhere in the path.
     return ExtrasSnapshot.over(config, served, url);
   }
 

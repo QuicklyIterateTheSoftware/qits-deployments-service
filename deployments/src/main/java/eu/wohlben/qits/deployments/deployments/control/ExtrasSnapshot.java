@@ -47,6 +47,16 @@ import org.eclipse.microprofile.config.spi.ConfigSource;
  * Map, String)}, the properties that service resolved for this application, over the boot config
  * and with <b>no file under them at all</b>. Which layers exist is {@code
  * DeploymentExtrasSource}'s decision; this class only states the order.
+ *
+ * <p><b>That boot config is not clean of extras, and the served overload is the one place it
+ * matters (qits-1468).</b> Quarkus' own config-dir read is what populates it — {@code
+ * <user.dir>/config/application.properties} at ordinal 260, read once at boot, the very file this
+ * class re-reads per argv — so on a deployment host the boot config already carries whatever that
+ * file said the last time the process started, extras keys included. {@link #over(Config, String)}
+ * does not care: the file it re-reads outranks the boot config regardless of what the boot config
+ * holds. {@link #over(Config, Map, String)} has no such file layer to win that contest, so it
+ * filters every extras key out of the boot layer it builds instead — see that method's own javadoc
+ * for why.
  */
 public final class ExtrasSnapshot {
 
@@ -57,6 +67,11 @@ public final class ExtrasSnapshot {
    * Above the boot config, and there is nothing between them: qits-configuration is AUTHORITATIVE
    * where it is configured at all, so its caller hands this the boot config rather than the file.
    * The ordinal stays above {@link #FILE_ORDINAL} so a snapshot dump reads in source order.
+   *
+   * <p><b>The ordinal is not what makes this layer sole, and it never was.</b> A boot config
+   * answering at {@link #BOOT_ORDINAL} already loses to anything above it; what makes a deleted
+   * extras key disappear rather than fall through is the boot layer's own filter, built in {@link
+   * #over(Config, Map, String)}.
    */
   private static final int SERVED_ORDINAL = 2000;
 
@@ -78,7 +93,7 @@ public final class ExtrasSnapshot {
     return new SmallRyeConfigBuilder()
         .withSources(
             new PropertiesConfigSource(read(path), path.toString(), FILE_ORDINAL),
-            new BootConfigSource(boot))
+            new BootConfigSource(boot, false))
         .build();
   }
 
@@ -90,17 +105,31 @@ public final class ExtrasSnapshot {
    * qits.deployments.extras.<app>.<key>} — so it is layered rather than translated, and
    * {@link ServiceExtras} stays the single parser of that grammar.
    *
-   * <p><b>{@code base} is the boot config, never the file.</b> An authoritative source is the SOLE
-   * source: with a file under this layer, a key deleted from the service is re-served by whatever
-   * the volume still carries, and deleting an entry is exactly what the service exists to make
-   * possible. What the service does not state falls through to the boot config alone.
+   * <p><b>{@code base} is the boot config, and the boot config is not a clean slate.</b> It is
+   * never the file this class re-reads per argv — {@code over(Config, String)}'s caller passes the
+   * raw boot config here, not its own result — but it is not nothing either: Quarkus' config-dir
+   * convention already read {@code <user.dir>/config/application.properties} into it at boot,
+   * ordinal 260, the same file by the same path. So handing {@code base} through unfiltered would
+   * not make qits-configuration SOLE, it would make it sole for every key the file didn't ALSO
+   * state at the last boot — and a key deleted from the service would come straight back out of
+   * that stale boot layer, which is the one operation this whole shape exists to make possible
+   * (measured twice: a revision serving 2 properties with the file's stale third still winning at
+   * ordinal 1000 on 2026-08-17, and {@code QUARKUS_OIDC_AUTH_SERVER_URL} reaching qits-ci off this
+   * same boot layer with no file read anywhere in the path — qits-1468, where this was paid for).
+   * <b>So this layer filters.</b> Any property under {@link DeploymentDriver#EXTRAS_PREFIX} or
+   * {@link DeploymentDriver#LEGACY_EXTRAS_PREFIX} is invisible in {@code base} here — not listed,
+   * not valued — so an extras key the service does not state is absent, full stop, whatever the
+   * boot config happens to carry it as. Everything else — every other {@code qits.deployments.*}
+   * setting, anything this process booted with that is not an extras key — falls through to {@code
+   * base} exactly as {@link #over(Config, String)} would answer it.
    *
    * @param source what the snapshot names this layer in a config dump — the url it was read from
    */
   public static Config over(Config base, Map<String, String> served, String source) {
     return new SmallRyeConfigBuilder()
         .withSources(
-            new PropertiesConfigSource(served, source, SERVED_ORDINAL), new BootConfigSource(base))
+            new PropertiesConfigSource(served, source, SERVED_ORDINAL),
+            new BootConfigSource(base, true))
         .build();
   }
 
@@ -135,21 +164,43 @@ public final class ExtrasSnapshot {
   /**
    * The boot config as a source, so this snapshot re-reads one file rather than rebuilding the
    * process's whole configuration: everything the file does not state answers exactly as it did.
+   *
+   * <p><b>{@code excludeExtras} is the served overload's filter, and only its caller sets it.</b>
+   * {@link #over(Config, String)} passes {@code false} — the file layer above already outranks
+   * whatever this holds, extras included, so there is nothing here worth hiding. {@link #over(Config,
+   * Map, String)} passes {@code true}, because it has no file layer to win that contest: the boot
+   * config it wraps was populated by Quarkus' own config-dir read of the very same file, so without
+   * the filter a deleted extras key would answer out of that stale copy instead of falling through
+   * to nothing (qits-1468).
    */
-  private record BootConfigSource(Config boot) implements ConfigSource {
+  private record BootConfigSource(Config boot, boolean excludeExtras) implements ConfigSource {
 
     @Override
     public Set<String> getPropertyNames() {
       Set<String> names = new HashSet<>();
       boot.getPropertyNames().forEach(names::add);
+      if (excludeExtras) {
+        names.removeIf(BootConfigSource::isExtras);
+      }
       return names;
     }
 
     @Override
     public String getValue(String name) {
+      if (excludeExtras && isExtras(name)) {
+        // Neither spelling reaches through this layer: a key under either prefix is exactly what
+        // the served map above is the sole authority for, and a value here would be the boot
+        // config's own copy of the file the served map exists to replace.
+        return null;
+      }
       // An empty value is absent to the conversion, which is what the boot config already answered
       // for `env.FLAG=`; the name is still listed, and the reader states what an absence means.
       return boot.getOptionalValue(name, String.class).orElse(null);
+    }
+
+    private static boolean isExtras(String name) {
+      return name.startsWith(DeploymentDriver.EXTRAS_PREFIX)
+          || name.startsWith(DeploymentDriver.LEGACY_EXTRAS_PREFIX);
     }
 
     @Override
