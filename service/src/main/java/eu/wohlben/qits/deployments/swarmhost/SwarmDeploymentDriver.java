@@ -42,9 +42,9 @@ import org.jboss.logging.Logger;
  * <p><b>The whole cutover is flags.</b> {@code --update-order start-first} is the overlap, {@code
  * --update-monitor} is the gate window, {@code --update-failure-action rollback} is the rollback,
  * {@code --rollback-order} is the same overlap on the way back, {@code --stop-grace-period} is how
- * long a stopped task is given before SIGKILL (see {@link #updateFlags}), and a task does not enter DNS until its healthcheck passes — measured on this
- * host: while a task was {@code Starting}, {@code getent hosts} answered nothing for its name
- * while the VIP already existed. So there is no predecessor to find, nothing to stop, nothing to
+ * long a stopped task is given before SIGKILL (see {@link #updateFlags}), and a task does not
+ * enter DNS until its healthcheck passes — measured on this host: while a task was {@code
+ * Starting}, {@code getent hosts} answered nothing for its name while the VIP already existed. So there is no predecessor to find, nothing to stop, nothing to
  * restart and nobody to referee: this class issues one command and then reads a verdict.
  *
  * <p><b>The name is the address, and that is the one thing to keep in mind reading this.</b> {@code
