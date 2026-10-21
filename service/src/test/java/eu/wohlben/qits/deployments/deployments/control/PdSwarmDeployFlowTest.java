@@ -16,6 +16,7 @@ import io.quarkus.test.junit.TestProfile;
 import io.restassured.http.ContentType;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
@@ -100,6 +101,10 @@ public class PdSwarmDeployFlowTest {
     assertEquals("swarm-green-repo-swarm-green", applied.wireAlias());
     assertEquals(DeploymentDriver.UpdateOrder.START_FIRST, applied.updateOrder(), "the default");
     assertEquals(DeploymentDriver.PublishMode.HOST, applied.publishMode(), "the default");
+    assertEquals(Duration.ofSeconds(30), applied.stopGracePeriod(), "the default");
+    // start-first: swarm marks the predecessor for shutdown and does not wait for it to exit, so the
+    // grace adds nothing to the verdict's deadline — health-timeout-seconds alone, as it always was.
+    assertEquals(List.of(Duration.ofSeconds(180)), fake.awaitedTimeouts());
     // ...and the verdict was asked about the name the driver chose, not the container-shaped one.
     assertEquals(List.of("swarm-green-repo-swarm-green"), fake.awaited());
     // Nothing to reap: there was no predecessor, and a swarm replace is in place anyway.
@@ -146,6 +151,45 @@ public class PdSwarmDeployFlowTest {
         DeploymentDriver.UpdateOrder.START_FIRST,
         applied.updateOrder(),
         "the publish mode decides nothing about the update order");
+  }
+
+  @Test
+  public void aStopFirstRepositoryWithALongGraceIsGivenTheGraceOnTopOfTheHealthTimeout() {
+    // qits-1170, end to end: stop_grace_period is read from the repository's spec, carried through
+    // the target and the plan, and handed to the orchestrator. Under stop-first swarm waits the
+    // predecessor out before the successor starts, and a failed successor out before the rollback
+    // starts — so the verdict's deadline grows by the grace twice, or a ten-minute drain would read
+    // as this process's timeout instead of swarm's verdict.
+    String environmentId = createEnvironment("swarm-grace");
+    specs.script(
+        "repo-swarm-grace",
+        new SpecSource.DeploymentSpec(
+            false,
+            null,
+            null,
+            null,
+            null,
+            List.of(),
+            DeploymentDriver.UpdateOrder.STOP_FIRST,
+            null,
+            List.of(),
+            8080,
+            null,
+            false,
+            List.of(),
+            null,
+            null,
+            null,
+            Duration.ofMinutes(10)));
+
+    postRelease("run-grace", "repo-swarm-grace");
+    awaitSettled(environmentId, 1);
+
+    DeploymentDriver.ServiceSpec applied = fake.applied().get(0);
+    assertEquals(Duration.ofMinutes(10), applied.stopGracePeriod());
+    assertEquals(DeploymentDriver.UpdateOrder.STOP_FIRST, applied.updateOrder());
+    assertEquals(
+        List.of(Duration.ofSeconds(180).plus(Duration.ofMinutes(20))), fake.awaitedTimeouts());
   }
 
   @Test

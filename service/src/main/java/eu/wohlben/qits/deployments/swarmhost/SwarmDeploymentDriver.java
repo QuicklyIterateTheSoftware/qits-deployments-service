@@ -41,8 +41,8 @@ import org.jboss.logging.Logger;
  *
  * <p><b>The whole cutover is flags.</b> {@code --update-order start-first} is the overlap, {@code
  * --update-monitor} is the gate window, {@code --update-failure-action rollback} is the rollback,
- * {@code --stop-grace-period} is how long a stopped task is given before SIGKILL (see {@link
- * #updateFlags}), and a task does not enter DNS until its healthcheck passes — measured on this
+ * {@code --rollback-order} is the same overlap on the way back, {@code --stop-grace-period} is how
+ * long a stopped task is given before SIGKILL (see {@link #updateFlags}), and a task does not enter DNS until its healthcheck passes — measured on this
  * host: while a task was {@code Starting}, {@code getent hosts} answered nothing for its name
  * while the VIP already existed. So there is no predecessor to find, nothing to stop, nothing to
  * restart and nobody to referee: this class issues one command and then reads a verdict.
@@ -149,14 +149,6 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
 
   /** Lines of service log kept as a failed convergence's diagnosis. */
   private static final String LOG_TAIL_LINES = "200";
-
-  /**
-   * Fixed on purpose, not a {@code deployments.yml} key: every application drains in-flight
-   * responses for up to 25s on SIGTERM ({@code quarkus.shutdown.timeout=25s} in qits-mirror and
-   * qits-edge, qits-1117), and Docker's default 10s grace period would SIGKILL them mid-drain.
-   * Thirty seconds clears that with margin, for every service, uniformly.
-   */
-  private static final String STOP_GRACE_PERIOD = "30s";
 
   /**
    * What swarm calls the update it is in the middle of, what it says about it, and <b>when it
@@ -1805,25 +1797,57 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   }
 
   /**
-   * The cutover, as four flags.
+   * The cutover, as five flags.
    *
    * <p>{@code --update-failure-action rollback} is not configurable and is not meant to be: a
    * successor that never goes healthy must leave the platform running whatever it replaced.
    *
-   * <p>{@code --stop-grace-period} is the fourth, and is likewise fixed rather than a {@code
-   * deployments.yml} key — see {@link #STOP_GRACE_PERIOD}. It is valid on both {@code service
-   * create} and {@code service update}, which is why it lives here beside the other three rather
-   * than only on one of the two argvs this method is shared by.
+   * <p>{@code --rollback-order} is the repository's {@code update_order} again, deliberately the
+   * same word. Docker's own default is {@code stop-first}, so without the flag a {@code
+   * start-first} service that fails its gate is rolled back by stopping the successor before the
+   * predecessor's spec is started — a window with no task serving, on exactly the path that was
+   * supposed to be lossless. And the opposite case rules out simply hard-coding {@code
+   * start-first}: an application that declared {@code stop-first} did so because two of it cannot
+   * run at once (one binder per host port, one writer per store), and a {@code start-first}
+   * rollback would start the predecessor beside the failed successor — which for a host-mode port
+   * never comes up, so the rollback deadlocks instead of restoring anything. One answer per
+   * application, in both directions.
+   *
+   * <p>{@code --stop-grace-period} is the repository's {@code stop_grace_period}, thirty seconds
+   * when it names none ({@link DeploymentDriver#DEFAULT_STOP_GRACE_PERIOD}). It is how long a task
+   * told to stop keeps the transfers it already has: swarm takes it out of the load balancer on
+   * SIGTERM and SIGKILLs it when the grace runs out, mid-download or not (qits-1170). Under {@code
+   * start-first} it costs the cutover nothing — the update is {@code completed} while the
+   * predecessor still drains; see {@code DeployService.convergenceTimeout} for the {@code
+   * stop-first} arithmetic.
+   *
+   * <p>All five are valid on both {@code service create} and {@code service update}, which is why
+   * they live here rather than on only one of the two argvs this method is shared by — a flag the
+   * update forgot would be reset by nothing, and one the create forgot would be docker's default
+   * until the first update.
    */
   private void updateFlags(List<String> argv, ServiceSpec spec, String orderFlag) {
     argv.add(orderFlag);
+    argv.add(spec.updateOrder().spelling());
+    argv.add("--rollback-order");
     argv.add(spec.updateOrder().spelling());
     argv.add("--update-monitor");
     argv.add(updateMonitorSeconds + "s");
     argv.add("--update-failure-action");
     argv.add("rollback");
     argv.add("--stop-grace-period");
-    argv.add(STOP_GRACE_PERIOD);
+    argv.add(goDuration(spec.stopGracePeriod()));
+  }
+
+  /**
+   * A duration in the spelling docker's flag parser reads ({@code time.ParseDuration}): whole
+   * seconds as {@code <n>s}, so the default stays the {@code 30s} it always was on the argv, and
+   * anything finer as milliseconds — the finest unit {@code stop_grace_period} can state.
+   */
+  static String goDuration(Duration duration) {
+    return duration.toMillisPart() == 0
+        ? duration.toSeconds() + "s"
+        : duration.toMillis() + "ms";
   }
 
   /**

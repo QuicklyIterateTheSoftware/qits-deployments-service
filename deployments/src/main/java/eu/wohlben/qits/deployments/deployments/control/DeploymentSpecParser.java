@@ -3,14 +3,17 @@ package eu.wohlben.qits.deployments.deployments.control;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource.DeploymentSpec;
 import eu.wohlben.qits.deployments.environments.control.PdIdentifiers;
 import eu.wohlben.qits.deployments.events.NavigationEntry;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
- * The strict reader of {@code .config/qits/deployments.yml}. Seventeen scalar keys, no nesting, no
+ * The strict reader of {@code .config/qits/deployments.yml}. Eighteen scalar keys, no nesting, no
  * YAML lists — so this is a line reader rather than a YAML library, and being one is what makes every
  * rejection a sentence naming the file and the line.
  *
@@ -25,6 +28,7 @@ import java.util.Set;
  * volumes: private:data:/data          # a volume of its own, mounted at /data
  * update_order: start-first            # default | stop-first for anything single-writer
  * publish_mode: host                   # default | ingress for a port the routing mesh holds
+ * stop_grace_period: 10m               # default 30s; SIGTERM to SIGKILL, for long transfers
  * routes: /artifacts,/v2               # optional public path prefixes, in navigation order
  * upstream_port: 8080                  # default; the service port behind every route
  * host: registry                       # optional DNS label this application is also served at
@@ -185,6 +189,19 @@ import java.util.Set;
  * It reaches the orchestrator as {@code --update-order}. A repository that says nothing gets
  * {@code start-first}, so an application that must not overlap has to say so.
  *
+ * <p><b>{@code stop_grace_period} is the third key an orchestrator reads rather than this
+ * component</b>, and it reaches it as {@code --stop-grace-period} on the create and the update
+ * alike. It is how long a task that has been told to stop keeps the transfers it is in the middle
+ * of: swarm takes the task out of the load balancer on SIGTERM, so nothing NEW arrives, but what is
+ * already flowing is cut the moment the grace runs out. Thirty seconds covers a request; it does
+ * not cover a multi-gigabyte download through qits-edge or qits-mirror, which is why it is the
+ * repository's to raise (qits-1170). The value is a duration in docker's own spelling — {@code
+ * 90s}, {@code 10m}, {@code 9m30s}, {@code 1h} — with whole numbers, units in descending order and
+ * each at most once, and it must be more than zero and at most an hour. The ceiling is not
+ * docker's: under {@code stop-first} the deployer waits out the predecessor's grace before the
+ * successor can even start, on the one worker every deployment queues behind, so an unbounded
+ * value would be an unbounded stall of the whole platform's deployments.
+ *
  * <p><b>{@code health_cmd} and {@code health_path} are alternatives, and setting both is an
  * error.</b> They are not two settings on one gate: the path names a URL a {@code curl} inside the
  * container fetches, and the command replaces that whole mechanism. A deployable image with no
@@ -285,6 +302,24 @@ public final class DeploymentSpecParser {
   private static final String VOLUMES = "volumes";
   private static final String UPDATE_ORDER = "update_order";
   private static final String PUBLISH_MODE = "publish_mode";
+  private static final String STOP_GRACE_PERIOD = "stop_grace_period";
+
+  /**
+   * One whole number per unit, units descending and each at most once — {@code 1h}, {@code 9m30s},
+   * {@code 1500ms}. A strict subset of Go's {@code time.ParseDuration}, which is what docker reads
+   * the flag with, so anything this accepts docker accepts too. Fractions and the sub-millisecond
+   * units are left out because no grace period wants them, and a parser that accepts less is one
+   * whose every acceptance can be read back.
+   */
+  private static final Pattern GRACE_DURATION =
+      Pattern.compile("(?:(\\d+)h)?(?:(\\d+)m(?!s))?(?:(\\d+)s)?(?:(\\d+)ms)?");
+
+  /**
+   * The longest grace a repository may ask for. See the class javadoc: under {@code stop-first} the
+   * deployer's single worker waits it out, so a ceiling is what keeps one repository's statement
+   * from stalling every other deployment.
+   */
+  static final Duration MAX_STOP_GRACE_PERIOD = Duration.ofHours(1);
   private static final String ROUTES = "routes";
   private static final String UPSTREAM_PORT = "upstream_port";
   private static final String NAVIGATION = "navigation";
@@ -392,6 +427,7 @@ public final class DeploymentSpecParser {
     List<DeploymentSpec.VolumeSpec> volumes = List.of();
     DeploymentDriver.UpdateOrder updateOrder = DeploymentDriver.UpdateOrder.START_FIRST;
     DeploymentDriver.PublishMode publishMode = DeploymentDriver.PublishMode.HOST;
+    Duration stopGracePeriod = DeploymentDriver.DEFAULT_STOP_GRACE_PERIOD;
     List<String> routes = List.of();
     int upstreamPort = DEFAULT_UPSTREAM_PORT;
     String host = null;
@@ -433,6 +469,7 @@ public final class DeploymentSpecParser {
         case VOLUMES -> volumes = volumes(value, source, lineNumber);
         case UPDATE_ORDER -> updateOrder = updateOrder(value, source, lineNumber);
         case PUBLISH_MODE -> publishMode = publishMode(value, source, lineNumber);
+        case STOP_GRACE_PERIOD -> stopGracePeriod = stopGracePeriod(value, source, lineNumber);
         case ROUTES -> routes = routes(value, source, lineNumber);
         case UPSTREAM_PORT -> upstreamPort = upstreamPort(value, source, lineNumber);
         case HOST -> host = host(value, source, lineNumber);
@@ -468,6 +505,8 @@ public final class DeploymentSpecParser {
                     + UPDATE_ORDER
                     + ", "
                     + PUBLISH_MODE
+                    + ", "
+                    + STOP_GRACE_PERIOD
                     + ", "
                     + ROUTES
                     + ", "
@@ -570,7 +609,8 @@ public final class DeploymentSpecParser {
         navigationEntries,
         apiDocs,
         application,
-        renamedFrom);
+        renamedFrom,
+        stopGracePeriod);
   }
 
   /**
@@ -913,6 +953,64 @@ public final class DeploymentSpecParser {
             + DeploymentDriver.PublishMode.INGRESS.spelling()
             + "`, got: "
             + value);
+  }
+
+  /**
+   * How long a stopped task keeps what it is serving: a duration in docker's spelling, more than
+   * zero and at most {@link #MAX_STOP_GRACE_PERIOD}. See {@link #GRACE_DURATION} for the grammar.
+   *
+   * <p>Refused rather than defaulted, like every other value here: a typo answered with thirty
+   * seconds is exactly the cut download this key exists to stop, with nothing to read about why.
+   * Zero is refused as well, because it is not "no grace" to docker but an immediate SIGKILL.
+   */
+  private static Duration stopGracePeriod(String value, String source, int line) {
+    Matcher matcher = GRACE_DURATION.matcher(value);
+    Duration grace = null;
+    if (!value.isEmpty() && matcher.matches()) {
+      try {
+        grace =
+            Duration.ofHours(group(matcher, 1))
+                .plusMinutes(group(matcher, 2))
+                .plusSeconds(group(matcher, 3))
+                .plusMillis(group(matcher, 4));
+      } catch (ArithmeticException e) {
+        grace = null;
+      }
+    }
+    if (grace == null || grace.isZero() || grace.isNegative()) {
+      throw error(
+          source,
+          line,
+          "`"
+              + STOP_GRACE_PERIOD
+              + "` must be a duration above zero in docker's spelling — `90s`, `10m`, `9m30s`,"
+              + " `1h` — got: "
+              + value);
+    }
+    if (grace.compareTo(MAX_STOP_GRACE_PERIOD) > 0) {
+      throw error(
+          source,
+          line,
+          "`"
+              + STOP_GRACE_PERIOD
+              + "` may be at most 1h — under stop-first every other deployment waits it out —"
+              + " got: "
+              + value);
+    }
+    return grace;
+  }
+
+  /** One unit's count, or zero for a unit the value did not name. */
+  private static long group(Matcher matcher, int group) {
+    String digits = matcher.group(group);
+    if (digits == null) {
+      return 0;
+    }
+    if (digits.length() > 9) {
+      // Far past the ceiling in any unit, and short of overflowing the arithmetic above.
+      throw new ArithmeticException(digits);
+    }
+    return Long.parseLong(digits);
   }
 
   /**

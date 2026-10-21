@@ -624,7 +624,30 @@ Four things about the rendering, each easy to undo by accident:
 **`update_order` in `.config/qits/deployments.yml`** is `start-first` (default) or `stop-first`, per
 repository, and only the repository knows: a published host port, a single-writer store or a held
 config volume each make the overlap impossible. This repo says `stop-first`. It reaches the
-orchestrator as `--update-order`.
+orchestrator as `--update-order` **and as `--rollback-order`**, the same word both ways (qits-1170):
+docker's default rollback order is `stop-first`, which leaves no task serving while a failed
+`start-first` update reverts, and hard-coding `start-first` instead would deadlock the rollback of an
+application that declared `stop-first` because it cannot overlap itself (a host-mode port binder).
+
+**`stop_grace_period` is the third such key** (qits-1170) — how long a task told to stop keeps the
+transfers it is in the middle of before SIGKILL. Swarm takes the task out of the load balancer on
+SIGTERM, so nothing new arrives, but a long download through qits-edge or qits-mirror was cut on
+every redeploy by the fixed 30s every service used to get. Absent it is still `30s`
+(`DeploymentDriver.DEFAULT_STOP_GRACE_PERIOD`); present it is a duration in docker's spelling —
+`90s`, `10m`, `9m30s`, `1h`, `1500ms`: whole numbers, units descending, each once — above zero and at
+most `1h`, and anything else fails the deployment like every other bad value. It reaches the
+orchestrator as `--stop-grace-period` on the create and the update alike. **What it costs the
+cutover depends on the update order, and the parser's ceiling exists because of it**:
+
+- under `start-first` it costs **nothing**. Swarm's updater waits for the successor to be RUNNING
+  (healthy, given a healthcheck), then only sets the predecessor's desired state to SHUTDOWN and
+  moves on; `--update-monitor` watches the new task and `completed` is written when it ends. The
+  predecessor drains while the row is already `ACTIVE`.
+- under `stop-first` it is the grace **twice**: the successor does not start until the predecessor
+  has actually exited, and a successor that fails its gate is stopped the same way before the
+  rollback starts the predecessor's spec. So `DeployService.convergenceTimeout` adds `2 × grace` to
+  `health-timeout-seconds` for a `stop-first` application — otherwise swarm's verdict becomes this
+  process's timeout. That wait sits on the one deploy worker, which is why the key is capped.
 
 **`publish_mode` is the second such key** — `host` (default, today's behaviour byte for byte) or
 `ingress`, per repository. Host mode binds the port from inside the task, so two tasks cannot

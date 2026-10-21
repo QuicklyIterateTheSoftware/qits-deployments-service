@@ -235,15 +235,18 @@ class SwarmDeploymentDriverTest {
     assertTrue(argv.containsAll(List.of("--health-retries", "3")));
     // 60s of grace, measured against qits-projects' ~45s worst-case boot rather than derived.
     assertTrue(argv.containsAll(List.of("--health-start-period", "60s")));
-    // ...and the cutover is four flags rather than four hundred lines.
+    // ...and the cutover is five flags rather than four hundred lines.
     assertTrue(argv.containsAll(List.of("--update-order", "start-first")));
+    // The way back overlaps exactly as the way forward does: docker's default rollback order is
+    // stop-first, which would leave no task serving while a failed start-first update reverts.
+    assertTrue(argv.containsAll(List.of("--rollback-order", "start-first")), argv.toString());
     // The other half of the same window: the monitor moves with the start period or the raise only
     // changes which of the two binds.
     assertTrue(argv.containsAll(List.of("--update-monitor", "60s")));
     assertTrue(argv.containsAll(List.of("--update-failure-action", "rollback")));
-    // Fixed, not a deployments.yml key: applications drain in-flight responses for up to 25s on
-    // SIGTERM (quarkus.shutdown.timeout=25s, qits-1117), and docker's default 10s grace would
-    // SIGKILL them mid-drain.
+    // The default when the repository names no stop_grace_period: applications drain in-flight
+    // responses for up to 25s on SIGTERM (quarkus.shutdown.timeout=25s, qits-1117), and docker's
+    // default 10s grace would SIGKILL them mid-drain.
     assertTrue(argv.containsAll(List.of("--stop-grace-period", "30s")));
     // The bookkeeping labels, on the service AND on its task container: everything that reads them
     // reads them by name and does not care what created them.
@@ -643,6 +646,7 @@ class SwarmDeploymentDriverTest {
     assertTrue(update.containsAll(List.of("--label-add", "qits.platform.deployments.deployment=dep-id")));
     assertTrue(update.contains("--container-label-add"));
     assertTrue(update.containsAll(List.of("--update-order", "start-first")));
+    assertTrue(update.containsAll(List.of("--rollback-order", "start-first")), update.toString());
     assertTrue(update.containsAll(List.of("--update-failure-action", "rollback")));
     assertTrue(update.containsAll(List.of("--stop-grace-period", "30s")));
     assertTrue(update.contains("--env-add"));
@@ -1003,9 +1007,66 @@ class SwarmDeploymentDriverTest {
     // It still rolls back — it just has a gap in service, which is what those applications have
     // today anyway.
     assertTrue(argv.containsAll(List.of("--update-failure-action", "rollback")));
+    // ...and it rolls back stop-first too. An application that cannot be two processes at once
+    // cannot be two on the way back either: a start-first rollback of a host-port binder would start
+    // the predecessor beside the failed successor still holding the port, and deadlock.
+    assertTrue(argv.containsAll(List.of("--rollback-order", "stop-first")), argv.toString());
+    assertFalse(argv.contains("start-first"), "no half of the policy overlaps: " + argv);
     // The grace period is unconditional too: an opt-out from the overlap is not an opt-out from a
     // clean shutdown.
     assertTrue(argv.containsAll(List.of("--stop-grace-period", "30s")));
+  }
+
+  @Test
+  void aDeclaredStopGraceReachesBothTheCreateAndTheUpdate() {
+    // qits-1170: a proxy carrying a long download keeps it for as long as its repository says, on
+    // the first deployment (a create) and on every one after (an update) alike — a flag only one
+    // argv carried would be docker's default until the next shape change, or reset by nothing.
+    DeploymentDriver.ServiceSpec patient = withGrace(spec(), Duration.ofMinutes(10));
+    SwarmDeploymentDriver driver = driver();
+
+    List<String> create = driver.buildCreateArgv(patient, "dev-qits-gateway", List.of("qits-net"));
+    List<String> update = driver.buildUpdateArgv(patient, "dev-qits-gateway");
+
+    for (List<String> argv : List.of(create, update)) {
+      assertTrue(argv.containsAll(List.of("--stop-grace-period", "600s")), argv.toString());
+      assertEquals(
+          1, argv.stream().filter("--stop-grace-period"::equals).count(), "once: " + argv);
+    }
+  }
+
+  @Test
+  void aGraceIsSpelledTheWayDockerReadsIt() {
+    assertEquals("30s", SwarmDeploymentDriver.goDuration(Duration.ofSeconds(30)));
+    assertEquals("570s", SwarmDeploymentDriver.goDuration(Duration.ofSeconds(570)));
+    assertEquals("3600s", SwarmDeploymentDriver.goDuration(Duration.ofHours(1)));
+    assertEquals("1500ms", SwarmDeploymentDriver.goDuration(Duration.ofMillis(1500)));
+  }
+
+  /** The same spec, from a repository that declared a {@code stop_grace_period} of its own. */
+  private static DeploymentDriver.ServiceSpec withGrace(
+      DeploymentDriver.ServiceSpec spec, Duration grace) {
+    return new DeploymentDriver.ServiceSpec(
+        spec.environmentId(),
+        spec.environmentName(),
+        spec.applicationId(),
+        spec.applicationName(),
+        spec.deploymentId(),
+        spec.commitSha(),
+        spec.version(),
+        spec.declarationSeeded(),
+        spec.deploymentName(),
+        spec.wireAlias(),
+        spec.networks(),
+        spec.imageRef(),
+        spec.healthPath(),
+        spec.healthCmd(),
+        spec.availableOnEnv(),
+        spec.updateOrder(),
+        spec.publishMode(),
+        spec.resources(),
+        spec.volumes(),
+        grace);
   }
 
   @Test
@@ -1336,7 +1397,8 @@ class SwarmDeploymentDriverTest {
         spec.updateOrder(),
         spec.publishMode(),
         spec.resources(),
-        spec.volumes());
+        spec.volumes(),
+        spec.stopGracePeriod());
   }
 
   @Test

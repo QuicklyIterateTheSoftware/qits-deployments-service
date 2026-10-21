@@ -81,6 +81,7 @@ health_cmd: pg_isready -U postgres   # instead of health_path; runs inside the c
 resources: postgresql:db             # a database of its own, injected as QITS_RESOURCE_DB_*
 update_order: start-first            # default | stop-first for anything that cannot overlap itself
 publish_mode: host                   # default | ingress for a port swarm's routing mesh holds
+stop_grace_period: 10m               # default 30s; SIGTERM-to-SIGKILL, e.g. 90s, 9m30s, at most 1h
 routes: /artifacts,/artifacts/api    # optional public path prefixes, ordered
 upstream_port: 8080                  # default; target port behind every declared route
 navigation: Artifacts:3              # optional label:positive-position for the first route

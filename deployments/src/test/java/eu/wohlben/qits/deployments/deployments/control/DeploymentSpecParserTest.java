@@ -10,6 +10,7 @@ import eu.wohlben.qits.deployments.deployments.control.SpecSource.DeploymentSpec
 import eu.wohlben.qits.deployments.deployments.control.SpecSource.DeploymentSpec.ResourceSpec;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource.DeploymentSpec.VolumeSpec;
 import eu.wohlben.qits.deployments.events.NavigationEntry;
+import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -881,6 +882,53 @@ class DeploymentSpecParserTest {
     assertTrue(message.contains("navigation-entries"), message);
     assertTrue(message.contains("application"), message);
     assertTrue(message.contains("renamed_from"), message);
+    assertTrue(message.contains("stop_grace_period"), message);
+  }
+
+  @Test
+  void aRepositoryWhoseTransfersOutliveThirtySecondsRaisesItsStopGrace() {
+    // qits-1170: a long download through qits-edge or qits-mirror was cut on every redeploy, because
+    // the grace was one fixed 30s for every service. Absent, it is still exactly that 30s, so a file
+    // that says nothing deploys byte-for-byte as before.
+    assertEquals(Duration.ofSeconds(30), parse("").stopGracePeriod(), "the default");
+    assertEquals(DeploymentDriver.DEFAULT_STOP_GRACE_PERIOD, parse("").stopGracePeriod());
+    // Docker's own spelling, the way a repository will write it.
+    assertEquals(Duration.ofMinutes(10), parse("stop_grace_period: 10m\n").stopGracePeriod());
+    assertEquals(Duration.ofSeconds(90), parse("stop_grace_period: 90s\n").stopGracePeriod());
+    assertEquals(
+        Duration.ofSeconds(570), parse("stop_grace_period: 9m30s\n").stopGracePeriod());
+    assertEquals(Duration.ofHours(1), parse("stop_grace_period: 1h\n").stopGracePeriod());
+    assertEquals(Duration.ofMillis(1500), parse("stop_grace_period: 1500ms\n").stopGracePeriod());
+    assertEquals(
+        Duration.ofMinutes(5), parse("stop_grace_period: \"5m\"\n").stopGracePeriod(), "quoted");
+  }
+
+  @Test
+  void aStopGraceThatIsNotAPositiveDurationIsAnError() {
+    // Refused rather than defaulted: thirty seconds in answer to a typo is the cut download the key
+    // exists to prevent, with nothing to read about why.
+    for (String garbage :
+        List.of("ten minutes", "10", "10M", "1.5m", "-30s", "30s9m", "1m1m", "10 m", "1d", "")) {
+      String message = messageOf("stop_grace_period: " + garbage + "\n");
+      assertTrue(message.contains("stop_grace_period"), message);
+      assertTrue(message.contains("line 1"), "it names the line to fix: " + message);
+    }
+    // Zero is not "no grace" to docker but an immediate SIGKILL, which is the opposite of asking.
+    assertTrue(messageOf("stop_grace_period: 0s\n").contains("above zero"));
+    assertTrue(messageOf("stop_grace_period: 0m0s\n").contains("above zero"));
+    // ...and the ceiling: under stop-first the deployer's one worker waits the grace out, so an
+    // unbounded value would stall every other deployment behind this one.
+    String tooLong = messageOf("stop_grace_period: 61m\n");
+    assertTrue(tooLong.contains("at most 1h"), tooLong);
+    assertTrue(tooLong.contains("61m"), "the message names what was written: " + tooLong);
+    assertTrue(messageOf("stop_grace_period: 99999999999s\n").contains("stop_grace_period"));
+  }
+
+  @Test
+  void theStopGraceIsIndependentOfTheUpdateOrder() {
+    DeploymentSpec spec = parse("update_order: stop-first\nstop_grace_period: 2m\n");
+    assertEquals(DeploymentDriver.UpdateOrder.STOP_FIRST, spec.updateOrder());
+    assertEquals(Duration.ofMinutes(2), spec.stopGracePeriod());
   }
 
   @Test

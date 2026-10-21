@@ -35,6 +35,9 @@ public class FakeDeploymentDriver implements DeploymentDriver {
 
   private final List<ServiceSpec> applied = Collections.synchronizedList(new ArrayList<>());
   private final List<String> awaited = Collections.synchronizedList(new ArrayList<>());
+
+  /** The deadline each {@link #awaitConverged} was given, in the order of {@link #awaited}. */
+  private final List<Duration> awaitedTimeouts = Collections.synchronizedList(new ArrayList<>());
   private final List<String> reaped = Collections.synchronizedList(new ArrayList<>());
   private final List<String> pulled = Collections.synchronizedList(new ArrayList<>());
   private final List<Network> ensured = Collections.synchronizedList(new ArrayList<>());
@@ -93,6 +96,7 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   public void reset() {
     applied.clear();
     awaited.clear();
+    awaitedTimeouts.clear();
     reaped.clear();
     pulled.clear();
     ensured.clear();
@@ -189,6 +193,10 @@ public class FakeDeploymentDriver implements DeploymentDriver {
     return List.copyOf(awaited);
   }
 
+  public List<Duration> awaitedTimeouts() {
+    return List.copyOf(awaitedTimeouts);
+  }
+
   public List<String> reaped() {
     return List.copyOf(reaped);
   }
@@ -258,6 +266,7 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   @Override
   public Convergence awaitConverged(String name, Duration timeout) {
     awaited.add(name);
+    awaitedTimeouts.add(timeout);
     calls.add("await:" + name);
     Duration delay = convergeDelay;
     if (!delay.isZero()) {

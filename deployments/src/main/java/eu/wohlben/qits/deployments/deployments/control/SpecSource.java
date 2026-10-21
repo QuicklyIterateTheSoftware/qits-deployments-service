@@ -1,6 +1,7 @@
 package eu.wohlben.qits.deployments.deployments.control;
 
 import eu.wohlben.qits.deployments.events.NavigationEntry;
+import java.time.Duration;
 import java.util.List;
 
 /**
@@ -213,6 +214,12 @@ public interface SpecSource {
    * that must survive its own replacement wants the routing mesh holding its port, and everything
    * else keeps the per-node bind it has today. See {@link DeploymentDriver.PublishMode}.
    *
+   * <p>{@code stopGracePeriod} is how long a stopped task is given to finish what it is serving
+   * before it is killed — {@link DeploymentDriver#DEFAULT_STOP_GRACE_PERIOD} unless the repository
+   * says otherwise. Only the repository knows how long its longest response runs: a proxy carrying
+   * a multi-gigabyte download has a different answer from a service that answers in milliseconds,
+   * and the transfer is cut wherever the grace runs out.
+   *
    * <p>{@code host} is the DNS label this application is also served at, and null means "derive
    * it": the parser does not know the application's name, exactly as it does not for a resource's
    * database. {@code browserHostDeclared} is the question that decides whether there is anything to
@@ -265,7 +272,8 @@ public interface SpecSource {
       List<NavigationEntry> navigationEntries,
       String apiDocs,
       String application,
-      String renamedFrom) {
+      String renamedFrom,
+      Duration stopGracePeriod) {
 
     /** A null list and an empty one are the same statement: the file named none. */
     public DeploymentSpec {
@@ -277,6 +285,46 @@ public interface SpecSource {
       routes = routes == null ? List.of() : List.copyOf(routes);
       navigationEntries =
           navigationEntries == null ? List.of() : List.copyOf(navigationEntries);
+      stopGracePeriod =
+          stopGracePeriod == null ? DeploymentDriver.DEFAULT_STOP_GRACE_PERIOD : stopGracePeriod;
+    }
+
+    /** The shape before {@code stop_grace_period}: a file that names none takes the default. */
+    public DeploymentSpec(
+        boolean availableOnEnv,
+        List<String> deployBranches,
+        String healthPath,
+        String healthCmd,
+        List<ResourceSpec> resources,
+        List<VolumeSpec> volumes,
+        DeploymentDriver.UpdateOrder updateOrder,
+        DeploymentDriver.PublishMode publishMode,
+        List<String> routes,
+        int upstreamPort,
+        String host,
+        boolean browserHostDeclared,
+        List<NavigationEntry> navigationEntries,
+        String apiDocs,
+        String application,
+        String renamedFrom) {
+      this(
+          availableOnEnv,
+          deployBranches,
+          healthPath,
+          healthCmd,
+          resources,
+          volumes,
+          updateOrder,
+          publishMode,
+          routes,
+          upstreamPort,
+          host,
+          browserHostDeclared,
+          navigationEntries,
+          apiDocs,
+          application,
+          renamedFrom,
+          null);
     }
 
     /**

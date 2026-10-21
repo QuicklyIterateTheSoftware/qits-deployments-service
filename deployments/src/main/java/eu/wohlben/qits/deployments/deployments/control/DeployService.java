@@ -1230,7 +1230,8 @@ public class DeployService implements ReleaseAnnouncements {
       String browserHost,
       List<NavigationEntry> navigation,
       String apiDocs,
-      String renamedFrom) {}
+      String renamedFrom,
+      Duration stopGracePeriod) {}
 
   /**
    * One software-release event, start to finish, on the worker thread: read what the repository
@@ -1946,7 +1947,8 @@ public class DeployService implements ReleaseAnnouncements {
               browserHost(applicationName, spec),
               spec.navigationEntries(),
               spec.apiDocs(),
-              spec.renamedFrom()));
+              spec.renamedFrom(),
+              spec.stopGracePeriod()));
     }
     return List.copyOf(targets);
   }
@@ -2100,6 +2102,8 @@ public class DeployService implements ReleaseAnnouncements {
                 null,
                 // No predecessor either: nothing is provisioned off one of these targets, so there
                 // is no claim for a declared rename to move.
+                null,
+                // ...and no grace period: nothing is stopped off one of them either.
                 null));
       }
     }
@@ -2331,6 +2335,11 @@ public class DeployService implements ReleaseAnnouncements {
       return target.publishMode();
     }
 
+    /** The repository's {@code stop_grace_period}, or null for a target no spec was read for. */
+    Duration stopGracePeriod() {
+      return target.stopGracePeriod();
+    }
+
     /**
      * The address peers dial this by, on every network it is on: {@code <environment>-<application>},
      * for every service there is. It is derived in one place because everything that has to agree on
@@ -2556,7 +2565,7 @@ public class DeployService implements ReleaseAnnouncements {
     }
 
     DeploymentDriver.Convergence converged =
-        driver.awaitConverged(name, Duration.ofSeconds(healthTimeoutSeconds));
+        driver.awaitConverged(name, convergenceTimeout(plan));
     if (!converged.converged()) {
       // Nothing runs that did not run before: the orchestrator reverted the spec itself, and the
       // predecessor is serving again by the time this returns.
@@ -2705,7 +2714,38 @@ public class DeployService implements ReleaseAnnouncements {
         // beside the resource bindings because it is the same kind of fact — what this application
         // needs to exist before it can serve — and, unlike the extras, it is the application's own
         // statement rather than the platform's.
-        plan.volumes());
+        plan.volumes(),
+        plan.stopGracePeriod());
+  }
+
+  /**
+   * How long {@code awaitConverged} may wait for this deployment's verdict: {@code
+   * qits.deployments.health-timeout-seconds}, plus whatever the update order makes the orchestrator
+   * spend waiting out a stopping task before the health gate even begins.
+   *
+   * <p><b>Under {@code start-first} that is nothing</b>, however long the grace. Swarm's updater
+   * starts the successor, waits for it to be RUNNING (which, with a healthcheck, means healthy),
+   * and then only marks the predecessor's desired state SHUTDOWN and moves on — it never waits for
+   * the old task to exit. The {@code --update-monitor} window that follows watches the NEW task,
+   * and {@code completed} is written when it ends. So the predecessor drains its transfers for as
+   * long as the grace allows while the update is already {@code completed} and the row already
+   * {@code ACTIVE}. A rollback under {@code start-first} is the same shape in reverse.
+   *
+   * <p><b>Under {@code stop-first} it is the grace, twice.</b> The updater stops the predecessor and
+   * does not start the successor until that task has actually exited — up to the whole grace for a
+   * task still draining a download — and a successor that then fails its gate is itself stopped,
+   * under the same order and with the same grace, before the predecessor's spec is started again.
+   * Neither wait is a symptom; both are swarm doing exactly what it was told. A deadline that did not
+   * count them would turn swarm's verdict into this process's timeout and throw the diagnosis away,
+   * which is the failure {@code health-timeout-seconds}'s own comment describes.
+   */
+  private Duration convergenceTimeout(Plan plan) {
+    Duration timeout = Duration.ofSeconds(healthTimeoutSeconds);
+    if (plan.updateOrder() == DeploymentDriver.UpdateOrder.STOP_FIRST
+        && plan.stopGracePeriod() != null) {
+      timeout = timeout.plus(plan.stopGracePeriod().multipliedBy(2));
+    }
+    return timeout;
   }
 
   /**

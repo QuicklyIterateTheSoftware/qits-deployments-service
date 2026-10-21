@@ -424,6 +424,11 @@ public interface DeploymentDriver {
    * bound. See {@link PublishMode}. It decides nothing when the application publishes no port,
    * which is most of them.
    *
+   * <p>{@code stopGracePeriod} is the repository's as well — {@code stop_grace_period}, how long a
+   * stopped task is given between SIGTERM and SIGKILL — and it reaches the orchestrator as {@code
+   * --stop-grace-period}. Null is {@link #DEFAULT_STOP_GRACE_PERIOD}, which is every application
+   * that holds nothing longer than a request open.
+   *
    * <p>{@code resources} is what {@code ResourceProvisioning} made exist a moment ago, one entry
    * per resource the repository declared. Empty for every application that stores nothing, which is
    * most of them.
@@ -460,7 +465,8 @@ public interface DeploymentDriver {
       UpdateOrder updateOrder,
       PublishMode publishMode,
       List<ResourceBinding> resources,
-      List<VolumeMount> volumes) {
+      List<VolumeMount> volumes,
+      Duration stopGracePeriod) {
 
     /** Null lists and empty ones are the same statement: this application declared none. */
     public ServiceSpec {
@@ -469,6 +475,51 @@ public interface DeploymentDriver {
       volumes = volumes == null ? List.of() : List.copyOf(volumes);
       updateOrder = updateOrder == null ? UpdateOrder.START_FIRST : updateOrder;
       publishMode = publishMode == null ? PublishMode.HOST : publishMode;
+      stopGracePeriod = stopGracePeriod == null ? DEFAULT_STOP_GRACE_PERIOD : stopGracePeriod;
+    }
+
+    /** The shape before {@code stop_grace_period}: a spec that names none takes the default. */
+    public ServiceSpec(
+        String environmentId,
+        String environmentName,
+        String applicationId,
+        String applicationName,
+        String deploymentId,
+        String commitSha,
+        String version,
+        boolean declarationSeeded,
+        String deploymentName,
+        String wireAlias,
+        List<String> networks,
+        String imageRef,
+        String healthPath,
+        String healthCmd,
+        boolean availableOnEnv,
+        UpdateOrder updateOrder,
+        PublishMode publishMode,
+        List<ResourceBinding> resources,
+        List<VolumeMount> volumes) {
+      this(
+          environmentId,
+          environmentName,
+          applicationId,
+          applicationName,
+          deploymentId,
+          commitSha,
+          version,
+          declarationSeeded,
+          deploymentName,
+          wireAlias,
+          networks,
+          imageRef,
+          healthPath,
+          healthCmd,
+          availableOnEnv,
+          updateOrder,
+          publishMode,
+          resources,
+          volumes,
+          null);
     }
 
     /** The one network {@code docker run} can take, and the first one a service declares. */
@@ -476,6 +527,19 @@ public interface DeploymentDriver {
       return networks.isEmpty() ? null : networks.get(0);
     }
   }
+
+  /**
+   * How long a stopped task is given between SIGTERM and SIGKILL when the repository names nothing
+   * — {@code stop_grace_period} in its spec.
+   *
+   * <p>Thirty seconds because every application drains in-flight responses for up to 25s on
+   * SIGTERM ({@code quarkus.shutdown.timeout=25s} in qits-mirror and qits-edge, qits-1117), and
+   * docker's own default of 10s would SIGKILL them mid-drain. It was a fixed flag for every service
+   * until qits-1170: a long download through qits-edge or qits-mirror outlives any uniform number,
+   * and only the repository knows how long its longest transfer runs, so the default is now the
+   * floor a repository may raise rather than the only answer.
+   */
+  Duration DEFAULT_STOP_GRACE_PERIOD = Duration.ofSeconds(30);
 
   /**
    * How a replacement overlaps its predecessor — {@code update_order} in the repository's spec.
