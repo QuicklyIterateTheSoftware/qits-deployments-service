@@ -41,6 +41,8 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * javadoc of {@link PdEnvironmentController} for the whole split. {@code qits:admin-agent} is
  * admitted on the read too (qits-628 follow-up): an ADMIN workspace's coding agent carries it
  * alongside {@code qits:agent}, and for now it may use everything {@code qits:admin} may use.
+ * {@code qits:desk} is admitted on the read too (qits-1596), outright: a service row carries no
+ * project either.
  */
 @Path("/services")
 @Produces(MediaType.APPLICATION_JSON)
@@ -126,7 +128,7 @@ public class PdServiceController {
   @GET
   @Operation(operationId = "listServices", summary = "Every service, with the environments each is linked into")
   @APIResponse(responseCode = "200", description = "The services")
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:agent"})
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk", "qits:agent"})
   public ListServicesResponse list() {
     return new ListServicesResponse(
         reads.call("The service catalogue listing", catalog::list).stream()

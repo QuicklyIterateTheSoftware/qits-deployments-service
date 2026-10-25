@@ -36,9 +36,9 @@ components:
           deprecated: true
         applications:
           type: array
-          deprecated: true
           items:
             $ref: "#/components/schemas/ApplicationSpec"
+          deprecated: true
     DeploymentRequestResponse:
       type: object
       properties:
@@ -303,9 +303,6 @@ components:
           format: int32
     SoftwareReleasedEvent:
       type: object
-      required:
-      - repoId
-      - version
       properties:
         runId:
           type: string
@@ -323,6 +320,9 @@ components:
           pattern: \S
         priority:
           type: string
+      required:
+      - repoId
+      - version
     UpdateEnvironmentRequest:
       type: object
       properties:
@@ -374,6 +374,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:agent
   /deployments/api/applications/{applicationId}/decommission:
     post:
@@ -410,6 +411,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
   /deployments/api/applications/{applicationId}/restart:
     post:
       summary: "Restart an application in place — its tasks are replaced, its deployment\
@@ -440,6 +442,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
   /deployments/api/applications/{applicationId}/scale:
     post:
       summary: "Scale an application's workload — 0 stops it, 1 runs it"
@@ -476,6 +479,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
   /deployments/api/claims/idp-clients:
     get:
       summary: "Every idp-client row this component holds, ordered by clientId — qits-idp's\
@@ -546,6 +550,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:agent
         - qits:system
   /deployments/api/deployment-requests/{id}:
@@ -577,6 +582,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:agent
         - qits:system
   /deployments/api/deployments:
@@ -609,6 +615,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:agent
   /deployments/api/environments:
     get:
@@ -631,6 +638,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:agent
     post:
       summary: "Create an environment: a name and a bundle network"
@@ -724,6 +732,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:agent
     delete:
       summary: "Tear an environment down (rows, containers, networks)"
@@ -780,6 +789,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:agent
   /deployments/api/events/software-released:
     post:
@@ -849,6 +859,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk
         - qits:agent
   /deployments/api/services/{name}:
     put:

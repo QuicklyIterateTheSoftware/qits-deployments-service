@@ -173,4 +173,68 @@ class AgentReadAccessTest {
         .then()
         .statusCode(403);
   }
+
+  private static RequestSpecification asDesk() {
+    return given()
+        .header("X-Qits-User", "dyn-delivery-desk")
+        .header("X-Qits-Roles", "qits:agent,qits:desk");
+  }
+
+  /**
+   * qits-1596: the delivery desk's bearer carries {@code qits:agent} + {@code qits:desk}, and the
+   * rule is that the desk is admitted everywhere {@code qits:admin-agent} is — every read on this
+   * surface, which {@code qits:desk} holds outright because none of these rows carry a project to
+   * bind it to.
+   */
+  @Test
+  void aDeskReadsEverythingAnAgentReads() {
+    String environmentId = createEnvironment("desk-reads");
+    asDesk().when().get(BASE + "/applications").then().statusCode(200);
+    asDesk()
+        .when()
+        .get(BASE + "/deployments?environmentId=" + environmentId)
+        .then()
+        .statusCode(200);
+    asDesk()
+        .when()
+        .get(BASE + "/deployment-requests?environmentId=" + environmentId)
+        .then()
+        .statusCode(200);
+    asDesk().when().get(BASE + "/environments").then().statusCode(200);
+    asDesk().when().get(BASE + "/environments/" + environmentId).then().statusCode(200);
+    asDesk()
+        .when()
+        .get(BASE + "/environments/" + environmentId + "/links")
+        .then()
+        .statusCode(200);
+    asDesk().when().get(BASE + "/services").then().statusCode(200);
+  }
+
+  /**
+   * qits-1596, the {@link #anAdminAgentOperatesTheApplicationLeversAndPlainAgentStillCannot} claim
+   * restated for the desk: it passes {@code PdApplicationController}'s operator levers exactly as
+   * {@code qits:admin-agent} does — the id names nobody deployed, so the answer is the door's own
+   * 404 rather than the role gate's 403.
+   */
+  @Test
+  void aDeskOperatesTheApplicationLeversExactlyLikeAnAdminAgent() {
+    String noSuchApplication = "no-such-env:desk-admitted";
+    asDesk()
+        .contentType(ContentType.JSON)
+        .body("{\"replicas\":0}")
+        .when()
+        .post(BASE + "/applications/" + noSuchApplication + "/scale")
+        .then()
+        .statusCode(404);
+    asDesk()
+        .when()
+        .post(BASE + "/applications/" + noSuchApplication + "/restart")
+        .then()
+        .statusCode(404);
+    asDesk()
+        .when()
+        .post(BASE + "/applications/" + noSuchApplication + "/decommission")
+        .then()
+        .statusCode(404);
+  }
 }

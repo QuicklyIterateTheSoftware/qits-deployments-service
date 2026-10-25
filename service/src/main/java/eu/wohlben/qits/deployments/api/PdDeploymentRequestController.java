@@ -92,11 +92,14 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  *
  * <p>{@code qits:admin-agent} is admitted too (qits-628 follow-up): an ADMIN workspace's coding
  * agent carries it alongside {@code qits:agent}, and for now it may use everything {@code
- * qits:admin} may use.
+ * qits:admin} may use. {@code qits:desk} is admitted alongside it (qits-1596), outright: this
+ * surface already serves {@code qits:system}, a different peer with no project scoping of its own,
+ * and the requests here carry a foreign, unresolved {@code projectId} rather than a column this
+ * component could bind the desk's own access to.
  */
 @Path("/deployment-requests")
 @Produces(MediaType.APPLICATION_JSON)
-@jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:agent", "qits:system"})
+@jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk", "qits:agent", "qits:system"})
 public class PdDeploymentRequestController {
 
   @Inject DeployService deployService;
