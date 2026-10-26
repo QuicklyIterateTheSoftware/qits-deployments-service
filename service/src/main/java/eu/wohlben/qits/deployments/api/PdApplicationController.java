@@ -67,7 +67,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  */
 @Path("/applications")
 @Produces(MediaType.APPLICATION_JSON)
-@jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk"})
+@jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk-admin", "qits:desk"})
 public class PdApplicationController {
 
   @Inject ServiceCatalog catalog;
@@ -118,7 +118,7 @@ public class PdApplicationController {
   @GET
   @Operation(operationId = "listApplications", summary = "Every application deployed here — environment applications and platform services")
   @APIResponse(responseCode = "200", description = "The applications, one entry per tier")
-  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk", "qits:agent"})
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk-admin", "qits:desk", "qits:agent"})
   public ListApplicationsResponse list() {
     return new ListApplicationsResponse(
         reads.call("The application listing", catalog::allApplications).stream()

@@ -374,6 +374,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:agent
   /deployments/api/applications/{applicationId}/decommission:
@@ -411,6 +412,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
   /deployments/api/applications/{applicationId}/restart:
     post:
@@ -442,6 +444,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
   /deployments/api/applications/{applicationId}/scale:
     post:
@@ -479,6 +482,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
   /deployments/api/claims/idp-clients:
     get:
@@ -550,6 +554,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:agent
         - qits:system
@@ -582,6 +587,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:agent
         - qits:system
@@ -615,6 +621,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:agent
   /deployments/api/environments:
@@ -638,6 +645,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:agent
     post:
@@ -732,6 +740,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:agent
     delete:
@@ -789,6 +798,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:agent
   /deployments/api/events/software-released:
@@ -859,6 +869,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:admin-agent
+        - qits:desk-admin
         - qits:desk
         - qits:agent
   /deployments/api/services/{name}:
