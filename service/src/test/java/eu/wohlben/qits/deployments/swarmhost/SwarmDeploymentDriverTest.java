@@ -1816,6 +1816,80 @@ class SwarmDeploymentDriverTest {
   }
 
   @Test
+  void aRollbackNamesTheFailedTaskWithItsOwnLogsBeforeTheServiceWideTail() {
+    // The qits-containers 2026.1026.210534 rollback: the service-wide tail was all predecessor (a
+    // long-running task out-talks one that exits in half a second) and the failed task's own line
+    // was nowhere in the row. The failed task of the deployed image is asked for its own logs, and
+    // that section comes before the service-wide tail so any cut takes the tail first.
+    SwarmDeploymentDriver driver = driverThatIssuedAnUpdate();
+    cli.script(
+        ".UpdateStatus",
+        result(0, "rollback_completed|" + stamp(ISSUED) + "|update rolled back due to failure"));
+    cli.script(
+        "--format " + SwarmDeploymentDriver.TASK_EVIDENCE_FORMAT,
+        result(
+            0,
+            "gkt59599k24s|"
+                + IMAGE
+                + "@sha256:0123abcd|Shutdown|Failed 3 seconds ago|task: non-zero exit (1)\n"
+                + "pred0000task|qits-platform-artifacts:8080/qits/qits-gateway:prev999"
+                + "|Running|Running 2 hours ago|\n"));
+    cli.script("service logs --tail 100 gkt59599k24s", result(0, "boom: cannot bind\n"));
+    cli.script(
+        "service logs --tail 200 dev-qits-gateway",
+        result(0, "predecessor chatter\n".repeat(500)));
+    cli.script("service ps", result(0, "dev-qits-gateway.1  Failed 3 seconds ago  task: non-zero"));
+
+    DeploymentDriver.Convergence converged =
+        driver.awaitConverged("dev-qits-gateway", Duration.ofSeconds(30));
+
+    assertEquals(DeploymentDriver.ConvergenceOutcome.ROLLED_BACK, converged.outcome());
+    String detail = converged.detail();
+    int failedLine = detail.indexOf("boom: cannot bind");
+    int serviceTail = detail.indexOf("predecessor chatter");
+    assertTrue(failedLine >= 0, detail);
+    assertTrue(detail.contains("gkt59599k24s"), detail);
+    assertTrue(detail.contains("task: non-zero exit (1)"), detail);
+    assertTrue(serviceTail > failedLine, "the failed task's evidence comes first: " + detail);
+    assertTrue(
+        detail.indexOf("Failed 3 seconds ago  task") > failedLine,
+        "the ps table follows the failed tasks: " + detail);
+    // The predecessor is not a failed task of this deployment, so nothing asks for its own logs.
+    assertEquals(0, cli.count("service logs --tail 100 pred0000task"), cli.calls.toString());
+  }
+
+  @Test
+  void theFailedTasksAreTheDeployedImagesNotRunningOnesNewestFirstAndAtMostThree() {
+    String image = "registry:8080/qits/app:new";
+    List<SwarmDeploymentDriver.TaskRow> rows =
+        SwarmDeploymentDriver.taskRows(
+            String.join(
+                "\n",
+                "t1|registry:8080/qits/app:old|Running|Running 2 hours ago|",
+                "t2|" + image + "@sha256:aa|Shutdown|Failed 1 second ago|exit 1",
+                "t3|" + image + "|Shutdown|Shutdown 5 seconds ago|",
+                "t4|" + image + "|Shutdown|Failed 9 seconds ago|a | pipe in it",
+                "t5|" + image + "|Shutdown|Failed 12 seconds ago|exit 1",
+                "t6|registry:8080/qits/app:older|Shutdown|Shutdown 3 days ago|",
+                "not a task row"));
+
+    List<SwarmDeploymentDriver.TaskRow> known = SwarmDeploymentDriver.failedTasks(rows, image);
+    assertEquals(
+        List.of("t2", "t3", "t4"), known.stream().map(SwarmDeploymentDriver.TaskRow::id).toList());
+    assertEquals("a | pipe in it", known.get(2).error());
+
+    // Without the deployed image: not running, and not the image a running task runs.
+    List<SwarmDeploymentDriver.TaskRow> unknown = SwarmDeploymentDriver.failedTasks(rows, null);
+    assertEquals(
+        List.of("t2", "t3", "t4"),
+        unknown.stream().map(SwarmDeploymentDriver.TaskRow::id).toList());
+    assertTrue(
+        SwarmDeploymentDriver.failedTasks(
+                SwarmDeploymentDriver.taskRows("t1|x:1|Running|Running now|"), null)
+            .isEmpty());
+  }
+
+  @Test
   void aPausedUpdateIsAFailureRatherThanSomethingToKeepWaitingOn() {
     SwarmDeploymentDriver driver = driverThatIssuedAnUpdate();
     cli.script(

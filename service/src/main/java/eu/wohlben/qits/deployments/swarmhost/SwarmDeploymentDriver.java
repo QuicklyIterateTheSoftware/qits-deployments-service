@@ -151,6 +151,23 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   private static final String LOG_TAIL_LINES = "200";
 
   /**
+   * Lines of ONE failed task's own log kept beside the service-wide tail — smaller, because there
+   * are up to {@link #FAILED_TASKS_KEPT} of them and a task that died at boot says why in a few.
+   */
+  private static final String TASK_LOG_TAIL_LINES = "100";
+
+  /** How many of the deployed image's failed tasks a failure detail names, newest first. */
+  static final int FAILED_TASKS_KEPT = 3;
+
+  /**
+   * One task per line, for {@link #failedTasks}: id | image | desired state | current state |
+   * error. The error is docker's free text and the one field that could carry a {@code |}, so it
+   * is last and read as the remainder of the line.
+   */
+  static final String TASK_EVIDENCE_FORMAT =
+      "{{.ID}}|{{.Image}}|{{.DesiredState}}|{{.CurrentState}}|{{.Error}}";
+
+  /**
    * What swarm calls the update it is in the middle of, what it says about it, and <b>when it
    * started</b>. A service that has never been updated has no {@code UpdateStatus} at all, which is
    * why the format prints an empty state rather than failing — see {@link #awaitConverged}.
@@ -308,6 +325,15 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * time on {@code pd-deploy-worker}.
    */
   private final Map<String, Instant> issuedUpdates = new ConcurrentHashMap<>();
+
+  /**
+   * The image this process last asked swarm to run, per service name — written by {@link #apply}
+   * (update and create alike), read and cleared by {@link #awaitConverged}. It is what tells the
+   * failed tasks of THIS deployment from the predecessor's in a failure detail; see {@link
+   * #failedTasks}. Bounded by the number of services, since a name is overwritten, never added
+   * twice.
+   */
+  private final Map<String, String> issuedImages = new ConcurrentHashMap<>();
 
   /**
    * The clock the issue instant is read from. A field so the suite can pin it — a test that
@@ -554,6 +580,11 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
           "Could not %s service %s: %s", updating ? "update" : "create", name, result.output());
       return new ApplyResult(ApplyOutcome.REFUSED, result.output());
     }
+    if (!self) {
+      // WHICH image the verdict is about — the failure detail picks this image's tasks out of the
+      // predecessor's. Never for a self-update: nothing here waits for its verdict.
+      issuedImages.put(target, spec.imageRef());
+    }
     if (updating && !self) {
       // WHICH update the verdict is about, recorded the only place that knows. See
       // `awaitConverged`: a service that has been cut over before answers with the PREVIOUS
@@ -630,6 +661,14 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * establish what state the task had been left in. So it captures the same two things, in the same
    * order — both bounded by {@code qits.deployments.output-max-chars}, which every {@link
    * #run} already truncates to, on top of the {@code --tail} the log capture asks for.
+   *
+   * <p><b>And the deployed image's failed tasks come first, each with its own log tail</b>, because
+   * the service-wide tail is not the failed task's: it interleaves every task swarm remembers, and
+   * the long-running predecessor fills it. A 2026-10-26 rollback of qits-containers stored a detail
+   * whose tail was all predecessor while the task that exited 1 within half a second had none of
+   * its output in it. So every failing arm reads: swarm's sentence, then {@link
+   * #failedTaskEvidence}, then {@code service ps}, then (where it was captured before) the
+   * service-wide tail last — anything that ever cuts the detail cuts that tail first.
    */
   @Override
   public Convergence awaitConverged(String name, Duration timeout) {
@@ -672,13 +711,20 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
                       + " back to its predecessor: "
                       + (message.isBlank() ? "the successor never went healthy" : message)
                       + "\n"
+                      + failedTaskEvidence(name)
                       + tasks(name)
                       + "\n"
                       + logs(name));
             }
             case "paused", "rollback_paused" -> {
               return Convergence.failed(
-                  "swarm paused the update of " + name + ": " + message + "\n" + tasks(name));
+                  "swarm paused the update of "
+                      + name
+                      + ": "
+                      + message
+                      + "\n"
+                      + failedTaskEvidence(name)
+                      + tasks(name));
             }
             case "" -> {
               // A service nothing has updated yet — the first deployment of this application.
@@ -710,12 +756,14 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
               + " after "
               + timeout.toSeconds()
               + "s\n"
+              + failedTaskEvidence(name)
               + tasks(name)
               + "\n"
               + logs(name));
     } finally {
       // The verdict is reached, however it went: this update is nobody's in-flight state now.
       issuedUpdates.remove(name);
+      issuedImages.remove(name);
     }
   }
 
@@ -797,7 +845,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     }
     if (states.stream().allMatch(TERMINAL_TASK_STATES::contains)) {
       return Convergence.failed(
-          "no task of " + name + " came up: " + String.join(", ", states) + "\n" + tasks(name));
+          "no task of "
+              + name
+              + " came up: "
+              + String.join(", ", states)
+              + "\n"
+              + failedTaskEvidence(name)
+              + tasks(name));
     }
     return null;
   }
@@ -2309,6 +2363,136 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
         run(
             List.of(runtime, "service", "logs", "--tail", LOG_TAIL_LINES, name), CLEANUP_TIMEOUT);
     return safe(result.output());
+  }
+
+  /** One task of the service as {@link #TASK_EVIDENCE_FORMAT} prints it. */
+  record TaskRow(String id, String image, String desiredState, String currentState, String error) {
+
+    boolean running() {
+      return currentState.toLowerCase(Locale.ROOT).startsWith("running");
+    }
+  }
+
+  /** Package-private for the parsing test; a line with no id, no image or no state is skipped. */
+  static List<TaskRow> taskRows(String output) {
+    List<TaskRow> rows = new ArrayList<>();
+    for (String line : lines(output)) {
+      String[] parts = line.split("\\|", 5);
+      if (parts.length < 4 || parts[0].isBlank() || parts[1].isBlank()) {
+        continue;
+      }
+      rows.add(
+          new TaskRow(
+              parts[0].strip(),
+              parts[1].strip(),
+              parts[2].strip(),
+              parts[3].strip(),
+              parts.length > 4 ? parts[4].strip() : ""));
+    }
+    return List.copyOf(rows);
+  }
+
+  /**
+   * The tasks a failure detail should name: the ones of the deployed image that are not running,
+   * newest first ({@code service ps} lists a slot's tasks newest first), at most {@link
+   * #FAILED_TASKS_KEPT}.
+   *
+   * <p><b>Why this exists at all.</b> {@code service logs <service>} interleaves every task swarm
+   * remembers, and the long-running predecessor out-talks a successor that died in half a second:
+   * a rollback of qits-containers 2026.1026.210534 stored a detail whose whole log tail was the
+   * predecessor's, and the failed task's one line of output was nowhere in it. Asking each failed
+   * task for its own logs is what keeps that line.
+   *
+   * <p>Matched by image when the image is known (this process issued the deployment). When it is
+   * not — the verdict asked by an instance that did not apply it — the best reading left is "not
+   * running, and not the image a running task runs", which is the predecessor excluded.
+   *
+   * <p>Package-private for the selection test.
+   */
+  static List<TaskRow> failedTasks(List<TaskRow> rows, String deployedImage) {
+    Set<String> runningImages = new HashSet<>();
+    for (TaskRow row : rows) {
+      if (row.running()) {
+        runningImages.add(withoutDigest(row.image()));
+      }
+    }
+    return rows.stream()
+        .filter(row -> !row.running())
+        .filter(
+            row ->
+                deployedImage == null || deployedImage.isBlank()
+                    ? !runningImages.contains(withoutDigest(row.image()))
+                    : sameImage(row.image(), deployedImage))
+        .limit(FAILED_TASKS_KEPT)
+        .toList();
+  }
+
+  /**
+   * Whether a task's image is the one deployed: equal once a pinned digest is dropped (swarm
+   * prints {@code ref@sha256:…} when it resolved one), allowing for docker's {@code docker.io/}
+   * normalisation on either side.
+   */
+  static boolean sameImage(String taskImage, String deployedImage) {
+    String task = withoutDigest(taskImage);
+    String deployed = withoutDigest(deployedImage);
+    return task.equals(deployed) || task.endsWith("/" + deployed) || deployed.endsWith("/" + task);
+  }
+
+  private static String withoutDigest(String image) {
+    String value = safe(image).strip();
+    int at = value.indexOf('@');
+    return at < 0 ? value : value.substring(0, at);
+  }
+
+  /**
+   * The failed tasks of the deployed image, each with its id, state, error and ITS OWN log tail —
+   * the section a failure detail puts first, so that whatever the detail is cut to later, the
+   * service-wide tail behind it goes before this does. Empty when there is nothing to name.
+   *
+   * <p>Never throws: this is evidence about a failure, and failing to gather it must not turn into
+   * a second one.
+   */
+  private String failedTaskEvidence(String name) {
+    try {
+      PdProcess.Result listed =
+          run(
+              List.of(
+                  runtime, "service", "ps", name, "--no-trunc", "--format", TASK_EVIDENCE_FORMAT),
+              INSPECT_TIMEOUT);
+      if (listed.exitCode() != 0) {
+        return "";
+      }
+      String deployedImage = issuedImages.get(name);
+      List<TaskRow> failed = failedTasks(taskRows(listed.output()), deployedImage);
+      if (failed.isEmpty()) {
+        return "";
+      }
+      StringBuilder evidence =
+          new StringBuilder("failed tasks")
+              .append(deployedImage == null ? "" : " of " + deployedImage)
+              .append(" (newest first):\n");
+      for (TaskRow task : failed) {
+        evidence
+            .append("--- task ")
+            .append(task.id())
+            .append(": ")
+            .append(task.currentState());
+        if (!task.error().isBlank()) {
+          evidence.append(" — ").append(task.error());
+        }
+        evidence.append('\n');
+        PdProcess.Result logged =
+            run(
+                List.of(runtime, "service", "logs", "--tail", TASK_LOG_TAIL_LINES, task.id()),
+                CLEANUP_TIMEOUT);
+        String output = safe(logged.output()).strip();
+        evidence.append(output.isEmpty() ? "(no output)" : output).append('\n');
+      }
+      return evidence.append("--- all tasks:\n").toString();
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "Could not gather the failed tasks of %s", name);
+      return "";
+    }
   }
 
   private static List<String> lines(String output) {
