@@ -79,7 +79,7 @@
              service/target/userstories/ — the story logs and their network diagrams, which are
              OBSERVED rather than narrated. This version is the one that ships NetworkTaps, the
              RestAssured filter four repos had each kept a copy of; the copy here is gone with it. -->
-        <qits.userflows.version>2026.1002.72731</qits.userflows.version>
+        <qits.userflows.version>2026.1028.231715</qits.userflows.version>
         <!-- The recording service mocks the story ITs boot against (the generic MockService plus
              idp.MockIdp), published by qits-integrations-quarkus beside qits-auth-core,
              qits-arch-rules and qits-db-core above. -->
