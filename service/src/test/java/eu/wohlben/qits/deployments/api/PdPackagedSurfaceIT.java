@@ -122,7 +122,12 @@ public class PdPackagedSurfaceIT {
           "QITS_RESOURCE_EVENTSTREAM_USERNAME", EmbeddedPg.USER,
           "QITS_RESOURCE_EVENTSTREAM_PASSWORD", EmbeddedPg.PASSWORD,
           // No docker on purpose: every driver call must degrade to a warning, never a failure.
-          "qits.deployments.container-runtime", "docker-absent-for-this-it");
+          "qits.deployments.container-runtime", "docker-absent-for-this-it",
+          // The packaged process runs the PROD profile, where the machine-token gate now ships ON
+          // (the live value, qits-765). This IT's posture is gate-off — forward-auth headers only,
+          // no issuer to reach — so it is stated here rather than inherited. StoryProfile below is
+          // the gate-on twin and sets the key the other way.
+          "qits.auth.machine.required", "false");
     }
 
     /**
@@ -279,9 +284,10 @@ public class PdPackagedSurfaceIT {
    *
    * <p>Every endpoint here carries a {@code @RolesAllowed} and has done since the surface was
    * closed, so an anonymous request is a 401 whatever else is right about the artifact. This
-   * profile leaves the machine gate at its shipped {@code false}, which is what keeps
-   * {@code quarkus.oidc.tenant-enabled} off and this IT free of an idp to reach — so there is no
-   * tenant to validate a bearer with, and the forward-auth pair qits-auth-core reads is the only
+   * profile pins the machine gate {@code false} (the prod default ships {@code true} since
+   * qits-765, so this IT states the gate-off posture explicitly rather than inheriting it), which
+   * is what keeps {@code quarkus.oidc.tenant-enabled} off and this IT free of an idp to reach — so
+   * there is no tenant to validate a bearer with, and the forward-auth pair qits-auth-core reads is the only
    * identity a packaged process in this posture accepts. It is a real one: the platform edge
    * asserts it for a session, and the bootstrap asserts it on its own hop over qits-net.
    *

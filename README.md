@@ -401,8 +401,9 @@ serving, and the sha a rollback would put back.
   to it by name. Those two are the pins, which qits-platform-artifacts' collector plans a sweep
   from, and `GET /deployment-requests`, which qits-projects draws a release's deploy phase from;
   everything else a read answers is a person's. The writes and the intake additionally call `MachineAuth.require()`
-  (audience `qits-platform`, the platform's one), behind a gate that ships **off** —
-  `QITS_AUTH_MACHINE_REQUIRED=true` turns it on, only once the senders are sending.
+  (audience `qits-platform`, the platform's one), behind a gate that ships **on** in prod since
+  qits-765 (it used to arrive as `QITS_AUTH_MACHINE_REQUIRED=true` from qits-configuration) and
+  **off** in `%dev`/`%test`.
 
 ## Building it
 

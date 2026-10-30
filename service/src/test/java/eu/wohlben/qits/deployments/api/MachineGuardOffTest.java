@@ -7,14 +7,15 @@ import io.restassured.http.ContentType;
 import org.junit.jupiter.api.Test;
 
 /**
- * The shipped posture: {@code qits.auth.machine.required} defaults to false, so every guarded write
- * accepts the credential-free call its sender makes today. This is the test that says adopting the
- * guard changed nothing — it runs on the default profile, against the same config a deployment
- * gets.
+ * The {@code %test} posture: {@code qits.auth.machine.required} is pinned {@code false} there (the
+ * prod default ships {@code true} since qits-765), so every guarded write accepts the
+ * credential-free call its sender makes today. This is the test that says adopting the guard
+ * changed nothing for a credential-free suite — it runs on the default test profile, against the
+ * same `%test` config a clone-alone `./mvnw test` gets.
  *
- * <p>It matters here for the reason it did in both ancestors: this component is deployed before
- * qits-platform-idp knows the {@code qits-platform-deployments} audience exists, so "the guard is
- * present and inert" is the state it ships in and lives in until that grant lands.
+ * <p>It matters here for the reason it did in both ancestors: a clone-alone build has no
+ * qits-platform-idp to validate a bearer against, so "the guard is present and inert" is the state
+ * this test fixes in place for `%test`/`%dev`.
  */
 @QuarkusTest
 class MachineGuardOffTest {

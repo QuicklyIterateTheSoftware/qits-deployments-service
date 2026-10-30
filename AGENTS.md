@@ -1525,13 +1525,15 @@ are machines — the intake and every topology write. It re-asks the audience qu
 already passed at `quarkus.oidc.token.audience`, so the annotation and the guard fail
 independently; apply the same question to a new write and answer it in the commit that adds it.
 
-The guard is **gated off** by `qits.auth.machine.required` (default `false`, shipped by
-`qits-auth-core`). Validation follows the same gate
-(`quarkus.oidc.tenant-enabled=${qits.auth.machine.required:false}`) — gate off, there is no OIDC
-tenant, nothing fetches a JWKS, and a clone-alone build needs no issuer. There is no third state.
-`@RolesAllowed` does **not** follow that gate: it is on in every posture, and what keeps a
-credential-free `./mvnw test` green is `qits-auth-core`'s `%test` dev user, which is granted every
-platform role the library ships, `qits:admin` and `qits:system` among them.
+The guard is `qits.auth.machine.required` (default `false`, shipped by `qits-auth-core`), and
+it **ships ON in prod since qits-765** — this repository's own `application.properties` overrides
+the library default with a literal `true`, with `%dev`/`%test` putting it back `false`; it used to
+arrive as `QITS_AUTH_MACHINE_REQUIRED=true` from qits-configuration, which is going away. Validation
+follows the same gate (`quarkus.oidc.tenant-enabled=${qits.auth.machine.required:false}`) — gate
+off, there is no OIDC tenant, nothing fetches a JWKS, and a clone-alone build needs no issuer. There
+is no third state. `@RolesAllowed` does **not** follow that gate: it is on in every posture, and
+what keeps a credential-free `./mvnw test` green is `qits-auth-core`'s `%test` dev user, which is
+granted every platform role the library ships, `qits:admin` and `qits:system` among them.
 
 **Three doors, and knowing which shut is how a grant is debugged.** A token for another service is
 refused 401 by `quarkus.oidc.token.audience` before any identity exists; a token addressed here but
