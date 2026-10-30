@@ -17,6 +17,7 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -253,6 +254,44 @@ public class ResourceProvisioning {
    */
   public List<DeploymentDriver.ResourceBinding> ensureAll(
       String applicationName, String environmentName, String renamedFrom, List<Resolved> declared) {
+    return ensureAll(applicationName, environmentName, renamedFrom, declared, null);
+  }
+
+  /**
+   * {@link #ensureAll(String, String, String, List)}, with one more statement carried INSIDE the
+   * claim transfer's own transaction: {@code alongsideTransfer} runs in the registry bracket of the
+   * first declared database — after that bracket's transfer, before its {@code findOne} — so the
+   * two commit together or not at all. That is the rename cutover's settings copy (qits-1399): a
+   * successor that took the predecessor's database took its settings in the same commit, and one
+   * whose transfer was refused took neither.
+   *
+   * <p>A rename that declares no database has no transfer bracket to join, and the callback then
+   * runs in a bracket of its own after everything declared was provisioned — there is no claim for
+   * it to agree with. Null is every deployment that is not a rename's first, and is byte-identical
+   * to the four-argument form.
+   */
+  public List<DeploymentDriver.ResourceBinding> ensureAll(
+      String applicationName,
+      String environmentName,
+      String renamedFrom,
+      List<Resolved> declared,
+      Runnable alongsideTransfer) {
+    AtomicReference<Runnable> pending = new AtomicReference<>(alongsideTransfer);
+    List<DeploymentDriver.ResourceBinding> bindings =
+        provisionAll(applicationName, environmentName, renamedFrom, declared, pending);
+    Runnable leftover = pending.getAndSet(null);
+    if (leftover != null) {
+      QuarkusTransaction.requiringNew().run(leftover);
+    }
+    return bindings;
+  }
+
+  private List<DeploymentDriver.ResourceBinding> provisionAll(
+      String applicationName,
+      String environmentName,
+      String renamedFrom,
+      List<Resolved> declared,
+      AtomicReference<Runnable> alongsideTransfer) {
     if (renamedFrom != null && environmentName != null) {
       // Up front, before the empty-declaration return and before any seam is called: a rename that
       // declares nothing at all abandons the predecessor's databases just as surely as one that
@@ -280,7 +319,13 @@ public class ResourceProvisioning {
           switch (resource.type()) {
             case POSTGRESQL ->
                 ensurePostgres(
-                    applicationName, environmentName, renamedFrom, host, admin, resource);
+                    applicationName,
+                    environmentName,
+                    renamedFrom,
+                    host,
+                    admin,
+                    resource,
+                    alongsideTransfer);
             case IDP_CLIENT -> ensureIdpClient(applicationName, environmentName, resource);
           });
     }
@@ -387,7 +432,8 @@ public class ResourceProvisioning {
       String renamedFrom,
       String host,
       String admin,
-      Resolved resource) {
+      Resolved resource,
+      AtomicReference<Runnable> alongsideTransfer) {
     String database = PdIdentifiers.requireDatabaseName(resource.database());
     String name = PdIdentifiers.requireResourceName(resource.name());
 
@@ -417,6 +463,12 @@ public class ResourceProvisioning {
                               + " different one in `resources:`");
                     }
                     transferClaim(claim, applicationName, database);
+                  }
+                  // The rename's settings copy, when the caller handed one in: in THIS bracket, after
+                  // the transfer and before the read, so both land in one commit or neither does.
+                  Runnable along = alongsideTransfer.getAndSet(null);
+                  if (along != null) {
+                    along.run();
                   }
                   // Keyed by the tier this deployment goes into. The repository still tests null
                   // rather than comparing it, because rows written before the plane had a tier keep
@@ -739,10 +791,22 @@ public class ResourceProvisioning {
   }
 
   /**
+   * Whether {@code applicationName} still holds an idp client row in that tier — the rename
+   * retirement's cheap "is anything left to do" read, one query and no seam call.
+   */
+  public boolean holdsIdpClient(String applicationName, String environmentName) {
+    return QuarkusTransaction.joiningExisting()
+        .call(
+            () ->
+                resources.listByApplication(applicationName, environmentName).stream()
+                    .anyMatch(row -> IDP_RESOURCE_TYPE.equals(row.resourceType)));
+  }
+
+  /**
    * Retire an application's idp client in one tier: delete the client at qits-idp, then the {@code
    * idp} {@code pd_resource} row that recorded it. The orphan a rename leaves behind (see {@link
-   * #ensureIdpClient}) is exactly what this exists for; the cutover that calls it is a later
-   * feature's.
+   * #ensureIdpClient}) is exactly what this exists for; the rename cutover's retirement of the
+   * predecessor (qits-1399, {@code DeployService}) calls it last.
    *
    * <p><b>Idempotent, and ordered so a failure keeps the row.</b> No row is nothing to do. The idp
    * delete counts a 404 as done, so a client already gone does not wedge the retirement; the row is
