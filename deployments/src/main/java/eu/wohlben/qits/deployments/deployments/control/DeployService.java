@@ -200,6 +200,9 @@ public class DeployService implements ReleaseAnnouncements {
   @Inject ResourceProvisioning resourceProvisioning;
   @Inject DeploymentObserver observer;
 
+  /** The settings store a rename cutover copies onto its successor and retires for its predecessor. */
+  @Inject Settings settings;
+
   /**
    * The acceptance ledger the durable door writes through — see {@link #announceDurably}. Nothing
    * on the manual path touches it.
@@ -277,6 +280,18 @@ public class DeployService implements ReleaseAnnouncements {
    * retries ever overlap: they cannot, the worker is single-threaded.
    */
   private final Map<String, SpecRetry> specRetries = new ConcurrentHashMap<>();
+
+  /**
+   * The rename retirements that stopped at a failed step, keyed by tier and predecessor — what
+   * {@link #retryRetirements()} finishes on the observation's cadence. Empty in the steady state, so
+   * a pass with nothing owed costs one {@code isEmpty}.
+   *
+   * <p><b>In memory, the {@link #specRetries} trade.</b> What is remembered is an intention; the
+   * facts are on the rows. A restart loses the intention and the successor's next deployment picks
+   * it back up — {@link #retireAfterCutover} reads what is still owed from the tables, not from
+   * here.
+   */
+  private final Map<String, Retirement> owedRetirements = new ConcurrentHashMap<>();
 
   /**
    * The observation tick — a bare daemon thread, the worker's own shape, rather than the
@@ -402,6 +417,12 @@ public class DeployService implements ReleaseAnnouncements {
             observer.observeOnce();
           } catch (RuntimeException e) {
             LOG.warnf(e, "The deployment observation pass failed; the next tick tries again");
+          }
+          // Last: a rename retirement a failed step left owed. Nothing to do on nearly every tick.
+          try {
+            retryRetirements();
+          } catch (RuntimeException e) {
+            LOG.warnf(e, "The owed rename retirements failed to run; the next tick tries again");
           }
         });
   }
@@ -2437,6 +2458,22 @@ public class DeployService implements ReleaseAnnouncements {
     }
     announceStarted(plan);
 
+    // RENAMING THE DEPLOYER IS REFUSED, before anything moves. A rename cutover retires the
+    // predecessor's service, and this process cannot retire the one it answers on — nor be the
+    // successor whose gate decides it. Asked only of a spec that declares `renamed_from`, so every
+    // other deployment spends nothing here.
+    if (plan.renamedFrom() != null && driver.isOwnService(plan.wireAlias())) {
+      finish(
+          deploymentId,
+          target,
+          PdDeploymentStatus.FAILED,
+          DeploymentDriver.selfRenameRefusal(plan.applicationName(), plan.renamedFrom()));
+      return;
+    }
+    // The declared predecessor, read once before anything moves: null for every spec without
+    // `renamed_from`, and for one whose predecessor is not deployed in this tier — see `Rename`.
+    Rename rename = renameOf(plan);
+
     // PROVISIONING GOES HERE, between the row's STARTING transition and the pull, and the placement
     // is three decisions at once:
     //   * AFTER the transition, because the row is what a failure is recorded on — a resource that
@@ -2457,7 +2494,15 @@ public class DeployService implements ReleaseAnnouncements {
               // application to every keyed thing here, and the one thing that MOVES is the resource
               // claim; the only other use is the retirement announced after cutover.
               plan.renamedFrom(),
-              plan.resources());
+              plan.resources(),
+              // A rename's FIRST deployment carries the predecessor's settings over, in the claim
+              // transfer's own transaction. Not on a later one: a successor already deployed has
+              // been configured since, and a key-wise copy would resurrect what was removed.
+              rename != null && rename.firstDeploy()
+                  ? () ->
+                      settings.copyForRename(
+                          plan.renamedFrom(), plan.applicationName(), plan.environmentName())
+                  : null);
     } catch (RuntimeException e) {
       LOG.warnf(
           "Could not provision the resources of %s: %s", plan.applicationName(), e.getMessage());
@@ -2538,7 +2583,21 @@ public class DeployService implements ReleaseAnnouncements {
     networks.addAll(desiredJoins(plan, primaryNetwork));
 
     DeploymentDriver.ServiceSpec spec =
-        serviceSpec(plan, List.copyOf(networks), imageRef, deploymentName, bindings);
+        serviceSpec(
+            plan,
+            List.copyOf(networks),
+            imageRef,
+            deploymentName,
+            bindings,
+            rename != null && rename.live());
+    // A SERVING predecessor the successor cannot start beside — its order is stop-first, or it
+    // binds a host port the predecessor holds — is stopped first. Decided here, once the spec is
+    // whole, because the published ports are the driver's union of the declaration and config.
+    boolean stopOld =
+        rename != null
+            && rename.live()
+            && (plan.updateOrder() == DeploymentDriver.UpdateOrder.STOP_FIRST
+                || driver.publishesPorts(spec));
     // What the runtime will call it, and therefore what the row records: asked BEFORE anything is
     // applied, so a crash in the middle leaves a STARTING row the startup sweep can still identify.
     String name = driver.nameOf(spec);
@@ -2554,10 +2613,21 @@ public class DeployService implements ReleaseAnnouncements {
     // The replace, whole, in one call. What it costs — a predecessor stopped and restartable, a
     // hand-rolled rollback — is the docker driver's business; under swarm it is one `service
     // update` and the orchestrator's own update policy.
+    if (stopOld) {
+      // AFTER the pull and the argv's inputs, so everything that can fail without touching the
+      // predecessor already has; BEFORE the apply, so the successor's create finds the ports free.
+      stopPredecessor(plan, rename);
+    }
     DeploymentDriver.ApplyResult applied = driver.apply(spec);
     switch (applied.outcome()) {
       case REFUSED -> {
-        finish(deploymentId, target, PdDeploymentStatus.FAILED, safe(applied.detail()));
+        finish(
+            deploymentId,
+            target,
+            PdDeploymentStatus.FAILED,
+            stopOld
+                ? restorePredecessor(plan, rename, bindings, name, safe(applied.detail()))
+                : safe(applied.detail()));
         return;
       }
       case HANDED_OFF -> {
@@ -2586,6 +2656,15 @@ public class DeployService implements ReleaseAnnouncements {
       // away — a rolled-back deployment and a refused apply asked for very different reactions and
       // read identically on the row. A convergence that failed WITHOUT a rollback keeps FAILED,
       // because there nothing is known to serve.
+      if (stopOld) {
+        // The predecessor was stopped for this successor, so nothing serves the place: put it back.
+        finish(
+            deploymentId,
+            target,
+            PdDeploymentStatus.FAILED,
+            restorePredecessor(plan, rename, bindings, name, safe(converged.detail())));
+        return;
+      }
       finish(
           deploymentId,
           target,
@@ -2655,10 +2734,444 @@ public class DeployService implements ReleaseAnnouncements {
       announceRetired(plan, cutover.finishedAt());
     }
     announceActive(plan, name, cutover.finishedAt());
+    // ...and then the predecessor itself, every step after the frames: see retireAfterCutover.
+    retireAfterCutover(plan, rename, name);
   }
 
   /** What the cutover bracket carries out: the containers to reap, and when it happened. */
   private record Cutover(List<String> oldContainers, Instant finishedAt) {}
+
+  /**
+   * A rename cutover (qits-1399): this deployment's spec declares {@code renamed_from: P} and P's
+   * newest row in this tier says it is deployed — {@code ACTIVE} or {@code SCALED_TO_ZERO}. Null
+   * for every other deployment, which then runs exactly the path it always ran.
+   *
+   * @param live P's newest row is {@code ACTIVE}: its service has a task serving, so the order the
+   *     successor takes over in matters (start beside it, or stop it first). {@code SCALED_TO_ZERO}
+   *     is a shell — the six {@code qits-platform-*} predecessors on the estate are — and the
+   *     successor deploys as an ordinary deployment with the retirement after it
+   * @param predecessorDeploymentId P's newest row: the one a retirement settles and, when live, the
+   *     last {@code ACTIVE} deployment a failed stop-first swap restores
+   * @param predecessorService the name the runtime holds P under — its row's own, the reaper's rule
+   * @param firstDeploy this successor has no earlier row in this tier, so the predecessor's
+   *     settings are copied onto it; a successor deployed before has been configured since
+   */
+  private record Rename(
+      String predecessor,
+      boolean live,
+      String predecessorDeploymentId,
+      String predecessorVersion,
+      String predecessorService,
+      boolean firstDeploy) {}
+
+  /** What {@link #retireAfterCutover} works through for one predecessor, as plain values. */
+  private record Retirement(
+      String predecessor,
+      String successor,
+      String successorService,
+      String environmentId,
+      String environmentName) {
+
+    String key() {
+      return environmentId + " " + predecessor;
+    }
+  }
+
+  /** See {@link Rename}: the predecessor's newest row in this tier, read in one bracket. */
+  private Rename renameOf(Plan plan) {
+    String predecessor = plan.renamedFrom();
+    if (predecessor == null
+        || predecessor.isBlank()
+        || predecessor.equals(plan.applicationName())) {
+      return null;
+    }
+    return QuarkusTransaction.requiringNew()
+        .call(
+            () -> {
+              PdDeployment newest =
+                  deployments.newestForPlace(predecessor, plan.environmentId()).orElse(null);
+              if (newest == null
+                  || (newest.status != PdDeploymentStatus.ACTIVE
+                      && newest.status != PdDeploymentStatus.SCALED_TO_ZERO)) {
+                return null;
+              }
+              boolean firstDeploy =
+                  deployments
+                      .listForPlaceNewestFirst(plan.applicationName(), plan.environmentId())
+                      .stream()
+                      .allMatch(row -> row.id.equals(plan.deploymentId()));
+              String service =
+                  newest.containerName == null || newest.containerName.isBlank()
+                      ? PdNetworks.alias(plan.environmentName(), predecessor)
+                      : newest.containerName;
+              return new Rename(
+                  predecessor,
+                  newest.status == PdDeploymentStatus.ACTIVE,
+                  newest.id,
+                  newest.imageTag(),
+                  service,
+                  firstDeploy);
+            });
+  }
+
+  /**
+   * The stop-old half of a live swap: the predecessor's service goes before the successor's is
+   * created, because the successor binds what the predecessor holds (a published port) or asked to
+   * never run beside its old self ({@code update_order: stop-first}). The image was pulled already,
+   * so the gap is the successor's start and nothing else.
+   */
+  private void stopPredecessor(Plan plan, Rename rename) {
+    if (rename.predecessorService().equals(plan.wireAlias())) {
+      return; // never the successor's own service, whatever a row says
+    }
+    LOG.infof(
+        "Rename cutover %s -> %s in %s: stopping %s first (%s), then creating the successor",
+        rename.predecessor(),
+        plan.applicationName(),
+        plan.environmentName(),
+        rename.predecessorService(),
+        plan.updateOrder() == DeploymentDriver.UpdateOrder.STOP_FIRST
+            ? "update_order: stop-first"
+            : "it publishes a host port");
+    try {
+      driver.removeService(rename.predecessorService());
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "Could not remove %s for its successor", rename.predecessorService());
+    }
+  }
+
+  /**
+   * A stop-old swap whose successor did not go live: nothing serves the place, so the predecessor is
+   * created again from its last {@code ACTIVE} row — the image that row ran, which is still on the
+   * host (no pull), under its own name, address and network. Returns the sentence the successor's
+   * row is failed with.
+   *
+   * <p><b>What the row cannot say is taken from the successor's spec</b>, which is the same
+   * repository one release later: the health command, the order, the publish mode, the grace and the
+   * declared shape. The health path and the public-node flag are the predecessor's catalogue row's.
+   * The resource bindings are the predecessor's own rows, plus the successor's for a database whose
+   * claim moved to it — the same role and the same password, so the predecessor reconnects exactly
+   * as it ran. A private volume is renamed back to the predecessor's ({@code <application>-<name>}).
+   *
+   * <p>A successor this deployment CREATED (its first) is removed first: it holds the ports and the
+   * old address the predecessor needs back. One that existed before is swarm's own rollback's.
+   */
+  private String restorePredecessor(
+      Plan plan,
+      Rename rename,
+      List<DeploymentDriver.ResourceBinding> successorBindings,
+      String successorService,
+      String failure) {
+    String predecessor = rename.predecessor();
+    String row = rename.predecessorDeploymentId() + " (" + rename.predecessorVersion() + ")";
+    if (rename.firstDeploy()) {
+      try {
+        driver.removeService(successorService);
+      } catch (RuntimeException e) {
+        LOG.warnf(e, "Could not remove the failed successor %s", successorService);
+      }
+    }
+    DeploymentDriver.ApplyResult restored;
+    try {
+      DeploymentDriver.ServiceSpec spec = predecessorSpec(plan, rename, successorBindings);
+      driver.ensureNetwork(
+          new DeploymentDriver.Network(
+              PdNetworks.application(plan.environmentName(), predecessor),
+              plan.environmentId(),
+              DeploymentDriver.NetworkKind.APPLICATION,
+              predecessor));
+      restored = driver.apply(spec);
+    } catch (RuntimeException e) {
+      restored =
+          new DeploymentDriver.ApplyResult(DeploymentDriver.ApplyOutcome.REFUSED, e.toString());
+    }
+    if (restored.outcome() == DeploymentDriver.ApplyOutcome.REFUSED) {
+      LOG.errorf(
+          "Rename cutover %s -> %s failed and %s could NOT be restored: %s",
+          predecessor, plan.applicationName(), predecessor, restored.detail());
+      return "the successor did not go live after its predecessor "
+          + predecessor
+          + " was stopped for it, and restoring "
+          + predecessor
+          + " from its last ACTIVE deployment "
+          + row
+          + " was refused — "
+          + predecessor
+          + " is NOT serving: "
+          + safe(restored.detail())
+          + "\n"
+          + failure;
+    }
+    LOG.warnf(
+        "Rename cutover %s -> %s failed; %s is restored from %s",
+        predecessor, plan.applicationName(), predecessor, row);
+    return "the successor did not go live after its predecessor "
+        + predecessor
+        + " was stopped for it, so "
+        + predecessor
+        + " was restored from its last ACTIVE deployment "
+        + row
+        + " and serves under its own name again; the rename is not cut over\n"
+        + failure;
+  }
+
+  /** The predecessor's service as its last ACTIVE row ran it — see {@link #restorePredecessor}. */
+  private DeploymentDriver.ServiceSpec predecessorSpec(
+      Plan plan, Rename rename, List<DeploymentDriver.ResourceBinding> successorBindings) {
+    String predecessor = rename.predecessor();
+    Optional<LinkedService> known = catalog.find(predecessor);
+    boolean availableOnEnv =
+        known.map(linked -> linked.service().availableOnEnv).orElse(plan.availableOnEnv());
+    String healthPath =
+        known
+            .map(linked -> linked.service().healthPath)
+            .filter(path -> path != null && !path.isBlank())
+            .orElse(plan.healthPath());
+
+    Map<String, DeploymentDriver.ResourceBinding> bindings = new java.util.LinkedHashMap<>();
+    for (DeploymentDriver.ResourceBinding own :
+        resourceProvisioning.recordedBindings(predecessor, plan.environmentName())) {
+      bindings.put(own.name(), own);
+    }
+    for (DeploymentDriver.ResourceBinding moved : successorBindings) {
+      bindings.putIfAbsent(moved.name(), moved);
+    }
+
+    List<DeploymentDriver.VolumeMount> volumes = new ArrayList<>();
+    String successorPrefix = plan.applicationName() + "-";
+    for (DeploymentDriver.VolumeMount volume : plan.volumes()) {
+      String source =
+          volume.source().startsWith(successorPrefix)
+              ? predecessor + "-" + volume.source().substring(successorPrefix.length())
+              : volume.source();
+      volumes.add(new DeploymentDriver.VolumeMount(source, volume.target(), volume.readOnly()));
+    }
+
+    String primary = PdNetworks.application(plan.environmentName(), predecessor);
+    List<String> networks = new ArrayList<>();
+    networks.add(primary);
+    for (String join : desiredJoins(plan, plan.primaryNetwork())) {
+      if (!join.equals(primary)) {
+        networks.add(join);
+      }
+    }
+    return new DeploymentDriver.ServiceSpec(
+        plan.environmentId(),
+        plan.environmentName(),
+        ApplicationKeys.of(plan.environmentId(), predecessor),
+        predecessor,
+        rename.predecessorDeploymentId(),
+        rename.predecessorVersion(),
+        rename.predecessorVersion(),
+        // Version-less extras: nothing here knows whether that release seeded a declaration.
+        false,
+        ContainerNames.of(plan.environmentName(), predecessor, rename.predecessorDeploymentId()),
+        PdNetworks.alias(plan.environmentName(), predecessor),
+        networks,
+        ImageRefs.imageRef(
+            registryHost, imageRepository, predecessor, rename.predecessorVersion()),
+        healthPath,
+        plan.healthCmd(),
+        availableOnEnv,
+        plan.updateOrder(),
+        plan.publishMode(),
+        List.copyOf(bindings.values()),
+        volumes,
+        plan.stopGracePeriod(),
+        plan.shape(),
+        null,
+        false);
+  }
+
+  /**
+   * The predecessor's retirement, after the successor's gate passed and both frames went out — the
+   * empty snapshot that withdraws its routes, then the successor's own ({@link #announceRetired}).
+   * In order, each step idempotent:
+   *
+   * <ol>
+   *   <li>its newest row and every {@code SPEC_UNREADABLE} one become {@code DECOMMISSIONED} — the
+   *       {@link ApplicationRetirement} rule, stamped {@code rename to <successor>};
+   *   <li>its service is removed if it still exists (a scaled-down shell still has one), and never
+   *       when the name is the successor's own;
+   *   <li>its {@code pd_service} row goes, by {@link ServiceCatalog#delete} — the operator door's
+   *       own path;
+   *   <li>its settings in this tier ({@link Settings#retire});
+   *   <li>its idp client ({@link ResourceProvisioning#retireIdpClient}) — {@code <env>-<P>}, which
+   *       is never the successor's {@code <env>-<T>}.
+   * </ol>
+   *
+   * <p><b>A failed step never fails the successor</b>, which is live and announced by now: it is a
+   * WARN, the rest waits, and {@link #retryRetirements()} runs the whole list again on the next
+   * observation. A restart loses that intention, and the successor's next deployment reads it back
+   * off the tables — so it runs not only on a cutover but whenever the predecessor's newest row is
+   * already {@code DECOMMISSIONED} and something of it is still left. Once nothing is, nothing runs.
+   */
+  private void retireAfterCutover(Plan plan, Rename rename, String successorService) {
+    String predecessor = plan.renamedFrom();
+    if (predecessor == null || predecessor.isBlank() || predecessor.equals(plan.applicationName())) {
+      return;
+    }
+    Retirement retirement =
+        new Retirement(
+            predecessor,
+            plan.applicationName(),
+            successorService,
+            plan.environmentId(),
+            plan.environmentName());
+    if (rename == null && !retirementOwed(retirement)) {
+      return;
+    }
+    if (retire(retirement)) {
+      owedRetirements.remove(retirement.key());
+    } else {
+      owedRetirements.put(retirement.key(), retirement);
+    }
+  }
+
+  /** The observation's half of {@link #retireAfterCutover}: finish what a failed step left owed. */
+  void retryRetirements() {
+    if (owedRetirements.isEmpty()) {
+      return;
+    }
+    for (Retirement retirement : List.copyOf(owedRetirements.values())) {
+      if (!retirementOwed(retirement) || retire(retirement)) {
+        owedRetirements.remove(retirement.key());
+      }
+    }
+  }
+
+  /**
+   * Whether anything of a renamed predecessor is still left in this tier — the cheap check, all of
+   * it reads. A predecessor still deployed ({@code ACTIVE} or {@code SCALED_TO_ZERO}) is owed by
+   * definition; one whose newest row is {@code DECOMMISSIONED} is owed while a {@code
+   * SPEC_UNREADABLE} row, its catalogue row, a setting or an idp client of it remains. Anything else
+   * — nothing deployed here, or a newest row in any other word — is not a rename's to retire.
+   */
+  private boolean retirementOwed(Retirement retirement) {
+    String predecessor = retirement.predecessor();
+    Boolean rows =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  List<PdDeployment> place =
+                      deployments.listForPlaceNewestFirst(
+                          predecessor, retirement.environmentId());
+                  if (place.isEmpty()) {
+                    return false;
+                  }
+                  PdDeploymentStatus newest = place.get(0).status;
+                  if (newest == PdDeploymentStatus.ACTIVE
+                      || newest == PdDeploymentStatus.SCALED_TO_ZERO) {
+                    return true;
+                  }
+                  if (newest != PdDeploymentStatus.DECOMMISSIONED) {
+                    return null;
+                  }
+                  return place.stream()
+                      .anyMatch(row -> row.status == PdDeploymentStatus.SPEC_UNREADABLE);
+                });
+    if (rows == null) {
+      return false;
+    }
+    if (rows) {
+      return true;
+    }
+    if (catalog.find(predecessor).isPresent()) {
+      return true;
+    }
+    if (!settings.rowsOf(predecessor, retirement.environmentName()).isEmpty()) {
+      return true;
+    }
+    return resourceProvisioning.holdsIdpClient(predecessor, retirement.environmentName());
+  }
+
+  /** One run of the retirement's steps; true when every one of them is done. */
+  private boolean retire(Retirement retirement) {
+    String predecessor = retirement.predecessor();
+    String step = "settling its deployment rows";
+    try {
+      String service =
+          DbRetry.inNewTx(
+              "The rename retirement of " + predecessor,
+              () -> settlePredecessorRows(retirement),
+              CUTOVER_BUDGET);
+      if (service != null && !service.equals(retirement.successorService())) {
+        step = "removing its service " + service;
+        driver.removeService(service);
+      }
+      step = "deleting its catalogue row";
+      if (catalog.find(predecessor).isPresent()) {
+        catalog.delete(predecessor);
+      }
+      step = "retiring its settings";
+      settings.retire(predecessor, retirement.environmentName());
+      step = "retiring its idp client";
+      resourceProvisioning.retireIdpClient(predecessor, retirement.environmentName());
+    } catch (RuntimeException e) {
+      LOG.warnf(
+          "The retirement of %s (renamed to %s) in %s stopped at %s, and the next observation"
+              + " tries again — %s stays live: %s",
+          predecessor,
+          retirement.successor(),
+          retirement.environmentName(),
+          step,
+          retirement.successor(),
+          e.getMessage());
+      return false;
+    }
+    LOG.infof(
+        "Retired %s in %s: it is %s now", predecessor, retirement.environmentName(),
+        retirement.successor());
+    return true;
+  }
+
+  /**
+   * Step one, in one transaction: the predecessor's newest row and every {@code SPEC_UNREADABLE}
+   * row become {@code DECOMMISSIONED}. Answers the service name the runtime holds it under, or null
+   * when it never ran here. A row the worker still owns ({@code QUEUED}/{@code STARTING}) is refused
+   * — it cannot happen on this single worker, and settling one would be overwritten a second later.
+   */
+  private String settlePredecessorRows(Retirement retirement) {
+    List<PdDeployment> place =
+        deployments.listForPlaceNewestFirst(
+            retirement.predecessor(), retirement.environmentId());
+    if (place.isEmpty()) {
+      return null;
+    }
+    PdDeployment newest = place.get(0);
+    if (newest.status == PdDeploymentStatus.QUEUED
+        || newest.status == PdDeploymentStatus.STARTING) {
+      throw new IllegalStateException(
+          "the newest deployment of " + retirement.predecessor() + " is " + newest.status);
+    }
+    String stamp =
+        "[decommissioned by rename to "
+            + retirement.successor()
+            + " at "
+            + Instant.now()
+            + ": "
+            + retirement.predecessor()
+            + " is "
+            + retirement.successor()
+            + " now — nothing deploys under this name any more, and the rows below are what it"
+            + " did while it existed]";
+    for (PdDeployment row : place) {
+      boolean settle =
+          (row == newest && row.status != PdDeploymentStatus.DECOMMISSIONED)
+              || row.status == PdDeploymentStatus.SPEC_UNREADABLE;
+      if (settle) {
+        row.status = PdDeploymentStatus.DECOMMISSIONED;
+        row.detail = ApplicationScaling.stamped(stamp, row.detail);
+        if (row.finishedAt == null) {
+          row.finishedAt = Instant.now();
+        }
+      }
+    }
+    deployments.flush();
+    return newest.containerName == null || newest.containerName.isBlank()
+        ? PdNetworks.alias(retirement.environmentName(), retirement.predecessor())
+        : newest.containerName;
+  }
 
   // `retireConvertedTierServices` lived here, and it went with the plane conversion that owed it.
   // A repository flipping to `deployment_target: platform` had its `<env>-<app>` services left
@@ -2692,7 +3205,8 @@ public class DeployService implements ReleaseAnnouncements {
       List<String> networks,
       String imageRef,
       String deploymentName,
-      List<DeploymentDriver.ResourceBinding> bindings) {
+      List<DeploymentDriver.ResourceBinding> bindings,
+      boolean takesOverPredecessor) {
     return new DeploymentDriver.ServiceSpec(
         plan.environmentId(),
         plan.environmentName(),
@@ -2729,7 +3243,11 @@ public class DeployService implements ReleaseAnnouncements {
         plan.stopGracePeriod(),
         // ...and the host-facing half the repository declared beside them. The driver unions it
         // with deployment config's mounts, publishes and aliases while both sources are live.
-        plan.shape());
+        plan.shape(),
+        // The declared predecessor, from which the driver derives the old wire address as an
+        // alias; null for every spec without `renamed_from`, which renders exactly what it did.
+        plan.renamedFrom(),
+        takesOverPredecessor);
   }
 
   /**
