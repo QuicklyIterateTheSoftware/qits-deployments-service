@@ -253,6 +253,12 @@ public interface SpecSource {
    * old one — see {@code ResourceProvisioning.ensureAll} — save one announcement: every successor
    * cutover withdraws the predecessor's edge routes, which nothing else would ever replace.
    *
+   * <p>{@code shape} is the host-facing half of the file — {@code binds:}, {@code publishes:} and
+   * {@code aliases:} — and {@link DeclaredShape#NONE} is the answer every file gives today. It is
+   * what deployment config's {@code mounts[n] bind:}, {@code publishes[n]} and {@code aliases[n]}
+   * state, moving into the repository; while both sources are live the driver takes their union and
+   * the declaration wins. See {@link DeclaredShape}.
+   *
    * <p><b>{@code deployBranches} is read and not used here</b>, and that is deliberate — see {@link
    * #deployBranches()}.
    */
@@ -273,10 +279,12 @@ public interface SpecSource {
       String apiDocs,
       String application,
       String renamedFrom,
-      Duration stopGracePeriod) {
+      Duration stopGracePeriod,
+      DeclaredShape shape) {
 
     /** A null list and an empty one are the same statement: the file named none. */
     public DeploymentSpec {
+      shape = shape == null ? DeclaredShape.NONE : shape;
       deployBranches = deployBranches == null ? List.of() : List.copyOf(deployBranches);
       resources = resources == null ? List.of() : List.copyOf(resources);
       volumes = volumes == null ? List.of() : List.copyOf(volumes);
@@ -287,6 +295,49 @@ public interface SpecSource {
           navigationEntries == null ? List.of() : List.copyOf(navigationEntries);
       stopGracePeriod =
           stopGracePeriod == null ? DeploymentDriver.DEFAULT_STOP_GRACE_PERIOD : stopGracePeriod;
+    }
+
+    /**
+     * The shape before {@code binds}, {@code publishes} and {@code aliases}: a file that names none
+     * of the three declares {@link DeclaredShape#NONE}.
+     */
+    public DeploymentSpec(
+        boolean availableOnEnv,
+        List<String> deployBranches,
+        String healthPath,
+        String healthCmd,
+        List<ResourceSpec> resources,
+        List<VolumeSpec> volumes,
+        DeploymentDriver.UpdateOrder updateOrder,
+        DeploymentDriver.PublishMode publishMode,
+        List<String> routes,
+        int upstreamPort,
+        String host,
+        boolean browserHostDeclared,
+        List<NavigationEntry> navigationEntries,
+        String apiDocs,
+        String application,
+        String renamedFrom,
+        Duration stopGracePeriod) {
+      this(
+          availableOnEnv,
+          deployBranches,
+          healthPath,
+          healthCmd,
+          resources,
+          volumes,
+          updateOrder,
+          publishMode,
+          routes,
+          upstreamPort,
+          host,
+          browserHostDeclared,
+          navigationEntries,
+          apiDocs,
+          application,
+          renamedFrom,
+          stopGracePeriod,
+          null);
     }
 
     /** The shape before {@code stop_grace_period}: a file that names none takes the default. */

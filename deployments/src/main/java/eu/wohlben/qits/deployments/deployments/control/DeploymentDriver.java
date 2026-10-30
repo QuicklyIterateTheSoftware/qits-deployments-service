@@ -467,12 +467,17 @@ public interface DeploymentDriver {
    * storage it needs, and the platform makes it exist. Empty for every application that keeps
    * nothing, which is most of them.
    *
-   * <p><b>What is deliberately NOT here: host binds, ports and extra env.</b> Those are {@link
-   * ServiceExtras}, read by the driver from deployment config, which is the trust domain that
-   * already holds the socket. Routing them through this record would put a value that reaches an
-   * argv on a path that starts at an HTTP intake. A declared VOLUME is the opposite case and that
-   * is why it may travel here: it names no host path, and its name is derived rather than stated,
-   * so nothing a repository writes can address storage that is not its own.
+   * <p>{@code shape} is what the repository declared in {@code binds:}, {@code publishes:} and
+   * {@code aliases:} — {@link DeclaredShape}, aliases still carrying {@code ${QITS_ENVIRONMENT}}
+   * for the driver to resolve against {@code environmentName}. A driver renders it together with
+   * {@link ServiceExtras}' mounts, publishes and aliases, the declaration winning wherever the two
+   * name one target, one port or one alias. {@link DeclaredShape#NONE} for every file that
+   * declares none, which is every file today.
+   *
+   * <p><b>What is still NOT here: extra env.</b> That is {@link ServiceExtras}, read by the driver
+   * from deployment config. The shape that DOES travel here was read at the released tag of the
+   * repository's own file, through the same reviewed path as {@code volumes} and {@code resources}
+   * — never from the HTTP intake, which carries a coordinate and no part of a spec.
    */
   record ServiceSpec(
       String environmentId,
@@ -494,16 +499,64 @@ public interface DeploymentDriver {
       PublishMode publishMode,
       List<ResourceBinding> resources,
       List<VolumeMount> volumes,
-      Duration stopGracePeriod) {
+      Duration stopGracePeriod,
+      DeclaredShape shape) {
 
     /** Null lists and empty ones are the same statement: this application declared none. */
     public ServiceSpec {
+      shape = shape == null ? DeclaredShape.NONE : shape;
       networks = networks == null ? List.of() : List.copyOf(networks);
       resources = resources == null ? List.of() : List.copyOf(resources);
       volumes = volumes == null ? List.of() : List.copyOf(volumes);
       updateOrder = updateOrder == null ? UpdateOrder.START_FIRST : updateOrder;
       publishMode = publishMode == null ? PublishMode.HOST : publishMode;
       stopGracePeriod = stopGracePeriod == null ? DEFAULT_STOP_GRACE_PERIOD : stopGracePeriod;
+    }
+
+    /** The shape before {@code binds}/{@code publishes}/{@code aliases}: it declares none. */
+    public ServiceSpec(
+        String environmentId,
+        String environmentName,
+        String applicationId,
+        String applicationName,
+        String deploymentId,
+        String commitSha,
+        String version,
+        boolean declarationSeeded,
+        String deploymentName,
+        String wireAlias,
+        List<String> networks,
+        String imageRef,
+        String healthPath,
+        String healthCmd,
+        boolean availableOnEnv,
+        UpdateOrder updateOrder,
+        PublishMode publishMode,
+        List<ResourceBinding> resources,
+        List<VolumeMount> volumes,
+        Duration stopGracePeriod) {
+      this(
+          environmentId,
+          environmentName,
+          applicationId,
+          applicationName,
+          deploymentId,
+          commitSha,
+          version,
+          declarationSeeded,
+          deploymentName,
+          wireAlias,
+          networks,
+          imageRef,
+          healthPath,
+          healthCmd,
+          availableOnEnv,
+          updateOrder,
+          publishMode,
+          resources,
+          volumes,
+          stopGracePeriod,
+          null);
     }
 
     /** The shape before {@code stop_grace_period}: a spec that names none takes the default. */

@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.deployments.confighost.ConfigHostExtrasSource;
 import eu.wohlben.qits.deployments.confighost.ExtrasStub;
+import eu.wohlben.qits.deployments.deployments.control.DeclaredShape;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentExtrasSource;
 import eu.wohlben.qits.deployments.deployments.control.ExtrasSnapshot;
@@ -2632,6 +2633,318 @@ class SwarmDeploymentDriverTest {
    * The docker CLI, scripted by a substring of the argv. Answers are consumed in order and the last
    * one repeats, which is what makes a polling test a list of readings rather than a state machine.
    */
+  // --- the declared shape: binds, publishes, aliases from deployments.yml (qits-765) ----------
+
+  /** The same spec, from a repository whose {@code deployments.yml} declares this shape. */
+  private static DeploymentDriver.ServiceSpec withShape(
+      DeploymentDriver.ServiceSpec spec, DeclaredShape shape) {
+    return new DeploymentDriver.ServiceSpec(
+        spec.environmentId(),
+        spec.environmentName(),
+        spec.applicationId(),
+        spec.applicationName(),
+        spec.deploymentId(),
+        spec.commitSha(),
+        spec.version(),
+        spec.declarationSeeded(),
+        spec.deploymentName(),
+        spec.wireAlias(),
+        spec.networks(),
+        spec.imageRef(),
+        spec.healthPath(),
+        spec.healthCmd(),
+        spec.availableOnEnv(),
+        spec.updateOrder(),
+        spec.publishMode(),
+        spec.resources(),
+        spec.volumes(),
+        spec.stopGracePeriod(),
+        shape);
+  }
+
+  /** What the edge declares: the socket, both ports and the four vhost aliases. */
+  private static DeclaredShape edgeShape() {
+    return new DeclaredShape(
+        List.of(
+            new ServiceExtras.Mount(
+                ServiceExtras.MountKind.BIND,
+                "/var/run/docker.sock",
+                "/var/run/docker.sock",
+                false)),
+        List.of(
+            new ServiceExtras.Publish(null, 8080, 8080, null),
+            new ServiceExtras.Publish(null, 443, 8443, null)),
+        List.of(
+            "registry.${QITS_ENVIRONMENT}.localhost",
+            "mirror.${QITS_ENVIRONMENT}.localhost",
+            "githost.${QITS_ENVIRONMENT}.localhost",
+            "githost.${QITS_ENVIRONMENT}.internal"));
+  }
+
+  /** A file standing in for the docker socket, and the gid the driver will read off it. */
+  private static String fakeSocketGid(SwarmDeploymentDriver driver) throws IOException {
+    Path socket = Files.createTempFile("docker", ".sock");
+    socket.toFile().deleteOnExit();
+    driver.scriptDockerSocket(socket);
+    return String.valueOf(Files.getAttribute(socket, "unix:gid"));
+  }
+
+  private static long occurrences(List<String> argv, String flag, String value) {
+    long count = 0;
+    for (int index = 0; index < argv.size() - 1; index++) {
+      if (flag.equals(argv.get(index)) && value.equals(argv.get(index + 1))) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  private static long flagCount(List<String> argv, String flag) {
+    return argv.stream().filter(flag::equals).count();
+  }
+
+  @Test
+  void aDeclaredShapeAloneIsRenderedByTheCreateWithTheEnvironmentPutIn() throws IOException {
+    SwarmDeploymentDriver driver = driver();
+    String gid = fakeSocketGid(driver);
+
+    List<String> argv =
+        driver.buildCreateArgv(withShape(spec(), edgeShape()), "dev-qits-gateway", List.of("qits-net"));
+
+    assertTrue(
+        argv.containsAll(
+            List.of("--mount", "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock")),
+        argv.toString());
+    assertTrue(
+        argv.containsAll(List.of("--publish", "published=8080,target=8080,mode=host")),
+        argv.toString());
+    assertTrue(
+        argv.containsAll(List.of("--publish", "published=443,target=8443,mode=host")),
+        argv.toString());
+    assertTrue(
+        argv.contains(
+            "name=qits-net,alias=registry.dev.localhost,alias=mirror.dev.localhost"
+                + ",alias=githost.dev.localhost,alias=githost.dev.internal"),
+        argv.toString());
+    // Binding the socket earns the socket's own group, read off the socket this process mounts.
+    assertTrue(argv.containsAll(List.of("--group", gid)), argv.toString());
+    assertEquals(1, flagCount(argv, "--group"), argv.toString());
+  }
+
+  @Test
+  void anApplicationThatDeclaresNoShapeGetsTheArgvItAlwaysGot() {
+    // Every file that exists today: the extras alone, byte for byte, and no socket is asked about.
+    Map<String, String> extras =
+        Map.of(
+            DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.mounts[0]",
+                "bind:/var/run/docker.sock:/var/run/docker.sock",
+            DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.publishes[0]", "8080:8080",
+            DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.groups[0]", "989",
+            DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.aliases[0]", "registry.dev.localhost");
+    SwarmDeploymentDriver plain = driver(extras);
+    List<String> before = plain.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
+    SwarmDeploymentDriver shaped = driver(extras);
+    shaped.scriptDockerSocket(Path.of("/nonexistent/docker.sock"));
+    List<String> after =
+        shaped.buildCreateArgv(
+            withShape(spec(), DeclaredShape.NONE), "dev-qits-gateway", List.of("qits-net"));
+
+    assertEquals(before, after);
+    assertTrue(after.containsAll(List.of("--group", "989")), after.toString());
+  }
+
+  @Test
+  void theDeclarationAndTheExtrasSayingTheSameThingRenderEachOnce() throws IOException {
+    // THE MIGRATION STEP, as volumes had it: until qits-1393 retires the extras source, the edge's
+    // shape is stated twice — in its own file and in deployment config. Swarm refuses two mounts on
+    // one target and two publishes of one port, so the union is deduplicated, and the declaration
+    // wins where the two disagree about what fills a target.
+    SwarmDeploymentDriver driver =
+        driver(
+            Map.ofEntries(
+                Map.entry(
+                    DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.mounts[0]",
+                    "bind:/var/run/docker.sock:/var/run/docker.sock"),
+                Map.entry(
+                    DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.mounts[1]",
+                    "volume:qits-gateway-certs:/certs"),
+                Map.entry(
+                    DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.mounts[2]",
+                    "volume:qits-gateway-letsencrypt:/work/.letsencrypt"),
+                Map.entry(DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.publishes[0]", "8080:8080"),
+                Map.entry(
+                    DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.publishes[1]", "443:9443/tcp"),
+                Map.entry(
+                    DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.publishes[2]", "5353:53/udp"),
+                Map.entry(
+                    DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.aliases[0]",
+                    "registry.dev.localhost"),
+                Map.entry(
+                    DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.aliases[1]",
+                    "dev-qits-platform-edge"),
+                Map.entry(DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.groups[0]", "989")));
+    String gid = fakeSocketGid(driver);
+    DeclaredShape shape =
+        new DeclaredShape(
+            List.of(
+                new ServiceExtras.Mount(
+                    ServiceExtras.MountKind.BIND,
+                    "/var/run/docker.sock",
+                    "/var/run/docker.sock",
+                    false),
+                new ServiceExtras.Mount(ServiceExtras.MountKind.BIND, "/srv/certs", "/certs", true)),
+            List.of(
+                new ServiceExtras.Publish(null, 8080, 8080, null),
+                new ServiceExtras.Publish(null, 443, 8443, null)),
+            List.of("registry.${QITS_ENVIRONMENT}.localhost"));
+
+    List<String> argv =
+        driver.buildCreateArgv(withShape(spec(), shape), "dev-qits-gateway", List.of("qits-net"));
+
+    assertEquals(
+        1,
+        argv.stream().filter(argument -> argument.contains("target=/var/run/docker.sock")).count(),
+        argv.toString());
+    // Same target, another source: the declaration wins and the config mount is dropped.
+    assertTrue(
+        argv.containsAll(List.of("--mount", "type=bind,source=/srv/certs,target=/certs,readonly")),
+        argv.toString());
+    assertTrue(argv.stream().noneMatch(argument -> argument.contains("qits-gateway-certs")));
+    // What only config states is kept.
+    assertTrue(
+        argv.containsAll(
+            List.of(
+                "--mount",
+                "type=volume,source=qits-gateway-letsencrypt,target=/work/.letsencrypt")),
+        argv.toString());
+    // One publish per port and protocol; the declaration's target wins for 443.
+    assertEquals(1, argv.stream().filter(argument -> argument.startsWith("published=8080,")).count());
+    assertEquals(1, argv.stream().filter(argument -> argument.startsWith("published=443,")).count());
+    assertTrue(argv.contains("published=443,target=8443,mode=host"), argv.toString());
+    assertTrue(argv.contains("published=5353,target=53,protocol=udp,mode=host"), argv.toString());
+    // One alias per name, the declaration's first, then what config adds.
+    assertTrue(
+        argv.contains("name=qits-net,alias=registry.dev.localhost,alias=dev-qits-platform-edge"),
+        argv.toString());
+    // One group per gid: config's 989 and the socket's own, the second only when it differs.
+    assertEquals(1, occurrences(argv, "--group", "989"), argv.toString());
+    assertEquals(1, occurrences(argv, "--group", gid), argv.toString());
+    assertEquals("989".equals(gid) ? 1 : 2, flagCount(argv, "--group"), argv.toString());
+  }
+
+  @Test
+  void theSocketGroupIsDedupedAgainstTheGidConfigAlreadySends() throws IOException {
+    SwarmDeploymentDriver probe = driver();
+    String gid = fakeSocketGid(probe);
+    SwarmDeploymentDriver driver =
+        driver(Map.of(DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.groups[0]", gid));
+    fakeSocketGid(driver);
+
+    List<String> argv =
+        driver.buildCreateArgv(withShape(spec(), edgeShape()), "dev-qits-gateway", List.of("qits-net"));
+
+    assertEquals(1, flagCount(argv, "--group"), argv.toString());
+    assertTrue(argv.containsAll(List.of("--group", gid)), argv.toString());
+  }
+
+  @Test
+  void aSocketThatCannotBeReadAddsNoGroup() {
+    SwarmDeploymentDriver driver = driver();
+    driver.scriptDockerSocket(Path.of("/nonexistent/qits-test/docker.sock"));
+
+    List<String> argv =
+        driver.buildCreateArgv(withShape(spec(), edgeShape()), "dev-qits-gateway", List.of("qits-net"));
+
+    assertEquals(0, flagCount(argv, "--group"), argv.toString());
+    assertTrue(argv.stream().anyMatch(argument -> argument.contains("type=bind")), argv.toString());
+  }
+
+  @Test
+  void aBindOfAnythingButTheSocketEarnsNoGroup() throws IOException {
+    SwarmDeploymentDriver driver = driver();
+    fakeSocketGid(driver);
+    DeclaredShape shape =
+        new DeclaredShape(
+            List.of(new ServiceExtras.Mount(ServiceExtras.MountKind.BIND, "/srv/a", "/a", false)),
+            List.of(),
+            List.of());
+
+    List<String> argv =
+        driver.buildCreateArgv(withShape(spec(), shape), "dev-qits-gateway", List.of("qits-net"));
+
+    assertEquals(0, flagCount(argv, "--group"), argv.toString());
+  }
+
+  @Test
+  void aDeclaredPublishThatDemandsAnIpIsRefusedAsConfigsIs() {
+    DeclaredShape shape =
+        new DeclaredShape(List.of(), List.of(new ServiceExtras.Publish("127.0.0.1", 1, 1, null)), List.of());
+
+    assertThrows(
+        ServiceExtras.Refused.class,
+        () ->
+            driver()
+                .buildCreateArgv(withShape(spec(), shape), "dev-qits-gateway", List.of("qits-net")));
+  }
+
+  @Test
+  void anUpdateRestatesNoneOfTheDeclaredShape() {
+    // Exactly the extras' rule: a service keeps the mounts, ports and attachments it was created
+    // with, and an update states the image, the identity, the policy and the environment.
+    List<String> argv =
+        driver().buildUpdateArgv(withShape(spec(), edgeShape()), "dev-qits-gateway");
+
+    assertTrue(argv.stream().noneMatch(argument -> argument.equals("--mount")), argv.toString());
+    assertTrue(argv.stream().noneMatch(argument -> argument.equals("--publish")), argv.toString());
+    assertTrue(argv.stream().noneMatch(argument -> argument.equals("--group")), argv.toString());
+    assertTrue(argv.stream().noneMatch(argument -> argument.startsWith("--network")), argv.toString());
+    assertTrue(argv.stream().noneMatch(argument -> argument.contains("dev.localhost")), argv.toString());
+  }
+
+  @Test
+  void aDeclaredAliasMissingFromTheLiveServiceRecreatesItWithTheEnvironmentPutIn() {
+    SwarmDeploymentDriver driver = driver();
+    driver.scriptDockerSocket(Path.of("/nonexistent/qits-test/docker.sock"));
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    cli.script("TaskTemplate.Networks", result(0, "registry.dev.localhost\n"));
+
+    DeploymentDriver.ApplyResult applied = driver.apply(withShape(spec(), edgeShape()));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, applied.outcome());
+    assertTrue(cli.matching("service update").isEmpty(), "an update could never carry the alias");
+    assertEquals(List.of("docker", "service", "rm", "dev-qits-gateway"), cli.matching("service rm"));
+    assertTrue(
+        cli.matching("service create")
+            .contains(
+                "name=qits-net,alias=registry.dev.localhost,alias=mirror.dev.localhost"
+                    + ",alias=githost.dev.localhost,alias=githost.dev.internal"),
+        cli.matching("service create").toString());
+  }
+
+  @Test
+  void aServiceThatAlreadyAnswersToEveryDeclaredAliasIsAnOrdinaryUpdate() {
+    // A declared bind or publish the live service lacks is NOT a reason to recreate — config's are
+    // not either, and a recreate of the edge over a port is an outage nobody asked for. The alias
+    // is the one arm that forces it, as config's alias does.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    cli.script(
+        "TaskTemplate.Networks",
+        result(
+            0,
+            "registry.dev.localhost\nmirror.dev.localhost\ngithost.dev.localhost\n"
+                + "githost.dev.internal\n"));
+    cli.script("ContainerSpec.Mounts", result(0, ""));
+
+    DeploymentDriver.ApplyResult applied = driver.apply(withShape(spec(), edgeShape()));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, applied.outcome());
+    assertTrue(cli.matching("service rm").isEmpty(), cli.calls.toString());
+    assertFalse(cli.matching("service update").isEmpty(), "the ordinary update path");
+  }
+
   private static final class ScriptedCli implements SwarmDeploymentDriver.Cli {
 
     final List<List<String>> calls = Collections.synchronizedList(new ArrayList<>());
