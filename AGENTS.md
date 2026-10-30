@@ -541,8 +541,8 @@ never for how.
 `desiredReplicas`, `scale` and `restart(serviceName)`; see *Scale and restart* below. The test the
 removed verbs failed is the one to keep applying: none of these three is a step somebody sequences
 to perform a deployment. Each states an outcome a person asked for, and nothing calls two of them in
-a row. **A fourth, `removeService(name)`, has NO CALLER LEFT and is kept for what it says.** It was
-the plane conversion's, and the conversion went with the plane; what the verb states — "this one
+a row. **A fourth, `removeService(name)`, is the rename cutover's** (qits-1399, see `renamed_from:`
+below) — it was the plane conversion's first, and went callerless with the plane; what the verb states — "this one
 service, named by a row, has been left behind and should not exist" — is exactly the sentence the
 plane's own deletion leaves nine times over on the estate, and that is an operator's hand step
 because nothing here can name those services (see *Retiring the plane's bare-named services*). It
@@ -550,8 +550,10 @@ passes the same test the other three do: by the time it would run the deployment
 converged, recorded and announced. It removes exactly the one named service — the targeted opposite of
 `removeEnvironmentContainers`' label sweep — is idempotent, and must never throw.
 
-**So `DeployService.execute` has no branches in it**: resolve → provision → pull (for the
-`IMAGE_MISSING` classification) → `apply` → `awaitConverged` → record. What stayed with it is the
+**So `DeployService.execute` has no orchestrator branches in it**: resolve → provision → pull (for
+the `IMAGE_MISSING` classification) → `apply` → `awaitConverged` → record. The one exception is a
+declared `renamed_from:` cutover, which may stop or restore a predecessor around that line and
+retires it afterwards; with no such key the path is unchanged. What stayed with it is the
 bookkeeping: the row per place, the four announcements, the cutover bracket, and the reap **after**
 the rows (`Convergence.retired()` comes back as data for exactly that reason).
 
@@ -2247,9 +2249,9 @@ Five things about it, each easy to undo by accident:
 **The bullet above says changing `application:` is a decommission and a new application. That half
 stands.** A swarm service's name IS its address and swarm cannot rename one; `pd_service`,
 `pd_deployment` and `pd_resource` are keyed by an application NAME and hold no repository identity.
-So a renamed application deploys BESIDE its predecessor, gets a fresh service, alias, rows and
-routes, and an operator retires the predecessor by hand. Nothing here changes that and nothing
-should try to.
+So a renamed application deploys BESIDE its predecessor and gets a fresh service, alias, rows and
+routes. That stays true — what changed with qits-1399 is that the deployer now performs the
+predecessor's retirement itself (the cutover, below) instead of leaving it to an operator.
 
 **What was wrong was "nothing here helped".** Six applications had to drop the retired
 `qits-platform-` prefix (qits-111), each successor declares the predecessor's database in
@@ -2292,7 +2294,7 @@ is COMPARED against a stored application name. Five things about it, each easy t
   unreachable (it fires only on a derivation bug). The cost is one orphan client plus its row, and a
   fresh secret for the successor: a secret is not data, and the predecessor keeps the one it runs on.
   `ResourceProvisioning.retireIdpClient` retires that orphan — `DELETE` at qits-idp (a 404 counts as
-  done), then the row, which a refused delete keeps — and nothing calls it until the cutover does.
+  done), then the row, which a refused delete keeps — and the cutover's retirement calls it last.
 - **`uq_pd_resource` is `(application_name, environment_name, resource_name)`**, so a successor that
   already holds a resource of that name in that tier has nowhere for the claim to move to. That is a
   refusal naming both rows, not a merge: two rows both claiming to be this application's is two
@@ -2310,11 +2312,53 @@ claim transfer.** `Settings.copyForRename(renamedFrom, applicationName, environm
 every row `renamedFrom` holds in that tier onto `applicationName`, skipping a key the successor
 already has, `value` and `secret` carried over unchanged and `updated_by` stamped `rename from
 <renamedFrom>` — a second run copies nothing, because "the successor does not have it yet" is read
-fresh each time. `Settings.retire(applicationName, environmentName)` is the predecessor's half,
-for later: it deletes that application's rows in that tier, idempotently, once the predecessor is
-decommissioned. Nothing calls either method yet; the cutover that will (qits-1399) runs
-`copyForRename` in the same transaction as `ResourceProvisioning.ensureAll`'s claim transfer, for
-the reason that transfer gives: either both land or neither does.
+fresh each time. `Settings.retire(applicationName, environmentName)` is the predecessor's half: it
+deletes that application's rows in that tier, idempotently. The cutover below calls both.
+
+##### The rename cutover (qits-1399)
+
+A deployment of T whose spec says `renamed_from: P`, while P's **newest row in that tier is `ACTIVE`
+or `SCALED_TO_ZERO`**, is a cutover (`DeployService.renameOf`). Anything else — no key, or a P not
+deployed here — runs the path it always ran. Seven things about it, each easy to undo by accident:
+
+- **Settings are copied on T's FIRST deployment only** (no earlier row of T in the tier), and inside
+  the claim transfer's own transaction: `ensureAll`'s fifth argument is a callback run in the
+  registry bracket of the first declared database, after its transfer and before its `findOne`, so
+  the copy and the transfer commit together or not at all. A rename declaring no database runs it in
+  a bracket of its own after provisioning. Not on a later deployment: the six live successors were
+  configured by hand, and a key-wise copy from their shells would resurrect what was removed.
+- **The old address follows the successor.** `ServiceSpec.renamedFrom` makes the swarm driver add
+  `PdNetworks.alias(env, P)` to the shared network's aliases (`shapeOf`) — derived from the spec,
+  never written to extras. A live successor lacking it is recreated for it **only** when the
+  predecessor is serving (`takesOverPredecessor`); behind a `SCALED_TO_ZERO` shell the alias rides
+  the next create, because a recreate is a `service rm` and for qits-edge that is the ingress going
+  dark for an address that answers nothing today. Once live, the alias matches and no loop follows.
+- **Order matters only when P is serving (`ACTIVE`).** `start-first` with no published port: T is
+  created and gated beside P, then P goes. `stop-first`, or any published port (the driver's union,
+  `publishesPorts`): the image is pulled, P's service is removed, then T is created. **A shell is an
+  ordinary deployment** — that is all six `qits-platform-*` predecessors, qits-edge included, which
+  is therefore an ordinary update of `dev-qits-edge` followed by the removal of
+  `dev-qits-platform-edge`. Nothing in the cutover ever removes the successor's own service.
+- **A stop-old successor that fails its gate (or is refused) restores P** from its last `ACTIVE` row
+  — that row's image (on the host, no pull), P's name, address, catalogue health path, its own
+  resource rows plus T's for a moved claim (same role, same password), T's shape and policy, private
+  volumes mapped back to `P-…`. A T this deployment created is removed first so P gets its ports and
+  address back. T's row is `FAILED` naming P and saying it was restored; nothing is retired.
+- **Retirement runs after T's gate, after both frames** (the empty `DeploymentActive` for P, then
+  T's), in order: P's newest row and every `SPEC_UNREADABLE` row → `DECOMMISSIONED` stamped
+  `[decommissioned by rename to T …]` (the `ApplicationRetirement` rule), P's swarm service removed,
+  P's `pd_service` row deleted (`ServiceCatalog.delete`, the operator door's path), `Settings.retire`,
+  `retireIdpClient` (`<env>-P`, never T's `<env>-T`). Each step is idempotent.
+- **A failed step never fails T.** It is a WARN; the retirement is remembered in
+  `owedRetirements` (memory, the `specRetries` trade) and `retryRetirements` runs it again after
+  every observation pass, dropping it once nothing of P is left — an empty map costs nothing. A
+  restart loses the memory, and T's next deployment reads what is owed back off the tables (P's
+  newest row `DECOMMISSIONED` with a row, a setting, an idp client or a `SPEC_UNREADABLE` row left).
+- **Renaming the deployer is refused** before anything moves (`DeploymentDriver.isOwnService`, with
+  a belt in the swarm driver's `apply`): the cutover would retire the service it answers on, so that
+  rename stays the manual one in *Retiring the plane's bare-named services*.
+
+`PdRenameCutoverTest` holds all of it end to end; `SwarmDeploymentDriverTest` holds the argv.
 
 **The release door was unaffected**, and that was checked rather than assumed at the time:
 qits-workspaces' `DeploymentSpecReader` **statted** this file and never opened it (a file means
