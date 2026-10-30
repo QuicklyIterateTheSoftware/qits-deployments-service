@@ -36,21 +36,6 @@ public class PdResourceRepository implements PanacheRepositoryBase<PdResource, S
   }
 
   /**
-   * Every resource one application holds in one tier, ordered by name — what the settings preview
-   * renders the {@code QITS_RESOURCE_*} family from without provisioning anything.
-   */
-  public List<PdResource> listByPlace(String applicationName, String environmentName) {
-    return environmentName == null
-        ? list(
-            "applicationName = ?1 and environmentName is null order by resourceName",
-            applicationName)
-        : list(
-            "applicationName = ?1 and environmentName = ?2 order by resourceName",
-            applicationName,
-            environmentName);
-  }
-
-  /**
    * Everything already claiming this database name — the cross-check that turns two repositories
    * naming one database into a refused deployment rather than a silent takeover. Unscoped by
    * application on purpose: the question is exactly "whose is this".
@@ -77,5 +62,20 @@ public class PdResourceRepository implements PanacheRepositoryBase<PdResource, S
    */
   public List<PdResource> listByResourceType(String resourceType) {
     return list("resourceType = ?1 order by clientId", resourceType);
+  }
+
+  /**
+   * Every resource one application holds in one tier, ordered by name — what the settings preview
+   * renders the {@code QITS_RESOURCE_*} family from without provisioning anything.
+   */
+  public List<PdResource> listByPlace(String applicationName, String environmentName) {
+    return environmentName == null
+        ? list(
+            "applicationName = ?1 and environmentName is null order by resourceName",
+            applicationName)
+        : list(
+            "applicationName = ?1 and environmentName = ?2 order by resourceName",
+            applicationName,
+            environmentName);
   }
 }
