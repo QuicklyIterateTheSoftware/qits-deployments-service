@@ -2945,6 +2945,180 @@ class SwarmDeploymentDriverTest {
     assertFalse(cli.matching("service update").isEmpty(), "the ordinary update path");
   }
 
+  // --- renamed_from: the predecessor's wire address as a derived alias (qits-1399) -------------
+
+  /** The same spec, from a repository that declares {@code renamed_from:}. */
+  private static DeploymentDriver.ServiceSpec renamed(
+      DeploymentDriver.ServiceSpec spec, String renamedFrom, boolean takesOverPredecessor) {
+    return new DeploymentDriver.ServiceSpec(
+        spec.environmentId(),
+        spec.environmentName(),
+        spec.applicationId(),
+        spec.applicationName(),
+        spec.deploymentId(),
+        spec.commitSha(),
+        spec.version(),
+        spec.declarationSeeded(),
+        spec.deploymentName(),
+        spec.wireAlias(),
+        spec.networks(),
+        spec.imageRef(),
+        spec.healthPath(),
+        spec.healthCmd(),
+        spec.availableOnEnv(),
+        spec.updateOrder(),
+        spec.publishMode(),
+        spec.resources(),
+        spec.volumes(),
+        spec.stopGracePeriod(),
+        spec.shape(),
+        renamedFrom,
+        takesOverPredecessor);
+  }
+
+  @Test
+  void aRenamedServiceAnswersOnItsPredecessorsWireAddressToo() {
+    // Derived from the spec, never from config: a dialer still holding `dev-qits-platform-gateway`
+    // reaches the successor once the predecessor's service is gone.
+    List<String> argv =
+        driver()
+            .buildCreateArgv(
+                renamed(spec(), "qits-platform-gateway", false),
+                "dev-qits-gateway",
+                List.of("qits-net", "qits-env-dev"));
+
+    assertEquals(
+        List.of(
+            "--network", "name=qits-net,alias=dev-qits-platform-gateway",
+            "--network", "qits-env-dev"),
+        networkArguments(argv),
+        argv.toString());
+  }
+
+  @Test
+  void theDerivedAliasFollowsWhatConfigDeclares() {
+    SwarmDeploymentDriver driver =
+        driver(
+            Map.of(
+                DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.aliases[0]",
+                "registry.dev.localhost"));
+
+    List<String> argv =
+        driver.buildCreateArgv(
+            renamed(spec(), "qits-platform-gateway", false), "dev-qits-gateway", List.of("qits-net"));
+
+    assertEquals(
+        List.of("--network", "name=qits-net,alias=registry.dev.localhost,alias=dev-qits-platform-gateway"),
+        networkArguments(argv),
+        argv.toString());
+  }
+
+  @Test
+  void noRenamedFromIsTheArgvItAlwaysWas() {
+    List<String> plain =
+        driver().buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net", "qits-env-dev"));
+    List<String> unrenamed =
+        driver()
+            .buildCreateArgv(
+                renamed(spec(), null, false),
+                "dev-qits-gateway",
+                List.of("qits-net", "qits-env-dev"));
+
+    assertEquals(plain, unrenamed);
+    assertTrue(plain.stream().noneMatch(argument -> argument.contains("alias=")), plain.toString());
+  }
+
+  @Test
+  void aSuccessorTakingOverAServingPredecessorIsRecreatedOnceForTheOldAddress() {
+    // The one moment dialers of the old address exist: an existing successor without it is
+    // recreated, exactly as a missing declared alias is.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    cli.script("TaskTemplate.Networks", result(0, "registry.dev.localhost\n"));
+    cli.script("service ps", result(0, ""));
+
+    DeploymentDriver.ApplyResult applied =
+        driver.apply(renamed(spec(), "qits-platform-gateway", true));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, applied.outcome());
+    assertFalse(cli.matching("service rm dev-qits-gateway").isEmpty(), cli.calls.toString());
+    assertTrue(
+        String.join(" ", cli.matching("service create"))
+            .contains("alias=dev-qits-platform-gateway"),
+        cli.calls.toString());
+  }
+
+  @Test
+  void aSuccessorWhoseAliasIsLiveIsUpdatedInPlaceRatherThanRecreatedAgain() {
+    // No loop: once the service answers to the old address, every later deployment is an update.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    cli.script("TaskTemplate.Networks", result(0, "dev-qits-platform-gateway\n"));
+
+    driver.apply(renamed(spec(), "qits-platform-gateway", true));
+
+    assertTrue(cli.matching("service rm").isEmpty(), cli.calls.toString());
+    assertFalse(cli.matching("service update").isEmpty());
+  }
+
+  @Test
+  void aSuccessorOfAScaledDownShellIsNeverRecreatedForTheOldAddress() {
+    // qits-edge's case: its predecessor is a SCALED_TO_ZERO shell, so the old address answers
+    // nothing today and a recreate would take the ingress down for it. The alias rides the next
+    // create instead, and this deployment is the ordinary update — not even an inspect is spent.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    // Every alias the edge declares is live; only the derived one is missing.
+    cli.script(
+        "TaskTemplate.Networks",
+        result(
+            0,
+            "registry.dev.localhost\nmirror.dev.localhost\ngithost.dev.localhost\n"
+                + "githost.dev.internal\n"));
+
+    DeploymentDriver.ApplyResult applied =
+        driver.apply(withShapeRenamed(edgeShape(), "qits-platform-gateway"));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, applied.outcome());
+    assertTrue(cli.matching("service rm").isEmpty(), cli.calls.toString());
+    assertFalse(cli.matching("service update").isEmpty(), "the ordinary update path");
+  }
+
+  private DeploymentDriver.ServiceSpec withShapeRenamed(DeclaredShape shape, String renamedFrom) {
+    return renamed(withShape(spec(), shape), renamedFrom, false);
+  }
+
+  @Test
+  void theDeployerRefusesToRenameItself() {
+    SwarmDeploymentDriver driver = driver();
+    driver.hostnameFile = hostnameFile("task-container-id");
+    cli.script("Config.Labels", result(0, "dev-qits-gateway"));
+    cli.script("--format {{.ID}}", result(0, "svc123"));
+
+    assertTrue(driver.isOwnService("dev-qits-gateway"));
+    DeploymentDriver.ApplyResult applied =
+        driver.apply(renamed(spec(), "qits-platform-gateway", false));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.REFUSED, applied.outcome());
+    assertEquals(
+        DeploymentDriver.selfRenameRefusal("qits-gateway", "qits-platform-gateway"),
+        applied.detail());
+    assertTrue(cli.matching("service update").isEmpty(), "nothing was issued");
+    assertTrue(cli.matching("service rm").isEmpty());
+  }
+
+  @Test
+  void publishesAreTheUnionOfTheDeclarationAndConfig() {
+    assertFalse(driver().publishesPorts(spec()));
+    assertTrue(driver().publishesPorts(withShape(spec(), edgeShape())));
+    assertTrue(
+        driver(Map.of(DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.publishes[0]", "8080:8080"))
+            .publishesPorts(spec()));
+  }
+
   private static final class ScriptedCli implements SwarmDeploymentDriver.Cli {
 
     final List<List<String>> calls = Collections.synchronizedList(new ArrayList<>());

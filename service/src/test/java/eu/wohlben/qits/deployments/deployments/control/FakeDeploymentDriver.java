@@ -105,6 +105,9 @@ public class FakeDeploymentDriver implements DeploymentDriver {
    */
   private volatile RuntimeException removeServiceFailure;
 
+  /** The service {@link #isOwnService} answers true for — the deployer's own; none by default. */
+  private volatile String ownService;
+
   public void reset() {
     applied.clear();
     awaited.clear();
@@ -118,6 +121,7 @@ public class FakeDeploymentDriver implements DeploymentDriver {
     detached.clear();
     removedServices.clear();
     removeServiceFailure = null;
+    ownService = null;
     calls.clear();
     runningImages.clear();
     stagedEnvironments.clear();
@@ -211,6 +215,11 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   /** Make every {@link #removeService} throw this. See {@link #removeServiceFailure}. */
   public void scriptRemoveServiceFailure(RuntimeException failure) {
     removeServiceFailure = failure;
+  }
+
+  /** Make {@link #isOwnService} answer true for this name: the deployer's own service. */
+  public void scriptOwnService(String name) {
+    ownService = name;
   }
 
   // --- what was recorded -------------------------------------------------------------------------
@@ -313,6 +322,12 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   public void reap(List<String> names) {
     reaped.addAll(names);
     calls.add("reap:" + names);
+  }
+
+  @Override
+  public boolean isOwnService(String name) {
+    calls.add("isOwnService:" + name);
+    return name.equals(ownService);
   }
 
   @Override
