@@ -34,10 +34,22 @@ import java.util.stream.Stream;
  * <consumer>-pacts-qits-deployments-service}) are pinned in the pom, so {@link #REQUIRED} is true: a
  * provider whose pinned pacts vanished has lost its dependency, and a green run would claim the
  * opposite.
+ *
+ * <p><b>{@code QITS_DEPLOYED_PACTS_DIR}</b>, when set and non-blank, is walked recursively for
+ * every file whose name ends with {@code _<provider>.json} too — the same suffix match the
+ * classpath scan uses — and each one is added as its own source, keyed by its file URL, loaded
+ * and verified alongside the classpath ones. The layout is {@code
+ * <dir>/<consumer-repo>/<pactVersion>/<consumer>_<provider>.json}. The release gate sets it after
+ * {@code qits artifacts fetch deployed-pacts}, so a verification run against it covers every
+ * deployed and rollback consumer version, not merely the one pinned in the pom. The directory must
+ * exist when the variable is set, or this throws: a gate told to verify deployed pacts and given
+ * none must fail, not pass.
  */
 public class ClasspathPactLoader implements PactLoader {
 
   static final String DIRECTORY = "pacts/";
+
+  static final String DEPLOYED_PACTS_DIR_ENV = "QITS_DEPLOYED_PACTS_DIR";
 
   /** Whether an empty classpath fails the build: true since consumer pacts are pinned. */
   static final boolean REQUIRED = true;
@@ -57,10 +69,18 @@ public class ClasspathPactLoader implements PactLoader {
 
   @Override
   public List<Pact> load(String providerName) {
+    return load(providerName, System.getenv(DEPLOYED_PACTS_DIR_ENV));
+  }
+
+  /**
+   * Package-private seam for tests: loads with an explicit deployed-pacts directory, bypassing
+   * {@code System.getenv}.
+   */
+  static List<Pact> load(String providerName, String deployedPactsDir) {
     String suffix = "_" + providerName + ".json";
     TreeMap<String, URL> found = new TreeMap<>();
     try {
-      ClassLoader loader = getClass().getClassLoader();
+      ClassLoader loader = ClasspathPactLoader.class.getClassLoader();
       for (String name : List.of("pacts", DIRECTORY)) {
         Enumeration<URL> dirs = loader.getResources(name);
         while (dirs.hasMoreElements()) {
@@ -69,6 +89,9 @@ public class ClasspathPactLoader implements PactLoader {
       }
     } catch (IOException e) {
       throw new UncheckedIOException(e);
+    }
+    if (deployedPactsDir != null && !deployedPactsDir.isBlank()) {
+      listDeployed(Path.of(deployedPactsDir), suffix, found);
     }
     if (found.isEmpty() && !REQUIRED) {
       LOG.warnf(
@@ -131,6 +154,34 @@ public class ClasspathPactLoader implements PactLoader {
         }
       }
       default -> throw new IllegalStateException("Cannot list pacts at " + dir);
+    }
+  }
+
+  /**
+   * Adds every matching file under the deployed-pacts directory, walked recursively, keyed by its
+   * file URL. The layout is {@code <dir>/<consumer-repo>/<pactVersion>/<consumer>_<provider>.json}.
+   *
+   * @throws IllegalStateException if {@code dir} does not exist
+   */
+  private static void listDeployed(Path dir, String suffix, TreeMap<String, URL> found) {
+    if (!Files.isDirectory(dir)) {
+      throw new IllegalStateException(
+          "QITS_DEPLOYED_PACTS_DIR names "
+              + dir
+              + ", which does not exist — a gate told to verify deployed pacts and given none"
+              + " must fail, not pass");
+    }
+    try (Stream<Path> files = Files.walk(dir)) {
+      for (Path file : files.toList()) {
+        String name = file.getFileName().toString();
+        if (Files.isRegularFile(file) && name.endsWith(suffix) && name.length() > suffix.length()) {
+          URL url = file.toUri().toURL();
+          found.put(file.toUri().toString(), url);
+          LOG.infof("Deployed consumer pact added: %s", file);
+        }
+      }
+    } catch (IOException e) {
+      throw new UncheckedIOException("Walking deployed pacts at " + dir, e);
     }
   }
 
