@@ -167,3 +167,6 @@ update_order: stop-first
 # root, which sits under the primary route above. The shell's Api Docs viewer reads it off
 # /main-navigation and frames it for this repository.
 api-docs: /deployments/q/swagger-ui
+
+# The docker socket (qits-765): the deployer adds the socket's group, read from the socket itself.
+binds: /var/run/docker.sock:/var/run/docker.sock

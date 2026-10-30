@@ -416,7 +416,7 @@ public class PdRenameCutoverTest {
   /** The edge's kind of service: a published host port. */
   private static DeclaredShape publishing() {
     return new DeclaredShape(
-        List.of(), List.of(new ServiceExtras.Publish(null, 8080, 8080, null)), List.of());
+        List.of(), List.of("8080:8080"), List.of());
   }
 
   private void deployPredecessor(String environmentId, String name, List<ResourceSpec> resources) {

@@ -1411,7 +1411,7 @@ can now be declared in `.config/qits/deployments.yml`, because qits-configuratio
 as a source of deployment shape (qits-1393 stops reading it):
 
     binds: /var/run/docker.sock:/var/run/docker.sock[, <abs-host-path>:<abs-target>[:ro]]
-    publishes: 8080:8080, 443:8443[, [<ipv4>:]<host-port>:<port>[/tcp|/udp]]
+    publishes: ${QITS_PORT}:8080, 443:8443[, [<ipv4>:]<host-port>:<port>[/tcp|/udp]]
     aliases: registry.${QITS_ENVIRONMENT}.localhost, githost.${QITS_ENVIRONMENT}.internal
 
 - **One grammar, one reader.** `publishes:` is parsed by `ServiceExtras.publish` and `aliases:` is
@@ -1419,9 +1419,19 @@ as a source of deployment shape (qits-1393 stops reading it):
   what a value means. `binds:` paths take the stricter mount-target charset (this value is
   repository-authored). Duplicates are refused: a bind target twice or over one of the file's own
   `volumes`, a published port+protocol twice (no protocol = tcp), an alias twice.
-- **`${QITS_ENVIRONMENT}` is the one placeholder**, kept as written by the parser (which never
-  knows the tier) and substituted by the driver against the deployment's environment
+- **`${QITS_ENVIRONMENT}` is the one placeholder an alias takes**, kept as written by the parser
+  (which never knows the tier) and substituted by the driver against the deployment's environment
   (`DeclaredShape.aliasesFor`), then re-checked. Any other `$` is refused at the line.
+- **`${QITS_PORT}` is the one placeholder a publish takes, and only as the whole HOST port**
+  (`${QITS_PORT}:8080`, `0.0.0.0:${QITS_PORT}:8080/tcp`; never the container port, never a part of a
+  number). It is the host HTTP port the bootstrap installed the platform on — an installation's
+  choice the file cannot know — so `publishes:` is kept AS WRITTEN too and the driver substitutes
+  `qits.deployments.qits-port` (bare `QITS_PORT`, 8080 shipped) in `DeclaredShape.publishesFor`,
+  then re-reads every value through `ServiceExtras.publish`. The parser checks the grammar with a
+  stand-in port, counts the placeholder as a port of its own for the duplicate check, and refuses
+  any other `$`; a clash only the real value reveals (`${QITS_PORT}:8080, 9090:9090` with the port
+  at 9090) is refused by the substitution. Dedupe against the extras runs on the SUBSTITUTED port,
+  so config's `publishes[0]=8080:8080` beside the file's `${QITS_PORT}:8080` still renders once.
 - **The union, the declaration winning.** `SwarmDeploymentDriver.shapeOf` folds the declaration into
   the extras: a mount by target, a publish by port+protocol, an alias by name — declared first, then
   whatever config adds that the declaration does not cover. Nothing reaches swarm twice, so a file

@@ -1029,12 +1029,61 @@ class DeploymentSpecParserTest {
   void publishesAreTheExtrasGrammarReadByTheSameCode() {
     DeclaredShape shape = parse("publishes: 8080:8080, 443:8443/tcp, 0.0.0.0:5353:53/UDP\n").shape();
 
+    // Kept as written, and read by the extras' own code once the deployment knows its port.
+    assertEquals(List.of("8080:8080", "443:8443/tcp", "0.0.0.0:5353:53/UDP"), shape.publishes());
     assertEquals(
         List.of(
             new ServiceExtras.Publish(null, 8080, 8080, null),
             new ServiceExtras.Publish(null, 443, 8443, "tcp"),
             new ServiceExtras.Publish("0.0.0.0", 5353, 53, "udp")),
-        shape.publishes());
+        shape.publishesFor(8080));
+  }
+
+  @Test
+  void theHostPortMayBeTheInstallationsQitsPortAndIsKeptAsWritten() {
+    DeclaredShape shape = parse("publishes: ${QITS_PORT}:8080, 443:8443\n").shape();
+
+    assertEquals(List.of("${QITS_PORT}:8080", "443:8443"), shape.publishes());
+    assertEquals(
+        List.of(
+            new ServiceExtras.Publish(null, 9080, 8080, null),
+            new ServiceExtras.Publish(null, 443, 8443, null)),
+        shape.publishesFor(9080));
+    // With an ip and a protocol around it, it is still the host port.
+    assertEquals(
+        new ServiceExtras.Publish("0.0.0.0", 80, 8080, "tcp"),
+        parse("publishes: 0.0.0.0:${QITS_PORT}:8080/tcp\n").shape().publishesFor(80).get(0));
+  }
+
+  @Test
+  void qitsPortIsRefusedAnywhereButTheHostPortAndNoOtherPlaceholderIsKnown() {
+    assertTrue(
+        messageOf("publishes: 8080:${QITS_PORT}\n").contains("as the whole host port"),
+        messageOf("publishes: 8080:${QITS_PORT}\n"));
+    assertTrue(messageOf("publishes: ${QITS_PORT}0:8080\n").contains("as the whole host port"));
+    assertTrue(
+        messageOf("publishes: ${QITS_PORT}:${QITS_PORT}\n").contains("as the whole host port"));
+    assertTrue(messageOf("publishes: ${QITS_PORT}\n").contains("as the whole host port"));
+    assertTrue(
+        messageOf("publishes: ${QITS_HTTPS_PORT}:8443\n").contains("the one placeholder"),
+        messageOf("publishes: ${QITS_HTTPS_PORT}:8443\n"));
+    assertTrue(messageOf("publishes: $PORT:8080\n").contains("the one placeholder"));
+    assertTrue(
+        messageOf("publishes: ${QITS_PORT}:8080, ${QITS_PORT}:9090\n").contains("twice"));
+    // Over the other protocol it is another port, as a literal one is.
+    assertEquals(
+        2, parse("publishes: ${QITS_PORT}:53/tcp, ${QITS_PORT}:53/udp\n").shape().publishes().size());
+  }
+
+  @Test
+  void aQitsPortThatLandsOnAnotherDeclaredPortIsRefusedOnceSubstituted() {
+    DeclaredShape shape = parse("publishes: ${QITS_PORT}:8080, 9090:9090\n").shape();
+
+    assertEquals(2, shape.publishesFor(8080).size());
+    ServiceExtras.Refused refused =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            ServiceExtras.Refused.class, () -> shape.publishesFor(9090));
+    assertTrue(refused.getMessage().contains("9090/tcp"), refused.getMessage());
   }
 
   @Test
@@ -1047,7 +1096,8 @@ class DeploymentSpecParserTest {
     // An ip that is not 0.0.0.0 PARSES here, as deployment config's does: it is the swarm driver
     // that refuses it, because swarm's publish has no ip field.
     assertEquals(
-        "127.0.0.1", parse("publishes: 127.0.0.1:8080:8080\n").shape().publishes().get(0).ip());
+        "127.0.0.1",
+        parse("publishes: 127.0.0.1:8080:8080\n").shape().publishesFor(8080).get(0).ip());
   }
 
   @Test
