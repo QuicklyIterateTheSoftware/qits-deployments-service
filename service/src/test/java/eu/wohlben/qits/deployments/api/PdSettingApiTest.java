@@ -248,29 +248,33 @@ class PdSettingApiTest {
         .statusCode(org.hamcrest.Matchers.anyOf(equalTo(200), equalTo(201)));
   }
 
-  @Test
-  void thePreviewOverlaysSettingsOnTodaysEnvironmentAndDiffsTheLiveService() {
-    String env = "set-preview";
-    String app = "set-preview-app";
+  /** One place, scripted the same way for both previews: returns {@code app}. */
+  private String scriptPreviewPlace(String env, String app) {
     registerService(app, createEnvironment(env));
     driver.scriptStagedEnvironment(
         app,
-        List.of(
-            "QITS_APPLICATION=" + app,
-            "QITS_RESOURCE_DB_PASSWORD=fresh",
-            "FROM_EXTRAS=extras",
-            "OVERRIDDEN=extras-value"));
+        List.of("QITS_APPLICATION=" + app, "QITS_RESOURCE_DB_PASSWORD=fresh"),
+        List.of("FROM_EXTRAS=extras", "OVERRIDDEN=extras-value"));
     driver.scriptLiveEnvironment(
         PdNetworks.alias(env, app),
         List.of(
             "QITS_APPLICATION=" + app,
             "QITS_RESOURCE_DB_PASSWORD=stale",
+            "QITS_RESOURCE_DB_URL=jdbc:postgresql://db/app",
+            "FROM_EXTRAS=extras",
             "OVERRIDDEN=extras-value",
             "HAND_ADDED=by-an-operator",
             "SIGNING_KEY=old"));
     put(app, env, "OVERRIDDEN", "setting-value", false);
     put(app, env, "SIGNING_KEY", SECRET_VALUE, true);
     put(app, env, "NEW_SETTING", "new", false);
+    return app;
+  }
+
+  @Test
+  void theDefaultPreviewIsTheDeploymentAfterTheSwitchWithNoExtras() {
+    String env = "set-preview";
+    String app = scriptPreviewPlace(env, "set-preview-app");
 
     String body =
         asAgent()
@@ -280,10 +284,12 @@ class PdSettingApiTest {
             .statusCode(200)
             .body("application", equalTo(app))
             .body("environment", equalTo(env))
+            .body("extrasIncluded", equalTo(false))
             .body("unchanged", equalTo(1))
-            .body("added.key", equalTo(List.of("FROM_EXTRAS", "NEW_SETTING")))
-            .body("removed.key", equalTo(List.of("HAND_ADDED")))
-            .body("removed[0].value", equalTo("by-an-operator"))
+            .body("added.key", equalTo(List.of("NEW_SETTING")))
+            // The extras key is what the switch would drop — the very thing this door exists to show.
+            .body("removed.key", equalTo(List.of("FROM_EXTRAS", "HAND_ADDED")))
+            .body("removed[1].value", equalTo("by-an-operator"))
             .body("changed.key", equalTo(List.of("OVERRIDDEN", "QITS_RESOURCE_DB_PASSWORD", "SIGNING_KEY")))
             .body("changed[0].from", equalTo("extras-value"))
             .body("changed[0].to", equalTo("setting-value"))
@@ -294,11 +300,39 @@ class PdSettingApiTest {
             .body("changed[2].from", nullValue())
             .body("changed[2].to", nullValue())
             .body("changed[2].secret", equalTo(true))
+            // A resource key the next deployment does not state is KEPT by the update, never removed.
+            .body("kept.key", equalTo(List.of("QITS_RESOURCE_DB_URL")))
+            .body("kept[0].value", equalTo("jdbc:postgresql://db/app"))
             .extract()
             .asString();
     assertFalse(body.contains(SECRET_VALUE));
     assertFalse(body.contains("stale"));
     assertFalse(body.contains("fresh"));
+    assertTrue(driver.calls().contains("stagedEnvironment:" + app + ":false"), driver.calls().toString());
+  }
+
+  @Test
+  void extrasIncludeIsTodaysDeploymentWithTheSettingsOverlaid() {
+    String env = "set-preview-extras";
+    String app = scriptPreviewPlace(env, "set-extras-app");
+
+    given()
+        .when()
+        .get(SETTINGS + "/preview/" + app + "/" + env + "?extras=include")
+        .then()
+        .statusCode(200)
+        .body("extrasIncluded", equalTo(true))
+        .body("unchanged", equalTo(2))
+        .body("added.key", equalTo(List.of("NEW_SETTING")))
+        .body("removed.key", equalTo(List.of("HAND_ADDED")))
+        .body("changed.key", equalTo(List.of("OVERRIDDEN", "QITS_RESOURCE_DB_PASSWORD", "SIGNING_KEY")))
+        .body("changed[0].to", equalTo("setting-value"))
+        .body("kept.key", equalTo(List.of("QITS_RESOURCE_DB_URL")));
+    given()
+        .when()
+        .get(SETTINGS + "/preview/" + app + "/" + env + "?extras=sometimes")
+        .then()
+        .statusCode(400);
   }
 
   @Test
@@ -306,7 +340,7 @@ class PdSettingApiTest {
     String env = "set-preview-cold";
     String app = "set-cold-app";
     registerService(app, createEnvironment(env));
-    driver.scriptStagedEnvironment(app, List.of("QITS_APPLICATION=" + app, "A=1"));
+    driver.scriptStagedEnvironment(app, List.of("QITS_APPLICATION=" + app, "A=1"), List.of());
 
     given()
         .when()
@@ -316,6 +350,7 @@ class PdSettingApiTest {
         .body("added.key", equalTo(List.of("A", "QITS_APPLICATION")))
         .body("removed", hasSize(0))
         .body("changed", hasSize(0))
+        .body("kept", hasSize(0))
         .body("unchanged", equalTo(0));
   }
 

@@ -309,6 +309,8 @@ components:
           type: string
         environment:
           type: string
+        extrasIncluded:
+          type: boolean
         added:
           type: array
           items:
@@ -321,6 +323,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PreviewChange"
+        kept:
+          type: array
+          items:
+            $ref: "#/components/schemas/PreviewEntry"
         unchanged:
           type: integer
           format: int32
@@ -1043,9 +1049,21 @@ paths:
         - qits:agent
   /deployments/api/settings/preview/{application}/{environment}:
     get:
-      summary: The environment the next deployment would set (today's computation
-        plus the settings rows) compared with the live service's; secret values are
-        null on both sides
+      summary: What switching the deployer to settings would change on the live service
+      description: "Compares the environment the next deployment would set with the\
+        \ live service's. Default (no extras parameter, or extras=exclude): the deployment\
+        \ AFTER the switch from qits-configuration to settings — the variables the\
+        \ deployer injects itself (QITS_ENVIRONMENT, QITS_APPLICATION, QITS_DOMAIN,\
+        \ the OTEL identity, QITS_RESOURCE_*) plus the settings rows; qits-configuration's\
+        \ extras are not read. extras=include: today's deployment — the deployer's\
+        \ own variables, then the extras env, then the settings rows (a setting wins\
+        \ over an extras key of the same name). added/removed/changed compare the\
+        \ two sides; kept lists live keys the next deployment does not state but an\
+        \ update never removes (the deployer's own variables and QITS_RESOURCE_*),\
+        \ so removed is exactly what an update would --env-rm. A value is null on\
+        \ both sides when the key is a secret setting or its name contains SECRET,\
+        \ TOKEN, PASSWORD or CREDENTIAL, or ends with _AUTH. A service that is not\
+        \ running makes everything added."
       operationId: previewSettings
       parameters:
       - name: application
@@ -1058,21 +1076,25 @@ paths:
         required: true
         schema:
           type: string
+      - name: extras
+        in: query
+        schema:
+          type: string
       responses:
         "200":
-          description: The difference; everything is added when the service is not
-            running
+          description: The difference
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/PdSettingsPreviewDto"
         "400":
-          description: A name is invalid
+          description: "A name is invalid, or extras is neither include nor exclude"
         "404":
           description: "No such environment, or an application the deployer does not\
             \ know"
         "502":
-          description: The application's deployment config cannot be read
+          description: extras=include and the application's deployment config cannot
+            be read
         "401":
           description: Not Authorized
         "403":

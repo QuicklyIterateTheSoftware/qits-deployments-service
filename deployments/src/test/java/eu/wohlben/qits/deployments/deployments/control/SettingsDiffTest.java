@@ -14,10 +14,68 @@ import org.junit.jupiter.api.Test;
 /** The settings preview's arithmetic: added, removed, changed, unchanged — and the mask. */
 class SettingsDiffTest {
 
+  /** No key is exempt — every live-only key is a removal. */
+  private static PdSettingsPreviewDto diff(
+      String application,
+      String environment,
+      Map<String, String> next,
+      Map<String, String> running,
+      Set<String> secretKeys) {
+    return SettingsDiff.diff(
+        application, environment, false, next, running, secretKeys, key -> false);
+  }
+
+  @Test
+  void aLiveKeyTheUpdateKeepsIsKeptNotRemoved() {
+    // The update never --env-rm's the deployer's own variables or the resource family, so a
+    // preview listing them as removed would be a false alarm about the switch.
+    PdSettingsPreviewDto diff =
+        SettingsDiff.diff(
+            "app",
+            "dev",
+            false,
+            Map.of("QITS_APPLICATION", "app"),
+            Map.of(
+                "QITS_APPLICATION", "app",
+                "QITS_RESOURCE_DB_URL", "jdbc:postgresql://h/db",
+                "QITS_RESOURCE_DB_PASSWORD", "p",
+                "FROM_EXTRAS", "x"),
+            Set.of(),
+            key -> key.startsWith("QITS_RESOURCE_"));
+
+    assertFalse(diff.extrasIncluded());
+    assertEquals(List.of(new PdSettingsPreviewDto.PreviewEntry("FROM_EXTRAS", "x", false)), diff.removed());
+    assertEquals(
+        List.of(
+            new PdSettingsPreviewDto.PreviewEntry("QITS_RESOURCE_DB_PASSWORD", null, true),
+            new PdSettingsPreviewDto.PreviewEntry("QITS_RESOURCE_DB_URL", "jdbc:postgresql://h/db", false)),
+        diff.kept());
+    assertEquals(1, diff.unchanged());
+  }
+
+  @Test
+  void aKeptKeyTheNextDeploymentStatesIsComparedNormally() {
+    PdSettingsPreviewDto diff =
+        SettingsDiff.diff(
+            "app",
+            "dev",
+            true,
+            Map.of("QITS_RESOURCE_DB_URL", "new"),
+            Map.of("QITS_RESOURCE_DB_URL", "old"),
+            Set.of(),
+            key -> true);
+
+    assertTrue(diff.extrasIncluded());
+    assertTrue(diff.kept().isEmpty());
+    assertEquals(
+        List.of(new PdSettingsPreviewDto.PreviewChange("QITS_RESOURCE_DB_URL", "old", "new", false)),
+        diff.changed());
+  }
+
   @Test
   void addedRemovedChangedAndUnchangedAreSortedByKey() {
     PdSettingsPreviewDto diff =
-        SettingsDiff.diff(
+        diff(
             "app",
             "dev",
             Map.of("B_NEW", "1", "A_NEW", "2", "SAME", "x", "MOVED", "new"),
@@ -40,7 +98,7 @@ class SettingsDiffTest {
   @Test
   void nothingRunningMakesEverythingAdded() {
     PdSettingsPreviewDto diff =
-        SettingsDiff.diff("app", "dev", Map.of("A", "1", "B", "2"), Map.of(), Set.of());
+        diff("app", "dev", Map.of("A", "1", "B", "2"), Map.of(), Set.of());
 
     assertEquals(2, diff.added().size());
     assertTrue(diff.removed().isEmpty());
@@ -51,7 +109,7 @@ class SettingsDiffTest {
   @Test
   void aSecretSettingIsMaskedOnBothSidesAndStillCountsAsAChange() {
     PdSettingsPreviewDto diff =
-        SettingsDiff.diff(
+        diff(
             "app",
             "dev",
             Map.of("PLAIN_NAME", "new-value", "ADDED_SECRET_SETTING_X", "s"),
@@ -68,7 +126,7 @@ class SettingsDiffTest {
   @Test
   void aKeyThatLooksSecretIsMaskedEvenWithoutASetting() {
     PdSettingsPreviewDto diff =
-        SettingsDiff.diff(
+        diff(
             "app",
             "dev",
             Map.of(
@@ -93,7 +151,7 @@ class SettingsDiffTest {
   @Test
   void anEqualSecretIsUnchangedAndNeverListed() {
     PdSettingsPreviewDto diff =
-        SettingsDiff.diff(
+        diff(
             "app", "dev", Map.of("X_SECRET", "same"), Map.of("X_SECRET", "same"), Set.of());
 
     assertEquals(1, diff.unchanged());

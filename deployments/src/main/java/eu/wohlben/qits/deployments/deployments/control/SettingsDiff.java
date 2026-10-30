@@ -8,6 +8,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.function.Predicate;
 
 /**
  * The settings preview's arithmetic, with no bean and no I/O in it: two environments in, the
@@ -57,17 +58,23 @@ public final class SettingsDiff {
   /**
    * The difference between what the next deployment would state ({@code next}) and what the live
    * service carries ({@code running} — empty when it is not running, which makes everything
-   * added). {@code secretKeys} are the keys the settings store holds as secret.
+   * added). {@code secretKeys} are the keys the settings store holds as secret. {@code
+   * keptWhenUnstated} is the update's own exemption ({@code DeploymentDriver#keptWhenUnstated}): a
+   * live key it answers true for, and the next deployment does not state, is {@code kept} rather
+   * than {@code removed}, because the update leaves it in place.
    */
   public static PdSettingsPreviewDto diff(
       String application,
       String environment,
+      boolean extrasIncluded,
       Map<String, String> next,
       Map<String, String> running,
-      Set<String> secretKeys) {
+      Set<String> secretKeys,
+      Predicate<String> keptWhenUnstated) {
     List<PdSettingsPreviewDto.PreviewEntry> added = new ArrayList<>();
     List<PdSettingsPreviewDto.PreviewEntry> removed = new ArrayList<>();
     List<PdSettingsPreviewDto.PreviewChange> changed = new ArrayList<>();
+    List<PdSettingsPreviewDto.PreviewEntry> kept = new ArrayList<>();
     int unchanged = 0;
     Set<String> keys = new TreeSet<>(next.keySet());
     keys.addAll(running.keySet());
@@ -77,6 +84,8 @@ public final class SettingsDiff {
       boolean inRunning = running.containsKey(key);
       if (inNext && !inRunning) {
         added.add(new PdSettingsPreviewDto.PreviewEntry(key, mask(next.get(key), secret), secret));
+      } else if (!inNext && keptWhenUnstated.test(key)) {
+        kept.add(new PdSettingsPreviewDto.PreviewEntry(key, mask(running.get(key), secret), secret));
       } else if (!inNext) {
         removed.add(new PdSettingsPreviewDto.PreviewEntry(key, mask(running.get(key), secret), secret));
       } else if (next.get(key).equals(running.get(key))) {
@@ -88,7 +97,13 @@ public final class SettingsDiff {
       }
     }
     return new PdSettingsPreviewDto(
-        application, environment, List.copyOf(added), List.copyOf(removed), List.copyOf(changed),
+        application,
+        environment,
+        extrasIncluded,
+        List.copyOf(added),
+        List.copyOf(removed),
+        List.copyOf(changed),
+        List.copyOf(kept),
         unchanged);
   }
 

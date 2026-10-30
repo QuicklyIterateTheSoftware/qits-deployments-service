@@ -55,8 +55,14 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   /** What {@link #runningImage} answers per name — the startup sweep's evidence. */
   private final Map<String, String> runningImages = new ConcurrentHashMap<>();
 
-  /** What {@link #stagedEnvironment} answers per application name; unscripted is empty. */
+  /**
+   * What {@link #stagedEnvironment} answers per application name — the deployer's own half; the
+   * deployment config's half is {@link #stagedExtras}, appended only when asked for. Unscripted is
+   * empty.
+   */
   private final Map<String, List<String>> stagedEnvironments = new ConcurrentHashMap<>();
+
+  private final Map<String, List<String>> stagedExtras = new ConcurrentHashMap<>();
 
   /** What {@link #liveEnvironment} answers per service name; unscripted is "no such service". */
   private final Map<String, List<String>> liveEnvironments = new ConcurrentHashMap<>();
@@ -115,6 +121,7 @@ public class FakeDeploymentDriver implements DeploymentDriver {
     calls.clear();
     runningImages.clear();
     stagedEnvironments.clear();
+    stagedExtras.clear();
     liveEnvironments.clear();
     observations.clear();
     declaredReplicas.clear();
@@ -150,9 +157,14 @@ public class FakeDeploymentDriver implements DeploymentDriver {
     runningImages.put(name, imageRef);
   }
 
-  /** The {@code KEY=VALUE} entries a deployment of {@code applicationName} would state. */
-  public void scriptStagedEnvironment(String applicationName, List<String> variables) {
-    stagedEnvironments.put(applicationName, List.copyOf(variables));
+  /**
+   * The {@code KEY=VALUE} entries a deployment of {@code applicationName} would state: the
+   * deployer's own, and the deployment config's {@code env} that follow them on the argv.
+   */
+  public void scriptStagedEnvironment(
+      String applicationName, List<String> deployerOwn, List<String> extras) {
+    stagedEnvironments.put(applicationName, List.copyOf(deployerOwn));
+    stagedExtras.put(applicationName, List.copyOf(extras));
   }
 
   /** The {@code KEY=VALUE} entries the live service {@code name} carries. */
@@ -314,9 +326,30 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   }
 
   @Override
-  public List<String> stagedEnvironment(ServiceSpec spec) {
-    calls.add("stagedEnvironment:" + spec.applicationName());
-    return stagedEnvironments.getOrDefault(spec.applicationName(), List.of());
+  public List<String> stagedEnvironment(ServiceSpec spec, boolean includeExtras) {
+    calls.add("stagedEnvironment:" + spec.applicationName() + ":" + includeExtras);
+    List<String> variables =
+        new ArrayList<>(stagedEnvironments.getOrDefault(spec.applicationName(), List.of()));
+    if (includeExtras) {
+      variables.addAll(stagedExtras.getOrDefault(spec.applicationName(), List.of()));
+    }
+    return List.copyOf(variables);
+  }
+
+  /**
+   * The swarm driver's family, stated for the double: the identity variables and the resource
+   * prefix. The real predicate is pinned by {@code SwarmDeploymentDriverTest}.
+   */
+  @Override
+  public boolean keptWhenUnstated(String key) {
+    return key.startsWith("QITS_RESOURCE_")
+        || List.of(
+                "QITS_ENVIRONMENT",
+                "QITS_APPLICATION",
+                "QITS_DOMAIN",
+                "OTEL_RESOURCE_ATTRIBUTES",
+                "QUARKUS_OTEL_RESOURCE_ATTRIBUTES")
+            .contains(key);
   }
 
   @Override

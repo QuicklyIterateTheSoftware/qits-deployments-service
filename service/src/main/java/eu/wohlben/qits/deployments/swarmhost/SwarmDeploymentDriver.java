@@ -1928,15 +1928,28 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   }
 
   /**
-   * {@link #environment} followed by the deployment config's own {@code env}: exactly the
-   * {@code --env}/{@code --env-add} values {@link #buildCreateArgv} and {@link #buildUpdateArgv}
-   * state, in the same order, so the last entry of a key is the value the service would get.
+   * {@link #environment}, followed — when {@code includeExtras} — by the deployment config's own
+   * {@code env}: exactly the {@code --env}/{@code --env-add} values {@link #buildCreateArgv} and
+   * {@link #buildUpdateArgv} state, in the same order, so the last entry of a key is the value the
+   * service would get. Without the extras the seam is not asked at all.
    */
   @Override
-  public List<String> stagedEnvironment(ServiceSpec spec) {
+  public List<String> stagedEnvironment(ServiceSpec spec, boolean includeExtras) {
     List<String> variables = new ArrayList<>(environment(spec));
-    variables.addAll(extrasOf(spec).env());
+    if (includeExtras) {
+      variables.addAll(extrasOf(spec).env());
+    }
     return List.copyOf(variables);
+  }
+
+  /**
+   * The family {@link #envRemovals} never removes beyond what the argv states: {@link
+   * #DEPLOYER_OWN_VARIABLES} and anything under {@link #RESOURCE_PREFIX}. One predicate, read by
+   * the update diff and by the settings preview alike.
+   */
+  @Override
+  public boolean keptWhenUnstated(String key) {
+    return DEPLOYER_OWN_VARIABLES.contains(key) || key.startsWith(RESOURCE_PREFIX);
   }
 
   /**
@@ -2238,9 +2251,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // Sorted, so one deployment's argv is the same argv twice and a diff of two run logs is
     // readable. A HashSet's order is not a contract and a reader would read it as one.
     for (String key : new TreeSet<>(currentSpecEnvKeys(name))) {
-      if (stated.contains(key)
-          || DEPLOYER_OWN_VARIABLES.contains(key)
-          || key.startsWith(RESOURCE_PREFIX)) {
+      if (stated.contains(key) || keptWhenUnstated(key)) {
         continue;
       }
       argv.add("--env-rm");

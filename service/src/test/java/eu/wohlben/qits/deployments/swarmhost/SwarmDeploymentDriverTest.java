@@ -1615,8 +1615,41 @@ class SwarmDeploymentDriverTest {
       }
     }
 
-    assertEquals(stated, driver.stagedEnvironment(spec()));
+    assertEquals(stated, driver.stagedEnvironment(spec(), true));
     assertTrue(stated.contains("QITS_EVENTS_URL=http://dev-qits-events:8080"), stated.toString());
+  }
+
+  @Test
+  void withoutExtrasTheStagedEnvironmentIsTheDeployersOwnAndTheSeamIsNotAsked() {
+    // The preview's default "next": the deployment after the switch to settings. The extras seam
+    // must not be read at all — that read is the confighost call the switch retires.
+    SwarmDeploymentDriver driver =
+        driver(
+            (application, environmentName, version, declarationSeeded) -> {
+              throw new AssertionError("the extras seam was asked for " + application);
+            });
+
+    List<String> staged = driver.stagedEnvironment(spec(), false);
+
+    assertTrue(staged.contains("QITS_APPLICATION=qits-gateway"), staged.toString());
+    assertTrue(staged.stream().noneMatch(v -> v.startsWith("QITS_EVENTS_URL=")), staged.toString());
+  }
+
+  @Test
+  void keptWhenUnstatedIsTheUpdatesOwnExemption() {
+    SwarmDeploymentDriver driver = driver();
+    for (String key :
+        List.of(
+            "QITS_ENVIRONMENT",
+            "QITS_APPLICATION",
+            "QITS_DOMAIN",
+            "OTEL_RESOURCE_ATTRIBUTES",
+            "QUARKUS_OTEL_RESOURCE_ATTRIBUTES",
+            "QITS_RESOURCE_DB_PASSWORD")) {
+      assertTrue(driver.keptWhenUnstated(key), key);
+    }
+    assertFalse(driver.keptWhenUnstated("QITS_EVENTS_URL"));
+    assertFalse(driver.keptWhenUnstated("HAND_ADDED"));
   }
 
   @Test

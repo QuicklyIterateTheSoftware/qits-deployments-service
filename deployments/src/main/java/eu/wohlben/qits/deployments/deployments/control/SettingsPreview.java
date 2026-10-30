@@ -22,26 +22,32 @@ import java.util.Set;
 
 /**
  * What the next deployment of one application would set, compared with what its live service
- * carries now (qits-1390).
+ * carries now (qits-1390, epic qits-765).
  *
- * <p><b>"Next" is today's computation plus the settings store.</b> The driver renders the
- * environment exactly as a deployment's argv would ({@link DeploymentDriver#stagedEnvironment}:
- * this component's own variables, the {@code QITS_RESOURCE_*} family, then the deployment config's
- * {@code env}), and the settings rows for the place are overlaid on top — a setting wins over an
- * extras key of the same name. Nothing deploys from the settings store yet, so this is the preview
- * of switching that read on, not of the deployment that would run today.
+ * <p><b>Its purpose is the switch.</b> The epic moves an application's environment from
+ * qits-configuration's extras to the settings store, and this proves, before the switch, that it
+ * removes nothing unintended. So by DEFAULT "next" is the deployment AFTER the switch: the
+ * environment this component injects itself ({@link DeploymentDriver#stagedEnvironment} without
+ * extras — the identity variables, {@code QITS_DOMAIN}, {@code QITS_RESOURCE_*}) with the settings
+ * rows overlaid, and qits-configuration is not asked at all. With {@code includeExtras} it is
+ * today's deployment plus the settings: the extras {@code env} after the deployer's own, then the
+ * settings rows over both — a setting wins over an extras key of the same name.
  *
- * <p><b>Three approximations, each because the true value only exists mid-deployment:</b>
+ * <p><b>A live key the update would keep is never "removed".</b> The update's {@code --env-rm}
+ * diff exempts this component's own variables and the resource family; the preview asks the
+ * driver the same question ({@link DeploymentDriver#keptWhenUnstated}) and lists such keys as
+ * {@code kept}.
+ *
+ * <p><b>Approximations, each because the true value only exists mid-deployment:</b>
  *
  * <ul>
  *   <li>the release is the newest one recorded for the place — its version is what the identity
- *       variables are stamped with; a new release would stamp its own, so those show as changed
- *       only when the live service runs something else;
+ *       variables are stamped with; a new release would stamp its own;
  *   <li>the resource family is rendered from the registry rows ({@link
  *       ResourceProvisioning#recordedBindings}) rather than provisioned, which is what the next
  *       deployment hands out on its self-heal arm;
- *   <li>the deployment config is read VERSION-LESS (as a release that seeded no declaration reads
- *       it), because which release comes next — and whether it declares itself — is not known yet.
+ *   <li>with the extras, the deployment config is read VERSION-LESS (as a release that seeded no
+ *       declaration reads it), because which release comes next is not known yet.
  * </ul>
  *
  * <p>It writes nothing and calls the orchestrator for one {@code service inspect}.
@@ -59,7 +65,8 @@ public class SettingsPreview {
   /** What the place is, as plain values read in one bracket. */
   private record Place(String environmentId, String version, String serviceName) {}
 
-  public PdSettingsPreviewDto preview(String application, String environment) {
+  public PdSettingsPreviewDto preview(
+      String application, String environment, boolean includeExtras) {
     String app = PdIdentifiers.requireName(application, "application");
     String env = PdIdentifiers.requireName(environment, "environment");
     Place place =
@@ -105,7 +112,7 @@ public class SettingsPreview {
 
     Map<String, String> next;
     try {
-      next = SettingsDiff.parse(driver.stagedEnvironment(spec));
+      next = SettingsDiff.parse(driver.stagedEnvironment(spec, includeExtras));
     } catch (ServiceExtras.Refused e) {
       throw new PdException(
           502, "the deployment config of " + app + " in " + env + " cannot be read: " + e.getMessage());
@@ -127,6 +134,7 @@ public class SettingsPreview {
     Map<String, String> running =
         driver.liveEnvironment(serviceName).map(SettingsDiff::parse).orElse(Map.of());
 
-    return SettingsDiff.diff(app, env, next, running, secretKeys);
+    return SettingsDiff.diff(
+        app, env, includeExtras, next, running, secretKeys, driver::keptWhenUnstated);
   }
 }
