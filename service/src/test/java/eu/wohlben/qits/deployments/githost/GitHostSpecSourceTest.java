@@ -52,9 +52,10 @@ public class GitHostSpecSourceTest {
   private volatile int status = 200;
 
   /**
-   * What the SECOND and later requests answer, when the arms have to differ — the SPEC read's 404
-   * fallback from the name route onto the id route is the only place two answers are one read. The
-   * declaration read has no such fallback, and one test sets this precisely to prove nothing asks.
+   * What a SECOND request would answer, were one ever made. Neither read falls back from the name
+   * route to the id route (qits-883 took the spec read's fallback out too), so every test that sets
+   * this is a guard: it proves the id route is never asked by making a would-be fallback fail loudly
+   * if it were.
    */
   private volatile Integer laterStatus;
   private volatile String body = "deployment_target: platform\n";
@@ -229,19 +230,41 @@ public class GitHostSpecSourceTest {
   }
 
   @Test
-  public void aNameAddressed404ThatFallsBackOntoA403KeepsThatVerdict() {
-    // The name route's 404 fallback asks the id route, and a 403 THERE has to arrive with the same
-    // verdict as one on the direct route — or the fallback would quietly strand the release.
+  public void aNameAddressed404IsUndeclaredAfterOneRequestAndAsksTheIdRouteNothing() {
+    // qits-883: the fallback this used to run turned every image/daemon repository's missing
+    // deployments.yml into a retryable 403 on the refused id route, which held and then parked the
+    // release. A name-addressed 404 is believed outright now, off exactly one request.
     status = 404;
-    laterStatus = 403;
+    laterStatus = 403; // what the id route would have said. Nothing must ask it.
+
+    SpecSource.SpecRead read =
+        source().read(new RepositoryRef(UUID_ID, "qits", "gw"), SpecSource.tagRev(VERSION));
+
+    assertSame(DeploymentSpec.DEFAULTS, read.spec());
+    assertFalse(read.declared(), "a 404 declared nothing");
+    assertNull(read.commitSha());
+    assertEquals(
+        "/git/qits/gw/blob/refs%2Ftags%2F" + VERSION + "/.config/qits/deployments.yml",
+        onlyPath());
+  }
+
+  @Test
+  public void aNameAddressed403IsTheGitHostsMomentAndAsksToBeReadAgain() {
+    // The id-addressed arm of this is anIntermittent403IsTheGitHostsMomentAndAsksToBeReadAgain;
+    // this is the same verdict off the name route, which no longer falls back onto the id route at
+    // all (qits-883) and so has to earn its own retryable classification directly.
+    status = 403;
 
     SpecException refused =
         assertThrows(
             SpecException.class,
             () ->
                 source()
-                    .read(new RepositoryRef(UUID_ID, "qits", "gw"), SpecSource.tagRev(VERSION)));
+                    .read(
+                        new RepositoryRef(UUID_ID, "qits", "qits-gateway"),
+                        SpecSource.tagRev(VERSION)));
 
+    assertTrue(refused.getMessage().contains("403"), refused.getMessage());
     assertTrue(refused.retryable(), "403 on the name route is retryable too");
   }
 

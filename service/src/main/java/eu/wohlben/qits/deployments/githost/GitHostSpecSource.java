@@ -30,8 +30,8 @@ import org.jboss.logging.Logger;
  * application, fetched at the same rev through the same address pair and handed on <b>unparsed</b> —
  * qits-configuration owns that grammar. Almost everything below the file name is shared: the
  * encoding of the rev, the 404-is-an-answer stance and the retryable-versus-permanent
- * classification. <b>The name-then-id fallback is the exception</b> and belongs to the spec read
- * alone — {@link #readDeclaration} says why it had to go.
+ * classification. <b>Neither read falls back from the name route to the id route</b> —
+ * {@link #readDeclaration} says why, and qits-883 is why the spec read lost its fallback too.
  *
  * <p><b>The rev is the RELEASED TAG, and it is fully qualified.</b> A deployment is a version now,
  * so the file that decides where its container runs has to be the file that version was cut from —
@@ -123,26 +123,14 @@ public class GitHostSpecSource implements SpecSource {
     HttpResponse<String> response = get(url);
 
     if (response.statusCode() == 404) {
-      // A NAME-addressed 404 can be a false miss rather than "no spec". The name route resolves
-      // through qits-projects and its database, and the very read that decides how to deploy an
-      // infrastructure service (the database, or qits-projects itself) can land in the window that
-      // service is being cut over — the resolver answers 404 and this deploys the DEFAULTS, whose
-      // HTTP health gate a plain postgres cannot pass, so it crash-loops and never recovers. The
-      // id-addressed route needs no resolver, so a name-addressed miss is retried there before it
-      // is believed. A true no-spec repository 404s on both and still gets the defaults.
-      if (repository.nameAddressed()) {
-        String idUrl = blobUrl(repository.repoId(), rev, SPEC_PATH);
-        HttpResponse<String> byId = get(idUrl);
-        if (byId.statusCode() == 200) {
-          return new SpecRead(
-              DeploymentSpecParser.parse(
-                  byId.body(), SPEC_PATH + " of " + repository.applicationName() + "@" + rev),
-              commitShaOf(byId));
-        }
-        if (byId.statusCode() != 404) {
-          throw statusFailure(idUrl, byId.statusCode());
-        }
-      }
+      // A name-addressed 404 is believed, with no second request. The fallback this used to run
+      // here existed because the name route resolved through qits-projects and could false-miss
+      // during a cutover; qits-githost now answers /git/<projectId>/<repoName> from its own name
+      // index, so a name it does not hold is a 404 and an unreadable index is a 503 (retryable) —
+      // there is no resolver left to disbelieve. And the id route is refused to this caller
+      // anyway (qits-githost's storage-client guard serves /git/<repoId> to qits-projects alone),
+      // so the fallback turned every image/daemon repository without a deployments.yml into a
+      // retryable 403 that held and then parked the release (qits-883).
       LOG.debugf(
           "%s carries no %s at %s — deploying with the defaults",
           repository.applicationName(), SPEC_PATH, rev);
@@ -177,8 +165,7 @@ public class GitHostSpecSource implements SpecSource {
    * this can raise is a failure of the HOP, which is why the classification below is {@link
    * #statusFailure}'s unchanged.
    *
-   * <p><b>There is NO name-then-id fallback here, and that is the one thing this read does not
-   * share with {@link #read}.</b> A 404 on the name-addressed route is {@link
+   * <p><b>There is NO name-then-id fallback here.</b> A 404 on the name-addressed route is {@link
    * DeclarationRead#absent()} at once. The name a declaration read is addressed with comes off the
    * release event or the acceptance ledger and is authoritative — the rename door corrects it — so
    * there is no false miss to disbelieve; and the id route is refused to this caller anyway, because
@@ -186,8 +173,9 @@ public class GitHostSpecSource implements SpecSource {
    * fallback could only ever convert <b>not migrated yet</b>, which is most repositories, into a 403
    * — and a 403 is classified retryable, which is a sixty-minute {@code SPEC_UNREADABLE} hold for a
    * file that was never there. Measured on qits-ci@2026.907.184918 on 2026-09-07, where it held
-   * every unmigrated repository's deployment. {@link #read} keeps its fallback: a name-404 on the
-   * SPEC usually means a real problem, since every deployable carries a {@code deployments.yml}.
+   * every unmigrated repository's deployment. {@link #read} dropped its fallback too, on
+   * 2026-10-30 (qits-883): image and daemon repositories carry no {@code deployments.yml}, and the
+   * fallback held every one of their releases on the same 403.
    *
    * <p><b>A ref that carries no name is still read id-addressed</b>, exactly as it always was — that
    * is {@link #address}'s answer, not a fallback — and a 404 there is absent for the same reason.

@@ -1686,9 +1686,10 @@ repository name, and `OwedReleaseSweep` rebuilds the *whole* announcement from t
 process, after a cutover, with the event long since claimed and nothing left to ask. So a held or
 owed release of a renamed repository keeps the old name, `RepositoryRef` sees both halves of a
 public address and takes the name-first route, and the spec read addresses a URL nothing serves.
-**The id-route fallback does not rescue it**: qits-githost's storage-client guard refuses
-`/git/<repoId>` to every caller that is not qits-projects, and a 403 is classified retryable — so it
-becomes a sixty-minute `SPEC_UNREADABLE` hold for nothing.
+**Nothing on the id route rescues it**: the spec read has no name-then-id fallback any more
+(qits-883), and qits-githost's storage-client guard refuses `/git/<repoId>` to every caller that is
+not qits-projects anyway — so without the rename a stale name reads as a repository that declared
+nothing, and the release is recorded and not deployed.
 
 `bus/PdRepositoryRenamedSubscriber` is the correction, and it is the component's **second**
 `QitsDurableEventListener`. Six things about it, each easy to undo by accident:
@@ -2103,8 +2104,8 @@ percent-encoded rev (the half that was got wrong once and 404'd every release-ta
 the git host would not serve **holds the release `SPEC_UNREADABLE`** exactly as a spec would, and
 the row's message names which of the two files did not answer.
 
-**The name-then-id fallback is the ONE thing the declaration read does not share, and it was removed
-after it held the platform (2026-09-07).** A name-addressed 404 on the declaration is
+**Neither read has a name-then-id fallback. The declaration read lost it first, after it held the
+platform (2026-09-07), and the spec read followed (2026-10-30, qits-883).** A name-addressed 404 on the declaration is
 `DeclarationRead.absent()` immediately, with no second request. The fallback shipped as part of "one
 read twice" and could only ever do harm here: an UNMIGRATED repository — most of them, and the whole
 point of `absent()` — 404s the name route, the fallback then asks `/git/<repoId>`, and qits-githost's
@@ -2118,9 +2119,20 @@ Two things keep the removal correct rather than merely quieter. The name comes o
 or the acceptance ledger and is **authoritative** — `PdRepositoryRenamedSubscriber` is what corrects
 it — so there is no false miss to disbelieve, which is the argument `read` still rests on. And an
 **id-only** ref is untouched: it is read id-addressed because that is `address`'s answer and not a
-fallback, and a 404 there is absent for the same reason. **Do not restore the fallback on the
-declaration**, and do not remove it from the SPEC read, where a name-404 usually means a real
-problem — every deployable carries a `deployments.yml`.
+fallback, and a 404 there is absent for the same reason. **Do not restore the fallback on
+either read.**
+
+**The spec read's fallback went for the same 403, one file over (qits-883).** It existed because the
+name route once resolved through qits-projects and could false-miss mid-cutover, so a name-404 was
+re-asked on the id route before it was believed. qits-githost now answers the name route from its own
+index — a name it does not hold is a 404, an index it cannot read is a 503, which is retryable — so
+there is no resolver left to disbelieve. And "every deployable carries a `deployments.yml`" was never
+true of what this door hears: every image and daemon repository (qits-build-images-oci,
+qits-projects-daemon, the workspace images, the runners) publishes a docker package and carries no
+spec, so each of their releases 404'd the name route, 403'd the id route, sat `SPEC_UNREADABLE` for
+an hour, and was re-driven from `pd_owed_release` at every boot until it parked `EXHAUSTED`. A
+name-404 is `SpecRead.undeclared()` now, after one request, and the release door records it as a
+release that asked for no deployment.
 
 **Nothing on this side parses the declaration, and that is the seam rather than an omission.**
 qits-configuration owns the grammar; a parser here would be a second opinion about somebody else's
