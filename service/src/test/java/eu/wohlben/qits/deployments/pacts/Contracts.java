@@ -48,8 +48,9 @@ import org.eclipse.microprofile.config.Config;
  *   <li>{@link #IDP} — {@code HttpIdpClientProvisioner}'s three service-client calls, the two
  *       reads quarkus-oidc makes at startup (the discovery document and the JWKS), and the
  *       client-credentials mint quarkus-oidc-client makes for {@code IdpExtrasBearer};
- *   <li>{@link #GITHOST} — {@code GitHostSpecSource}'s blob reads of {@code deployments.yml} (name,
- *       then id on a name-addressed 404) and {@code configuration.yml} (no fallback).
+ *   <li>{@link #GITHOST} — {@code GitHostSpecSource}'s blob reads of {@code deployments.yml} and
+ *       {@code configuration.yml}: name-addressed when the release carries the name pair,
+ *       id-addressed when it does not, with no fallback between them (qits-883).
  * </ul>
  *
  * <p>The bus library qits-eventstream owns its catch-up and publish pact, so no events row is here.
@@ -68,8 +69,8 @@ public final class Contracts {
    *     call the framework makes (quarkus-oidc's tenant reads); {@code ClientCallGuardTest} holds
    *     every public method of every client class to a row
    * @param method the public method of {@code client} that makes it
-   * @param alongside rows the same call goes on to make against the same mock server — the spec
-   *     read's name-then-id fallback is two requests for one answer
+   * @param alongside rows the same call goes on to make against the same mock server, for a call
+   *     that makes more than one request for one answer
    * @param call null for a row whose client exists only inside the application — the token mint,
    *     whose test is {@code IdpTokenMintPactTest}, a {@code @QuarkusTest} of its own
    */
@@ -315,8 +316,6 @@ public final class Contracts {
       blob(DECLARING_DEPLOYMENTS, "getBlobById").readsHeader("Git-Commit-Sha");
   private static final GoldenInteraction NO_SPEC_BY_NAME = blob(DECLARING_NO_DEPLOYMENTS, "getBlob");
   private static final GoldenInteraction NO_SPEC_BY_ID = blob(DECLARING_NO_DEPLOYMENTS, "getBlobById");
-  private static final GoldenInteraction UNNAMED_SPEC_BY_NAME =
-      blob(UNNAMED_DECLARING_DEPLOYMENTS, "getBlob");
   private static final GoldenInteraction UNNAMED_SPEC_BY_ID =
       blob(UNNAMED_DECLARING_DEPLOYMENTS, "getBlobById").readsHeader("Git-Commit-Sha");
 
@@ -350,16 +349,15 @@ public final class Contracts {
               SPEC_BY_ID,
               (url, recorded) ->
                   declared(GitHostSources.at(url).read(byId(recorded.params()), recorded.params().get("rev")), recorded)),
-          // A name-addressed 404 is retried by id before it is believed; both 404 is no spec.
+          // A name-addressed 404 is believed at once, with no id request (qits-883).
           Check.of(
-                  GitHostSpecSource.class,
-                  "read",
-                  NO_SPEC_BY_NAME,
-                  (url, recorded) ->
-                      assertFalse(
-                          GitHostSources.at(url).read(byName(recorded.params()), recorded.params().get("rev")).declared(),
-                          "both addresses 404: the defaults, declared by nobody"))
-              .then(NO_SPEC_BY_ID),
+              GitHostSpecSource.class,
+              "read",
+              NO_SPEC_BY_NAME,
+              (url, recorded) ->
+                  assertFalse(
+                      GitHostSources.at(url).read(byName(recorded.params()), recorded.params().get("rev")).declared(),
+                      "a name-addressed 404 is no spec at once")),
           Check.of(
               GitHostSpecSource.class,
               "read",
@@ -368,16 +366,6 @@ public final class Contracts {
                   assertFalse(
                       GitHostSources.at(url).read(byId(recorded.params()), recorded.params().get("rev")).declared(),
                       "an id-addressed 404 is no spec at once")),
-          // The false miss: the name route 404s while the id route serves the spec.
-          Check.of(
-                  GitHostSpecSource.class,
-                  "read",
-                  UNNAMED_SPEC_BY_NAME,
-                  (url, recorded) ->
-                      declared(
-                          GitHostSources.at(url).read(byName(recorded.params()), recorded.params().get("rev")),
-                          GITHOST_MASTERS.operation(UNNAMED_DECLARING_DEPLOYMENTS, "getBlobById")))
-              .then(UNNAMED_SPEC_BY_ID),
           Check.of(
               GitHostSpecSource.class,
               "read",

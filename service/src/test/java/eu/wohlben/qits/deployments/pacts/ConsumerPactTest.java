@@ -19,8 +19,8 @@ import org.junit.jupiter.api.TestFactory;
  * real client makes a real HTTP call to a pact-jvm mock server that answers what the row's
  * interaction promises, and the row asserts what the client made of it. One mock server per row
  * ({@code ConsumerPact.run}); a row whose call goes on to further rows ({@link
- * Contracts.Check#alongside}, the spec read's name-then-id fallback) gets one mock server holding
- * all of them, and fails unless the call made every one.
+ * Contracts.Check#alongside}) gets one mock server holding all of them, and fails unless the call
+ * made every one.
  *
  * <p>A row whose provider state is not recorded is SKIPPED, naming the state the provider has to
  * record. A row with no call here (the token mint) runs inside the application, in {@code

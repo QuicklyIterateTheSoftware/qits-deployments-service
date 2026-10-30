@@ -206,51 +206,6 @@
         "references": {
           "qits-call": {
             "app": "qits-githost-service",
-            "operationId": "getBlob"
-          },
-          "qits-trigger": {
-            "app": "qits-deployments-service",
-            "event": "SoftwareRelease",
-            "kind": "event"
-          }
-        }
-      },
-      "description": "SoftwareRelease: getBlob",
-      "key": "22145c74",
-      "pending": false,
-      "providerStates": [
-        {
-          "name": "an unnamed repository declaring its deployments",
-          "params": {
-            "path": ".config/qits/deployments.yml",
-            "projectId": "00000000-0000-4000-8000-000000000001",
-            "repoName": "contract-service",
-            "repositoryId": "00000000-0000-4000-8000-000000000002",
-            "rev": "main"
-          }
-        }
-      ],
-      "request": {
-        "generators": {
-          "path": {
-            "dataType": "RAW",
-            "expression": "/git/${projectId}/${repoName}/blob/${rev}/${path}",
-            "type": "ProviderState"
-          }
-        },
-        "method": "GET",
-        "path": "/git/00000000-0000-4000-8000-000000000001/contract-service/blob/main/.config/qits/deployments.yml"
-      },
-      "response": {
-        "status": 404
-      },
-      "type": "Synchronous/HTTP"
-    },
-    {
-      "comments": {
-        "references": {
-          "qits-call": {
-            "app": "qits-githost-service",
             "operationId": "getBlobById"
           },
           "qits-trigger": {

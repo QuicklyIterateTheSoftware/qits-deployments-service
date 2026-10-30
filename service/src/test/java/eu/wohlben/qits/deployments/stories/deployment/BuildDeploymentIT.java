@@ -379,8 +379,9 @@ public class BuildDeploymentIT {
    *
    * <p>{@code projectId} and {@code repoName} are the repository's PUBLIC address and are what every
    * identifier below is derived from — the image tag, the wire alias, the provisioned database, the
-   * pin. {@code repoId} is the opaque storage key and travels beside them; it reaches only the
-   * git host's id-addressed fallback, which is why it never appears in a label here.
+   * pin. {@code repoId} is the opaque storage key and travels beside them; a release carrying the
+   * name pair never reads by it (the spec read has no id fallback since qits-883), which is why it
+   * never appears in a label here.
    */
   private static Map<String, Object> softwareReleased(
       String runId, String repoId, String repoName, String version) {
