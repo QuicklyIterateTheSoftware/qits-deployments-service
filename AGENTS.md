@@ -2348,7 +2348,11 @@ deployed here — runs the path it always ran. Seven things about it, each easy 
   T's), in order: P's newest row and every `SPEC_UNREADABLE` row → `DECOMMISSIONED` stamped
   `[decommissioned by rename to T …]` (the `ApplicationRetirement` rule), P's swarm service removed,
   P's `pd_service` row deleted (`ServiceCatalog.delete`, the operator door's path), `Settings.retire`,
-  `retireIdpClient` (`<env>-P`, never T's `<env>-T`). Each step is idempotent.
+  `retireIdpClient` (`<env>-P`, never T's `<env>-T`). Each step is idempotent. **The idp step is
+  guarded**: a client id that any NON-secret `pd_setting` in the tier (any application) still holds
+  as its value is not deleted and its row stays — a WARN names the client, applications and keys,
+  never a value. That is a decision, not a failure: `retirementOwed` does not count a referenced
+  client, so nothing loops, and once the setting is fixed T's next deployment retires it.
 - **A failed step never fails T.** It is a WARN; the retirement is remembered in
   `owedRetirements` (memory, the `specRetries` trade) and `retryRetirements` runs it again after
   every observation pass, dropping it once nothing of P is left — an empty map costs nothing. A

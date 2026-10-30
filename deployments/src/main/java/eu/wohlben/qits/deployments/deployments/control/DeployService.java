@@ -3082,7 +3082,51 @@ public class DeployService implements ReleaseAnnouncements {
     if (!settings.rowsOf(predecessor, retirement.environmentName()).isEmpty()) {
       return true;
     }
-    return resourceProvisioning.holdsIdpClient(predecessor, retirement.environmentName());
+    return idpClientOwed(retirement);
+  }
+
+  /**
+   * Whether the predecessor holds an idp client the retirement may still delete: one that no
+   * setting in the tier names. A client something still names is deliberately left — see {@link
+   * #retireIdpClientUnlessReferenced} — and counting it as owed would rerun the retirement on every
+   * observation and every deployment for a step that is decided, not failed. Asked fresh each time,
+   * so the day the referencing setting is fixed, the successor's next deployment retires it.
+   */
+  private boolean idpClientOwed(Retirement retirement) {
+    for (String clientId :
+        resourceProvisioning.idpClientIds(retirement.predecessor(), retirement.environmentName())) {
+      if (clientId.isEmpty()
+          || settings.referencesTo(retirement.environmentName(), clientId).isEmpty()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The retirement's last step, guarded: a predecessor's idp client that any non-secret setting in
+   * the tier still names is NOT deleted, and its {@code pd_resource} row stays. Deleting it would turn
+   * that application's next token request into a 401 — measured shape: qits-orchestrator's settings
+   * carried its predecessor's client id, copied by hand. The step counts as done (the guard is a
+   * decision), so nothing retries it; the WARN names the client, the applications and the keys, never
+   * a value.
+   */
+  private void retireIdpClientUnlessReferenced(Retirement retirement) {
+    String predecessor = retirement.predecessor();
+    String environment = retirement.environmentName();
+    for (String clientId : resourceProvisioning.idpClientIds(predecessor, environment)) {
+      List<String> references =
+          clientId.isEmpty() ? List.of() : settings.referencesTo(environment, clientId);
+      if (!references.isEmpty()) {
+        LOG.warnf(
+            "Not retiring the idp client %s of %s in %s: the settings %s still name it, and"
+                + " deleting it would refuse their next token. Point them at their own client and"
+                + " the successor's next deployment retires it",
+            clientId, predecessor, environment, references);
+        return;
+      }
+    }
+    resourceProvisioning.retireIdpClient(predecessor, environment);
   }
 
   /** One run of the retirement's steps; true when every one of them is done. */
@@ -3106,7 +3150,7 @@ public class DeployService implements ReleaseAnnouncements {
       step = "retiring its settings";
       settings.retire(predecessor, retirement.environmentName());
       step = "retiring its idp client";
-      resourceProvisioning.retireIdpClient(predecessor, retirement.environmentName());
+      retireIdpClientUnlessReferenced(retirement);
     } catch (RuntimeException e) {
       LOG.warnf(
           "The retirement of %s (renamed to %s) in %s stopped at %s, and the next observation"

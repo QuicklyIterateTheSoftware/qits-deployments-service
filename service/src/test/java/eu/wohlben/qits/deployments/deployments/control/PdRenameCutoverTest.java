@@ -287,6 +287,80 @@ public class PdRenameCutoverTest {
   }
 
   @Test
+  public void aPredecessorsIdpClientThatASettingStillNamesIsNotDeleted() {
+    // The live shape: qits-orchestrator's settings carried its predecessor's client id, copied by
+    // hand. Deleting that client would refuse the successor's next token, so the retirement leaves
+    // it — and treats the step as decided, so nothing retries it.
+    String env = "rn-ref";
+    String environmentId = createEnvironment(env);
+    String old = "rn-ref-old";
+    String fresh = "rn-ref-new";
+    String clientId = env + "-" + old;
+    deployPredecessor(environmentId, old, List.of(IDP));
+    settings.put(fresh, env, "QUARKUS_OIDC_CLIENT_CLIENT_ID", clientId, false, "an operator");
+    // A secret holding the same string is never compared, and never named.
+    settings.put("rn-ref-other", env, "SOME_SECRET", clientId, true, "an operator");
+    fake.reset();
+
+    specs.script(fresh, spec(List.of(IDP), null, old, null));
+    List<String> logs =
+        logsOf(
+            () -> {
+              postRelease("run-ref", fresh);
+              awaitSettled(environmentId, 2);
+            });
+
+    assertEquals(PdDeploymentStatus.ACTIVE, newest(fresh, environmentId).status);
+    assertEquals(PdDeploymentStatus.DECOMMISSIONED, newest(old, environmentId).status);
+    assertTrue(catalog.find(old).isEmpty(), "every other step still ran");
+    assertEquals(List.of(), idpProvisioner.deleteCalls(), "the named client is not deleted");
+    assertTrue(resourceProvisioning.holdsIdpClient(old, env), "and its row is kept");
+    String warn =
+        logs.stream()
+            .filter(line -> line.startsWith("Not retiring the idp client"))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("no WARN in " + logs));
+    assertTrue(warn.contains(clientId), warn);
+    assertTrue(warn.contains(fresh + ":QUARKUS_OIDC_CLIENT_CLIENT_ID"), warn);
+    assertFalse(warn.contains("SOME_SECRET"), "a secret row is never compared: " + warn);
+
+    // Decided, not failed: the next observation runs nothing and deletes nothing.
+    fake.scriptObservation(env + "-" + fresh, "running/healthy");
+    deployService.enqueueObservation();
+    awaitIdle();
+    assertEquals(List.of(), idpProvisioner.deleteCalls());
+    assertTrue(resourceProvisioning.holdsIdpClient(old, env));
+  }
+
+  /** Every log record DeployService writes while {@code body} runs: message plus parameters. */
+  private static List<String> logsOf(Runnable body) {
+    List<String> lines = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+    java.util.logging.Logger logger =
+        java.util.logging.Logger.getLogger(DeployService.class.getName());
+    java.util.logging.Handler handler =
+        new java.util.logging.Handler() {
+          @Override
+          public void publish(java.util.logging.LogRecord record) {
+            lines.add(
+                record.getMessage() + " " + java.util.Arrays.toString(record.getParameters()));
+          }
+
+          @Override
+          public void flush() {}
+
+          @Override
+          public void close() {}
+        };
+    logger.addHandler(handler);
+    try {
+      body.run();
+    } finally {
+      logger.removeHandler(handler);
+    }
+    return List.copyOf(lines);
+  }
+
+  @Test
   public void renamingTheDeployerIsRefusedBeforeAnythingMoves() {
     String env = "rn-self";
     String environmentId = createEnvironment(env);

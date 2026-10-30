@@ -794,6 +794,16 @@ public class ResourceProvisioning {
    * Whether {@code applicationName} still holds an idp client row in that tier — the rename
    * retirement's cheap "is anything left to do" read, one query and no seam call.
    */
+  public List<String> idpClientIds(String applicationName, String environmentName) {
+    return QuarkusTransaction.joiningExisting()
+        .call(
+            () ->
+                resources.listByApplication(applicationName, environmentName).stream()
+                    .filter(row -> IDP_RESOURCE_TYPE.equals(row.resourceType))
+                    .map(row -> row.clientId == null ? "" : row.clientId)
+                    .toList());
+  }
+
   public boolean holdsIdpClient(String applicationName, String environmentName) {
     return QuarkusTransaction.joiningExisting()
         .call(

@@ -214,6 +214,28 @@ public class Settings {
             });
   }
 
+  /**
+   * Which settings in {@code environmentName} — any application — hold exactly {@code value}, as
+   * {@code <application>:<key>}, sorted. NON-SECRET rows only: a secret never names a client id, and
+   * a secret value is never read for a comparison that ends in a log line. The rename retirement's
+   * guard: a predecessor's idp client that something still names is not deleted. The answer carries
+   * names and keys, never a value.
+   */
+  public List<String> referencesTo(String environmentName, String value) {
+    if (value == null || value.isEmpty()) {
+      return List.of();
+    }
+    String env = PdIdentifiers.requireName(environmentName, "environment");
+    return QuarkusTransaction.joiningExisting()
+        .call(
+            () ->
+                settings.listFiltered(null, env).stream()
+                    .filter(row -> !row.secret && value.equals(row.value))
+                    .map(row -> row.applicationName + ":" + row.settingKey)
+                    .sorted()
+                    .toList());
+  }
+
   /** The key, or a 400 naming the rule. */
   static String requireKey(String key) {
     if (key == null || key.length() > KEY_MAX_LENGTH || !KEY.matcher(key).matches()) {
