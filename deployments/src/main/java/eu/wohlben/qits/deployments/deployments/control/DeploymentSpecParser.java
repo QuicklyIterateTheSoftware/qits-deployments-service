@@ -465,7 +465,7 @@ public final class DeploymentSpecParser {
     List<DeploymentSpec.VolumeSpec> volumes = List.of();
     List<ServiceExtras.Mount> binds = List.of();
     int bindsLine = 0;
-    List<ServiceExtras.Publish> publishes = List.of();
+    List<String> publishes = List.of();
     List<String> aliases = List.of();
     DeploymentDriver.UpdateOrder updateOrder = DeploymentDriver.UpdateOrder.START_FIRST;
     DeploymentDriver.PublishMode publishMode = DeploymentDriver.PublishMode.HOST;
@@ -1415,28 +1415,75 @@ public final class DeploymentSpecParser {
    * config can never disagree about what a publish is. A port named with an ip that is not {@code
    * 0.0.0.0} parses here and is refused by the swarm driver, as config's is: swarm's publish has no
    * ip field. A repeated published port and protocol is refused — swarm would refuse the create.
+   *
+   * <p>Kept AS WRITTEN, {@link DeclaredShape#QITS_PORT_TOKEN} included — the aliases' arrangement:
+   * the host HTTP port is an installation's choice this parser cannot know, so the substitution is
+   * {@link DeclaredShape#publishesFor}'s, at deploy time, and the grammar is checked here with a
+   * stand-in port and again after the real one. The token is accepted as the whole HOST port and
+   * nowhere else (a container port is the image's own fact, not the installation's), and any other
+   * {@code $} is refused: a placeholder nothing replaces is a publish swarm cannot parse.
    */
-  private static List<ServiceExtras.Publish> publishes(String value, String source, int line) {
-    List<ServiceExtras.Publish> declared = new ArrayList<>();
+  private static List<String> publishes(String value, String source, int line) {
+    List<String> declared = new ArrayList<>();
     Set<String> ports = new HashSet<>();
     for (String candidate : value.split(",", -1)) {
       String entry = candidate.strip();
       if (entry.isBlank()) {
         throw error(source, line, "`" + PUBLISHES + "` has a blank entry");
       }
+      boolean placeholder = entry.contains(DeclaredShape.QITS_PORT_TOKEN);
+      if (placeholder && !hostPortIsTheToken(entry)) {
+        throw error(
+            source,
+            line,
+            "`"
+                + PUBLISHES
+                + "` takes "
+                + DeclaredShape.QITS_PORT_TOKEN
+                + " as the whole host port and nowhere else, got: "
+                + entry);
+      }
+      String substituted = entry.replace(DeclaredShape.QITS_PORT_TOKEN, "8080");
+      if (substituted.indexOf('$') >= 0) {
+        throw error(
+            source,
+            line,
+            "`"
+                + PUBLISHES
+                + "` knows the one placeholder "
+                + DeclaredShape.QITS_PORT_TOKEN
+                + " and no other, got: "
+                + entry);
+      }
       ServiceExtras.Publish publish;
       try {
-        publish = ServiceExtras.publish("`" + PUBLISHES + "`", entry);
+        publish = ServiceExtras.publish("`" + PUBLISHES + "`", substituted);
       } catch (ServiceExtras.Refused e) {
         throw error(source, line, e.getMessage());
       }
-      if (!ports.add(publish.portKey())) {
-        throw error(
-            source, line, "`" + PUBLISHES + "` publishes `" + publish.portKey() + "` twice");
+      // The placeholder is its own port here: two of it is one port twice whatever it resolves to,
+      // and a clash with a literal port is the substitution's to find, against the real value.
+      String protocol = publish.protocol() == null ? "tcp" : publish.protocol();
+      String portKey =
+          placeholder ? DeclaredShape.QITS_PORT_TOKEN + "/" + protocol : publish.portKey();
+      if (!ports.add(portKey)) {
+        throw error(source, line, "`" + PUBLISHES + "` publishes `" + portKey + "` twice");
       }
-      declared.add(publish);
+      declared.add(entry);
     }
     return List.copyOf(declared);
+  }
+
+  /** Whether {@code entry}'s host-port segment is exactly the token, and the token appears once. */
+  private static boolean hostPortIsTheToken(String entry) {
+    String token = DeclaredShape.QITS_PORT_TOKEN;
+    if (entry.indexOf(token) != entry.lastIndexOf(token)) {
+      return false;
+    }
+    int slash = entry.indexOf('/');
+    String ports = slash >= 0 ? entry.substring(0, slash) : entry;
+    String[] parts = ports.split(":", -1);
+    return parts.length >= 2 && token.equals(parts[parts.length - 2]);
   }
 
   /**

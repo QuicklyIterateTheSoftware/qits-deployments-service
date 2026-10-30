@@ -124,6 +124,8 @@ class SwarmDeploymentDriverTest {
     // nothing. Every other test in this class therefore asserts the argv of a platform that states
     // no domain, which is the argv byte for byte as it was before the key existed.
     driver.platformDomain = Optional.empty();
+    // The shipped `qits.deployments.qits-port`: what ${QITS_PORT} in a declared publish becomes.
+    driver.qitsPort = 8080;
     cli = new ScriptedCli();
     driver.scriptCli(cli);
     return driver;
@@ -2671,9 +2673,7 @@ class SwarmDeploymentDriverTest {
                 "/var/run/docker.sock",
                 "/var/run/docker.sock",
                 false)),
-        List.of(
-            new ServiceExtras.Publish(null, 8080, 8080, null),
-            new ServiceExtras.Publish(null, 443, 8443, null)),
+        List.of("${QITS_PORT}:8080", "443:8443"),
         List.of(
             "registry.${QITS_ENVIRONMENT}.localhost",
             "mirror.${QITS_ENVIRONMENT}.localhost",
@@ -2793,9 +2793,7 @@ class SwarmDeploymentDriverTest {
                     "/var/run/docker.sock",
                     false),
                 new ServiceExtras.Mount(ServiceExtras.MountKind.BIND, "/srv/certs", "/certs", true)),
-            List.of(
-                new ServiceExtras.Publish(null, 8080, 8080, null),
-                new ServiceExtras.Publish(null, 443, 8443, null)),
+            List.of("${QITS_PORT}:8080", "443:8443"),
             List.of("registry.${QITS_ENVIRONMENT}.localhost"));
 
     List<String> argv =
@@ -2830,6 +2828,38 @@ class SwarmDeploymentDriverTest {
     assertEquals(1, occurrences(argv, "--group", "989"), argv.toString());
     assertEquals(1, occurrences(argv, "--group", gid), argv.toString());
     assertEquals("989".equals(gid) ? 1 : 2, flagCount(argv, "--group"), argv.toString());
+  }
+
+  @Test
+  void qitsPortInADeclaredPublishIsTheConfiguredHostPort() {
+    SwarmDeploymentDriver driver = driver();
+    driver.scriptDockerSocket(Path.of("/nonexistent/docker.sock"));
+    driver.qitsPort = 9080;
+
+    List<String> argv =
+        driver.buildCreateArgv(withShape(spec(), edgeShape()), "dev-qits-gateway", List.of("qits-net"));
+
+    assertTrue(
+        argv.containsAll(List.of("--publish", "published=9080,target=8080,mode=host")),
+        argv.toString());
+    assertTrue(argv.stream().noneMatch(argument -> argument.contains("QITS_PORT")), argv.toString());
+    assertTrue(argv.stream().noneMatch(argument -> argument.startsWith("published=8080,")));
+  }
+
+  @Test
+  void aSubstitutedQitsPortIsDedupedAgainstTheSamePortInTheExtras() {
+    // The edge's migration step with the placeholder in it: config still says publishes[0]=8080:8080
+    // and the file says ${QITS_PORT}:8080. At the shipped 8080 they are one port and render once.
+    SwarmDeploymentDriver driver =
+        driver(Map.of(DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.publishes[0]", "8080:8080"));
+    driver.scriptDockerSocket(Path.of("/nonexistent/docker.sock"));
+
+    List<String> argv =
+        driver.buildCreateArgv(withShape(spec(), edgeShape()), "dev-qits-gateway", List.of("qits-net"));
+
+    assertEquals(
+        1, argv.stream().filter(argument -> argument.startsWith("published=8080,")).count(), argv.toString());
+    assertTrue(argv.contains("published=8080,target=8080,mode=host"), argv.toString());
   }
 
   @Test
@@ -2878,7 +2908,7 @@ class SwarmDeploymentDriverTest {
   @Test
   void aDeclaredPublishThatDemandsAnIpIsRefusedAsConfigsIs() {
     DeclaredShape shape =
-        new DeclaredShape(List.of(), List.of(new ServiceExtras.Publish("127.0.0.1", 1, 1, null)), List.of());
+        new DeclaredShape(List.of(), List.of("127.0.0.1:1:1"), List.of());
 
     assertThrows(
         ServiceExtras.Refused.class,

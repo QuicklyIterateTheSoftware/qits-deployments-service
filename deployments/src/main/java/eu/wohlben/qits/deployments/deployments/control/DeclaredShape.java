@@ -1,7 +1,9 @@
 package eu.wohlben.qits.deployments.deployments.control;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * The host-facing shape a repository declares for itself in {@code .config/qits/deployments.yml}:
@@ -15,16 +17,27 @@ import java.util.List;
  * refuses two mounts on one target and two publishes of one port outright.
  *
  * <p>{@code aliases} are kept as WRITTEN, {@link #ENVIRONMENT_TOKEN} included: the parser never knows
- * which tier it reads for, so the substitution is {@link #aliasesFor}'s, at deploy time.
+ * which tier it reads for, so the substitution is {@link #aliasesFor}'s, at deploy time. {@code
+ * publishes} are kept as written for the same reason, {@link #QITS_PORT_TOKEN} included: the host
+ * HTTP port is an installation's choice, known to the deployer and not to the file, so the
+ * substitution is {@link #publishesFor}'s.
  */
 public record DeclaredShape(
-    List<ServiceExtras.Mount> binds, List<ServiceExtras.Publish> publishes, List<String> aliases) {
+    List<ServiceExtras.Mount> binds, List<String> publishes, List<String> aliases) {
 
   /**
    * The one placeholder an alias may carry. Replaced by the deployment's environment name, so one
    * line ({@code registry.${QITS_ENVIRONMENT}.localhost}) says the right thing in every tier.
    */
   public static final String ENVIRONMENT_TOKEN = "${QITS_ENVIRONMENT}";
+
+  /**
+   * The one placeholder a publish may carry, and only as the whole HOST port: {@code
+   * ${QITS_PORT}:8080}. Replaced by the deployer's {@code qits.deployments.qits-port} — the host HTTP
+   * port the bootstrap installed the platform on — so the edge's line says the right thing on every
+   * installation without the file knowing which.
+   */
+  public static final String QITS_PORT_TOKEN = "${QITS_PORT}";
 
   /** The host path whose bind makes the deployer add the socket's own group — see the driver. */
   public static final String DOCKER_SOCKET = "/var/run/docker.sock";
@@ -36,6 +49,35 @@ public record DeclaredShape(
     binds = binds == null ? List.of() : List.copyOf(binds);
     publishes = publishes == null ? List.of() : List.copyOf(publishes);
     aliases = aliases == null ? List.of() : List.copyOf(aliases);
+  }
+
+  /**
+   * The publishes as this installation renders them: {@link #QITS_PORT_TOKEN} replaced by {@code
+   * qitsPort}, and each result read again by {@link ServiceExtras#publish} — the one spelling of the
+   * grammar — because the substituted value is what reaches the argv. A port and protocol twice
+   * AFTER the substitution ({@code ${QITS_PORT}:8080, 8080:9090} with the port at 8080) is refused:
+   * swarm would refuse the create.
+   *
+   * @throws ServiceExtras.Refused when a substituted publish is not one, or names a port twice
+   */
+  public List<ServiceExtras.Publish> publishesFor(int qitsPort) {
+    List<ServiceExtras.Publish> resolved = new ArrayList<>();
+    Set<String> ports = new HashSet<>();
+    for (String publish : publishes) {
+      String value = publish.replace(QITS_PORT_TOKEN, String.valueOf(qitsPort));
+      ServiceExtras.Publish parsed = ServiceExtras.publish("publishes", value);
+      if (!ports.add(parsed.portKey())) {
+        throw new ServiceExtras.Refused(
+            "publishes: `"
+                + parsed.portKey()
+                + "` is published twice once "
+                + QITS_PORT_TOKEN
+                + " is "
+                + qitsPort);
+      }
+      resolved.add(parsed);
+    }
+    return List.copyOf(resolved);
   }
 
   /** Whether the declaration binds the docker socket, which is what earns the socket's group. */

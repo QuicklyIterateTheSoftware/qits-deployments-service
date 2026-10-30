@@ -449,6 +449,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   @ConfigProperty(name = "qits.deployments.registry-auth")
   boolean registryAuth;
 
+  /**
+   * The host HTTP port this installation was bootstrapped on — what {@code ${QITS_PORT}} in a
+   * repository's {@code publishes:} becomes ({@link DeclaredShape#publishesFor}). 8080 shipped.
+   */
+  @ConfigProperty(name = "qits.deployments.qits-port")
+  int qitsPort;
+
   @ConfigProperty(name = "qits.deployments.output-max-chars")
   int outputMaxChars;
 
@@ -1660,7 +1667,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    *   <li>a mount by TARGET — every declared bind, then every config mount on a target no bind
    *       holds (two mounts on one target is a create swarm refuses);
    *   <li>a publish by published port and PROTOCOL ({@link ServiceExtras.Publish#portKey}) —
-   *       every declared one, then every config one on a port none of them holds;
+   *       every declared one with {@code ${QITS_PORT}} resolved against {@link #qitsPort}, then
+   *       every config one on a port none of them holds;
    *   <li>an alias by NAME — every declared one with {@code ${QITS_ENVIRONMENT}} resolved against
    *       this deployment's tier, then every config one not already among them.
    * </ul>
@@ -1671,7 +1679,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * for byte. While qits-1393 has not retired the extras source both sides say the same thing on
    * the estate, and the union is what makes that inert rather than a refused create.
    *
-   * @throws ServiceExtras.Refused when a declared alias does not resolve to one name in this tier
+   * @throws ServiceExtras.Refused when a declared alias does not resolve to one name in this tier,
+   *     or a declared publish is not one (or names a port twice) once its port is put in
    */
   private ServiceExtras shapeOf(ServiceSpec spec, ServiceExtras extras) {
     DeclaredShape shape = spec.shape();
@@ -1686,9 +1695,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
         mounts.add(mount);
       }
     }
-    List<ServiceExtras.Publish> publishes = new ArrayList<>(shape.publishes());
+    List<ServiceExtras.Publish> declaredPublishes = shape.publishesFor(qitsPort);
+    List<ServiceExtras.Publish> publishes = new ArrayList<>(declaredPublishes);
     Set<String> ports = new HashSet<>();
-    shape.publishes().forEach(publish -> ports.add(publish.portKey()));
+    declaredPublishes.forEach(publish -> ports.add(publish.portKey()));
     for (ServiceExtras.Publish publish : extras.publishes()) {
       if (ports.add(publish.portKey())) {
         publishes.add(publish);

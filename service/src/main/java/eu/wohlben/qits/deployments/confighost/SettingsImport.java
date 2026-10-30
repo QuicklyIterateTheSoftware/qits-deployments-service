@@ -85,6 +85,7 @@ public class SettingsImport {
           new Entry("qits-projects", "QITS_REPOSITORIES_GIT_PUSH_TOKEN", true),
           new Entry("qits-oci-postgresql", "POSTGRES_PASSWORD", true),
           new Entry("qits-deployments", "QITS_DOMAIN", false),
+          new Entry("qits-deployments", "QITS_PORT", false),
           new Entry("qits-deployments", "QITS_PLATFORM_DEPLOYMENTS_POSTGRES_ADMIN_PASSWORD", true),
           new Entry("qits-deployments", "QITS_PLATFORM_DEPLOYMENTS_REGISTRY_AUTH", false));
 
