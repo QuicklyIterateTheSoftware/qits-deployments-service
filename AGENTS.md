@@ -2268,6 +2268,17 @@ is COMPARED against a stored application name. Five things about it, each easy t
 `HttpIdpClientProvisioner.IDP_APPLICATION` (this component's own dial to the service-client API) —
 must move in the release AFTER the idp successor is serving, never before.
 
+**The settings table takes the same declaration (qits-1398), and the same shape as the resource
+claim transfer.** `Settings.copyForRename(renamedFrom, applicationName, environmentName)` copies
+every row `renamedFrom` holds in that tier onto `applicationName`, skipping a key the successor
+already has, `value` and `secret` carried over unchanged and `updated_by` stamped `rename from
+<renamedFrom>` — a second run copies nothing, because "the successor does not have it yet" is read
+fresh each time. `Settings.retire(applicationName, environmentName)` is the predecessor's half,
+for later: it deletes that application's rows in that tier, idempotently, once the predecessor is
+decommissioned. Nothing calls either method yet; the cutover that will (qits-1399) runs
+`copyForRename` in the same transaction as `ResourceProvisioning.ensureAll`'s claim transfer, for
+the reason that transfer gives: either both land or neither does.
+
 **The release door was unaffected**, and that was checked rather than assumed at the time:
 qits-workspaces' `DeploymentSpecReader` **statted** this file and never opened it (a file means
 "it deploys"), so a new key was invisible to it. That door is retired — releasing is a release
