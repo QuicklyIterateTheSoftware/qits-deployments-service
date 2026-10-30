@@ -201,6 +201,61 @@
         "references": {
           "qits-call": {
             "app": "qits-idp-service",
+            "operationId": "deleteServiceClient"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "event": "SoftwareRelease",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "SoftwareRelease: deleteServiceClient",
+      "key": "ca438265",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a database service client",
+          "params": {
+            "authorization": "Basic dGVzdC1icm9hZDp0ZXN0LWJyb2FkLXNlY3JldA==",
+            "callerClientId": "test-broad",
+            "clientId": "contract-00000001"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "header": {
+            "Authorization": {
+              "dataType": "RAW",
+              "expression": "${authorization}",
+              "type": "ProviderState"
+            }
+          },
+          "path": {
+            "dataType": "RAW",
+            "expression": "/idp/api/service-clients/${clientId}",
+            "type": "ProviderState"
+          }
+        },
+        "headers": {
+          "Authorization": [
+            "Basic dGVzdC1icm9hZDp0ZXN0LWJyb2FkLXNlY3JldA=="
+          ]
+        },
+        "method": "DELETE",
+        "path": "/idp/api/service-clients/contract-00000001"
+      },
+      "response": {
+        "status": 204
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-idp-service",
             "operationId": "getServiceClient"
           },
           "qits-trigger": {

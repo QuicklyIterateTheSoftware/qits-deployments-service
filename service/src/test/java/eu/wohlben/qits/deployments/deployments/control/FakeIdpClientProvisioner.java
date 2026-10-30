@@ -41,9 +41,11 @@ public class FakeIdpClientProvisioner implements IdpClientProvisioner {
   private final List<String> presenceChecks = Collections.synchronizedList(new ArrayList<>());
   private final List<String> createCalls = Collections.synchronizedList(new ArrayList<>());
   private final List<String> rotateCalls = Collections.synchronizedList(new ArrayList<>());
+  private final List<String> deleteCalls = Collections.synchronizedList(new ArrayList<>());
 
   private volatile Result nextCreateResult;
   private volatile Result nextRotateResult;
+  private volatile Result nextDeleteResult;
   private volatile int secretCounter;
 
   public void reset() {
@@ -51,8 +53,10 @@ public class FakeIdpClientProvisioner implements IdpClientProvisioner {
     presenceChecks.clear();
     createCalls.clear();
     rotateCalls.clear();
+    deleteCalls.clear();
     nextCreateResult = null;
     nextRotateResult = null;
+    nextDeleteResult = null;
     secretCounter = 0;
   }
 
@@ -71,6 +75,16 @@ public class FakeIdpClientProvisioner implements IdpClientProvisioner {
     nextRotateResult = result;
   }
 
+  /** Script the next (and every following, until reset or rescripted) answer to {@link #delete}. */
+  public void scriptDeleteResult(Result result) {
+    nextDeleteResult = result;
+  }
+
+  /** Whether "qits-idp" currently holds a database row for this id — no call is recorded. */
+  public boolean holds(String clientId) {
+    return databaseClients.contains(clientId);
+  }
+
   /** Every id {@link #databaseClientPresent} was asked about, in arrival order. */
   public List<String> presenceChecks() {
     return List.copyOf(presenceChecks);
@@ -84,6 +98,11 @@ public class FakeIdpClientProvisioner implements IdpClientProvisioner {
   /** Every id {@link #rotate} was called with, in arrival order. */
   public List<String> rotateCalls() {
     return List.copyOf(rotateCalls);
+  }
+
+  /** Every id {@link #delete} was called with, in arrival order. */
+  public List<String> deleteCalls() {
+    return List.copyOf(deleteCalls);
   }
 
   @Override
@@ -115,6 +134,17 @@ public class FakeIdpClientProvisioner implements IdpClientProvisioner {
       return new Result(false, false, null, "no database row exists for " + clientId + " to rotate");
     }
     return new Result(true, false, freshSecret(clientId), null);
+  }
+
+  /** Absent already is done, as qits-idp's 404 is: the default never fails. */
+  @Override
+  public Result delete(String clientId) {
+    deleteCalls.add(clientId);
+    if (nextDeleteResult != null) {
+      return nextDeleteResult;
+    }
+    databaseClients.remove(clientId);
+    return new Result(true, false, null, null);
   }
 
   private String freshSecret(String clientId) {

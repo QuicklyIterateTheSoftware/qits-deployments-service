@@ -45,7 +45,7 @@ import org.eclipse.microprofile.config.Config;
  * <ul>
  *   <li>{@link #CONFIGURATION} — {@code ConfigHostExtrasSource}'s resolved read and {@code
  *       ConfigHostDeclarationSeed}'s declaration POST;
- *   <li>{@link #IDP} — {@code HttpIdpClientProvisioner}'s three service-client calls, the two
+ *   <li>{@link #IDP} — {@code HttpIdpClientProvisioner}'s four service-client calls, the two
  *       reads quarkus-oidc makes at startup (the discovery document and the JWKS), and the
  *       client-credentials mint quarkus-oidc-client makes for {@code IdpExtrasBearer};
  *   <li>{@link #GITHOST} — {@code GitHostSpecSource}'s blob reads of {@code deployments.yml} and
@@ -264,6 +264,13 @@ public final class Contracts {
               serviceClients(NO_SERVICE_CLIENT, "rotateServiceClientSecret"),
               (url, recorded) ->
                   assertFalse(idp(url, recorded.params()).rotate(recorded.params().get("clientId")).ok())),
+          // The retirement's delete reads the status alone: 2xx (and 404) is done.
+          Check.of(
+              HttpIdpClientProvisioner.class,
+              "delete",
+              serviceClients(A_DATABASE_SERVICE_CLIENT, "deleteServiceClient"),
+              (url, recorded) ->
+                  assertTrue(idp(url, recorded.params()).delete(recorded.params().get("clientId")).ok())),
           // quarkus-oidc reads the discovery document at startup, as quarkus-oidc parses it.
           Check.framework(
               DISCOVERY,

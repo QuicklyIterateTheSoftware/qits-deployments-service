@@ -36,6 +36,18 @@ public class PdResourceRepository implements PanacheRepositoryBase<PdResource, S
   }
 
   /**
+   * Every row one application holds in one tier, of any type — the predecessor's claims a declared
+   * rename is checked against, and the idp row a retirement looks up. Null is tested as a value,
+   * like {@link #findOne}, for the rows written before the plane had a tier.
+   */
+  public List<PdResource> listByApplication(String applicationName, String environmentName) {
+    return environmentName == null
+        ? list("applicationName = ?1 and environmentName is null", applicationName)
+        : list(
+            "applicationName = ?1 and environmentName = ?2", applicationName, environmentName);
+  }
+
+  /**
    * Everything already claiming this database name — the cross-check that turns two repositories
    * naming one database into a refused deployment rather than a silent takeover. Unscoped by
    * application on purpose: the question is exactly "whose is this".

@@ -7,12 +7,15 @@ package eu.wohlben.qits.deployments.deployments.control;
  * implementation ({@code HttpIdpClientProvisioner}), and the suite installs a scripted fake
  * (`FakeIdpClientProvisioner`) so a clone's {@code mvn verify} reaches no idp.
  *
- * <p><b>Three verbs, not one.</b> {@link ResourceProvisioner} is a single idempotent {@code ensure}
+ * <p><b>Four verbs, not one.</b> {@link ResourceProvisioner} is a single idempotent {@code ensure}
  * because postgres answers every drift case from one round trip of DDL; qits-idp's own API is
  * shaped as a read and two writes ({@code GET}, {@code POST}, {@code POST .../secret}), and there is
  * no single call that means "converge, whatever the state". So the arm logic — which of the three to
  * call, and in what order — is domain code in {@code ResourceProvisioning}, testable against the
- * fake, and this interface stays a plain courier of the three requests.
+ * fake, and this interface stays a plain courier of the requests. The fourth, {@link #delete}, is
+ * not part of that convergence at all: it retires a client nothing should hold any more ({@code
+ * ResourceProvisioning.retireIdpClient}), and it is idempotent on its own — a client already gone
+ * is a delete that succeeded.
  *
  * <p><b>It never sees a password it did not just receive.</b> Unlike postgres, qits-idp never takes
  * a caller-supplied secret: {@link #create} and {@link #rotate} always come back with a
@@ -41,7 +44,15 @@ public interface IdpClientProvisioner {
   Result rotate(String clientId);
 
   /**
-   * What qits-idp answered. {@code secret} is set exactly when {@code ok} is true; {@code detail} is
+   * Delete a database service client — {@code DELETE /idp/api/service-clients/{id}}. {@code ok} on
+   * a 2xx AND on a 404: the client being absent is exactly the state a delete asks for, so a retry
+   * after a lost answer converges rather than failing. Never carries a secret.
+   */
+  Result delete(String clientId);
+
+  /**
+   * What qits-idp answered. {@code secret} is set exactly when {@code ok} is true on {@link #create}
+   * and {@link #rotate}, and never on {@link #delete}, which has none to hand back; {@code detail} is
    * the operator-facing sentence on failure and null on success — and, like {@link
    * ResourceProvisioner.Result}, neither field may ever carry a secret into a log.
    */

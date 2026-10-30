@@ -21,7 +21,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /**
- * The sole production implementation of {@link IdpClientProvisioner}: three calls against
+ * The sole production implementation of {@link IdpClientProvisioner}: four calls against
  * qits-idp's service-client API, Basic-authenticated with this component's own client id and
  * secret — {@code ConfigHostDeclarationSeed}'s shape, over the JDK's own {@link HttpClient}, for the
  * same reason: no REST client generated against a peer's contract, no second HTTP library.
@@ -224,6 +224,38 @@ public class HttpIdpClientProvisioner implements IdpClientProvisioner {
             + excerpt(answer.raw()));
   }
 
+  /**
+   * {@code DELETE /idp/api/service-clients/{id}}. A 2xx is done and so is a 404 — the client is
+   * absent either way, which is what was asked. A 5xx that outlasted the budget, a transport
+   * failure and any other status are a failed {@link Result} carrying the operator's sentence,
+   * rather than a throw: the caller decides what a refused retirement means.
+   */
+  @Override
+  public Result delete(String clientId) {
+    String url = baseUrl + "/" + segment(clientId);
+    Answer answer;
+    try {
+      answer = send("DELETE", url, null, clientId, "delete");
+    } catch (ResourceException e) {
+      return new Result(false, false, null, e.getMessage());
+    }
+    if (answer.status() / 100 == 2 || answer.status() == 404) {
+      return new Result(true, false, null, null);
+    }
+    return new Result(
+        false,
+        false,
+        null,
+        "deleting the idp client "
+            + clientId
+            + " at "
+            + url
+            + " answered "
+            + answer.status()
+            + " — "
+            + excerpt(answer.raw()));
+  }
+
   /** One HTTP call, retried on a transport failure or a 5xx within the budget — never on 2xx/4xx. */
   private Answer send(String method, String url, String body, String clientId, String what) {
     String lastFailure = null;
@@ -279,6 +311,7 @@ public class HttpIdpClientProvisioner implements IdpClientProvisioner {
     request =
         switch (method) {
           case "GET" -> request.GET();
+          case "DELETE" -> request.DELETE();
           case "POST" ->
               request.POST(
                   HttpRequest.BodyPublishers.ofString(

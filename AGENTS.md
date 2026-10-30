@@ -2238,6 +2238,12 @@ is COMPARED against a stored application name. Five things about it, each easy t
   password the role already has — so the predecessor, still running on open pools against that role,
   keeps working. Moved later, or moved without the password, the reconcile arm rotates the role and
   the rename takes the predecessor down as a side effect of its successor's first deployment.
+- **It also REFUSES a rename that would leave the predecessor's data behind** (qits-1397). Before
+  anything is provisioned, every postgres claim the predecessor holds in the tier being deployed into
+  is checked against the successor's resolved databases; one the successor does not declare fails
+  the deployment naming it — `the predecessor `X` holds the database `Y`, which this spec does not
+  declare; … pin it in `resources:` (database: Y)` — rather than starting it green on a new, empty
+  one. A null value never reaches the check.
 - **It is a declaration and never an inference.** A prefix rule, a similarity test or "the previous
   holder of this database" are all "hand this application somebody else's store" with a heuristic in
   front of it. A key is written in a reviewed commit and read at the released tag, like every other
@@ -2248,6 +2254,8 @@ is COMPARED against a stored application name. Five things about it, each easy t
   transfer arm there would be unreachable code on the one check whose whole purpose is to be
   unreachable (it fires only on a derivation bug). The cost is one orphan client plus its row, and a
   fresh secret for the successor: a secret is not data, and the predecessor keeps the one it runs on.
+  `ResourceProvisioning.retireIdpClient` retires that orphan — `DELETE` at qits-idp (a 404 counts as
+  done), then the row, which a refused delete keeps — and nothing calls it until the cutover does.
 - **`uq_pd_resource` is `(application_name, environment_name, resource_name)`**, so a successor that
   already holds a resource of that name in that tier has nowhere for the claim to move to. That is a
   refusal naming both rows, not a merge: two rows both claiming to be this application's is two

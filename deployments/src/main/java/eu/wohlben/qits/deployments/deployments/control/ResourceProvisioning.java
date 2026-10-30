@@ -235,6 +235,14 @@ public class ResourceProvisioning {
    * rotate the role, and the rename would take the predecessor down as a side effect. The transfer
    * therefore has to happen inside the same bracket and before that read, and it does.
    *
+   * <p><b>A declared predecessor also REFUSES a rename that would leave its data behind.</b> The
+   * transfer only reaches a database the successor declares; a predecessor claim on a database the
+   * successor's resolved list does not name would otherwise be quietly abandoned, and the successor
+   * would start green on a new, empty database of its own. So before anything is provisioned, every
+   * postgres claim the predecessor holds in this tier is checked against the declared databases, and
+   * one that is missing refuses the deployment naming it — see {@link
+   * #refuseAbandonedPredecessorDatabases}. A null {@code renamedFrom} never reaches the check.
+   *
    * <p><b>A declared predecessor buys nothing else among the resources, and that is deliberate</b>
    * rather than an unfinished sweep (outside them, {@code DeployService} retires its edge routes at
    * cutover). The idp-client arm has its own "already provisioned for" and is left exactly
@@ -245,6 +253,13 @@ public class ResourceProvisioning {
    */
   public List<DeploymentDriver.ResourceBinding> ensureAll(
       String applicationName, String environmentName, String renamedFrom, List<Resolved> declared) {
+    if (renamedFrom != null && environmentName != null) {
+      // Up front, before the empty-declaration return and before any seam is called: a rename that
+      // declares nothing at all abandons the predecessor's databases just as surely as one that
+      // declares a different one.
+      refuseAbandonedPredecessorDatabases(
+          applicationName, environmentName, renamedFrom, declared == null ? List.of() : declared);
+    }
     if (declared == null || declared.isEmpty()) {
       return List.of();
     }
@@ -270,6 +285,52 @@ public class ResourceProvisioning {
           });
     }
     return List.copyOf(bindings);
+  }
+
+  /**
+   * The rename's other half: a predecessor's database the successor does not carry over is a
+   * refusal, never a silent abandonment. Reads the predecessor's {@code postgresql} claims in THIS
+   * tier — the tier the successor is deploying into, which is the only one whose data this
+   * deployment would start without — and throws, naming the first database the resolved list does
+   * not declare, before anything is provisioned and before any claim moves.
+   *
+   * <p>Declaring your own name as the predecessor is inert here exactly as it is in the transfer:
+   * an application's own claims are not a rename's to carry.
+   */
+  private void refuseAbandonedPredecessorDatabases(
+      String applicationName, String environmentName, String renamedFrom, List<Resolved> declared) {
+    if (renamedFrom.equals(applicationName)) {
+      return;
+    }
+    Set<String> declaredDatabases = new HashSet<>();
+    for (Resolved resource : declared) {
+      if (resource.type() == ResourceSpec.Type.POSTGRESQL && resource.database() != null) {
+        declaredDatabases.add(resource.database());
+      }
+    }
+    List<String> held =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () ->
+                    resources.listByApplication(renamedFrom, environmentName).stream()
+                        .filter(claim -> RESOURCE_TYPE.equals(claim.resourceType))
+                        .map(claim -> claim.databaseName)
+                        .filter(database -> database != null)
+                        .sorted()
+                        .toList());
+    for (String database : held) {
+      if (!declaredDatabases.contains(database)) {
+        throw new ResourceException(
+            "the predecessor `"
+                + renamedFrom
+                + "` holds the database `"
+                + database
+                + "`, which this spec does not declare; a rename would start on a new, empty"
+                + " database — pin it in `resources:` (database: "
+                + database
+                + ")");
+      }
+    }
   }
 
   private String requireAdminPassword() {
@@ -475,7 +536,7 @@ public class ResourceProvisioning {
    * {@code pd_resource} row stay, and the successor is issued a client of its own with a fresh
    * secret. That is the correct outcome and not a gap — a secret is not data, nothing is lost by
    * minting another, and the predecessor keeps the credential it is running on for as long as it
-   * runs. Retiring the orphan is the same hand step retiring the predecessor's service is.
+   * runs. Retiring the orphan is {@link #retireIdpClient}, once the predecessor's service is gone.
    */
   private DeploymentDriver.ResourceBinding ensureIdpClient(
       String applicationName, String environmentName, Resolved resource) {
@@ -638,6 +699,63 @@ public class ResourceProvisioning {
     if (existing.isEmpty()) {
       resources.persist(row);
     }
+  }
+
+  /**
+   * Retire an application's idp client in one tier: delete the client at qits-idp, then the {@code
+   * idp} {@code pd_resource} row that recorded it. The orphan a rename leaves behind (see {@link
+   * #ensureIdpClient}) is exactly what this exists for; the cutover that calls it is a later
+   * feature's.
+   *
+   * <p><b>Idempotent, and ordered so a failure keeps the row.</b> No row is nothing to do. The idp
+   * delete counts a 404 as done, so a client already gone does not wedge the retirement; the row is
+   * deleted only after qits-idp said so, in a bracket of its own — no transaction spans the seam
+   * call, the class's rule — so a refused delete leaves the registry still naming the client for
+   * the next attempt. A row recording no client id has nothing to delete at qits-idp and only the
+   * row goes.
+   *
+   * <p><b>The client this process is itself signed in as is refused</b>, by the same decision
+   * {@link #rotateGuarded} makes: deleting the deployer's own client would wedge the platform for
+   * the reason rotating its secret would.
+   *
+   * @return how many idp clients were retired — zero when there was nothing to do
+   * @throws ResourceException with an operator-facing sentence when qits-idp refused a delete
+   */
+  public int retireIdpClient(String applicationName, String environmentName) {
+    List<String[]> rows =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () ->
+                    resources.listByApplication(applicationName, environmentName).stream()
+                        .filter(row -> IDP_RESOURCE_TYPE.equals(row.resourceType))
+                        .map(row -> new String[] {row.id, row.clientId})
+                        .toList());
+    int retired = 0;
+    for (String[] row : rows) {
+      String rowId = row[0];
+      String clientId = row[1];
+      if (clientId != null) {
+        if (rotationRefused(applicationName, clientId, ownClientId)) {
+          throw new ResourceException(
+              "the idp client "
+                  + clientId
+                  + " is the one qits-deployments is itself signed in as, and it never retires its"
+                  + " own client");
+        }
+        // OUTSIDE any transaction, deliberately — see the class javadoc.
+        IdpClientProvisioner.Result result = idpClients.delete(clientId);
+        if (!result.ok()) {
+          throw new ResourceException(
+              "could not retire the idp client " + clientId + ": " + result.detail());
+        }
+      }
+      QuarkusTransaction.requiringNew().run(() -> resources.deleteById(rowId));
+      retired++;
+      LOG.infof(
+          "The idp client %s of %s (%s) is retired, and its registry row with it",
+          clientId, applicationName, environmentName);
+    }
+    return retired;
   }
 
   /**

@@ -66,7 +66,9 @@ public final class IdpStub implements AutoCloseable {
     }
     byte[] body = answer.body().getBytes(StandardCharsets.UTF_8);
     exchange.getResponseHeaders().add("Content-Type", "application/json");
-    exchange.sendResponseHeaders(answer.status(), body.length);
+    // An empty body is sent as NO body (-1), not a zero-length chunked one: a 204 — the delete's
+    // answer — may not carry one at all.
+    exchange.sendResponseHeaders(answer.status(), body.length == 0 ? -1 : body.length);
     try (OutputStream out = exchange.getResponseBody()) {
       out.write(body);
     }
