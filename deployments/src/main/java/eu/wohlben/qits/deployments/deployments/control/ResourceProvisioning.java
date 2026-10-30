@@ -272,6 +272,43 @@ public class ResourceProvisioning {
     return List.copyOf(bindings);
   }
 
+  /**
+   * The bindings the registry rows for one place would render, <b>without provisioning
+   * anything</b> — no DDL, no idp call, no write. The settings preview's read of the {@code
+   * QITS_RESOURCE_*} family: the next deployment would re-ensure these same rows, and on the
+   * self-heal arm it hands out exactly the stored credential, so the stored rows are what it would
+   * set. The url and username are spelled by the same derivations {@link #ensureAll} uses.
+   */
+  public List<DeploymentDriver.ResourceBinding> recordedBindings(
+      String applicationName, String environmentName) {
+    if (environmentName == null) {
+      return List.of();
+    }
+    List<DeploymentDriver.ResourceBinding> bindings = new ArrayList<>();
+    for (PdResource row :
+        QuarkusTransaction.joiningExisting()
+            .call(() -> resources.listByPlace(applicationName, environmentName))) {
+      if (IDP_RESOURCE_TYPE.equals(row.resourceType)) {
+        bindings.add(
+            DeploymentDriver.ResourceBinding.idp(
+                row.resourceName, idpUrl(environmentName), row.clientId, row.password));
+      } else if (RESOURCE_TYPE.equals(row.resourceType) && row.databaseName != null) {
+        bindings.add(
+            DeploymentDriver.ResourceBinding.postgres(
+                row.resourceName,
+                "jdbc:postgresql://"
+                    + PdNetworks.alias(environmentName, POSTGRES_APPLICATION)
+                    + ":"
+                    + POSTGRES_PORT
+                    + "/"
+                    + row.databaseName,
+                row.databaseName,
+                row.password));
+      }
+    }
+    return List.copyOf(bindings);
+  }
+
   private String requireAdminPassword() {
     return adminPassword
         .map(String::strip)
@@ -669,42 +706,5 @@ public class ResourceProvisioning {
       hex.append(Character.forDigit((b >> 4) & 0xf, 16)).append(Character.forDigit(b & 0xf, 16));
     }
     return hex.toString();
-  }
-
-  /**
-   * The bindings the registry rows for one place would render, <b>without provisioning
-   * anything</b> — no DDL, no idp call, no write. The settings preview's read of the {@code
-   * QITS_RESOURCE_*} family: the next deployment would re-ensure these same rows, and on the
-   * self-heal arm it hands out exactly the stored credential, so the stored rows are what it would
-   * set. The url and username are spelled by the same derivations {@link #ensureAll} uses.
-   */
-  public List<DeploymentDriver.ResourceBinding> recordedBindings(
-      String applicationName, String environmentName) {
-    if (environmentName == null) {
-      return List.of();
-    }
-    List<DeploymentDriver.ResourceBinding> bindings = new ArrayList<>();
-    for (PdResource row :
-        QuarkusTransaction.joiningExisting()
-            .call(() -> resources.listByPlace(applicationName, environmentName))) {
-      if (IDP_RESOURCE_TYPE.equals(row.resourceType)) {
-        bindings.add(
-            DeploymentDriver.ResourceBinding.idp(
-                row.resourceName, idpUrl(environmentName), row.clientId, row.password));
-      } else if (RESOURCE_TYPE.equals(row.resourceType) && row.databaseName != null) {
-        bindings.add(
-            DeploymentDriver.ResourceBinding.postgres(
-                row.resourceName,
-                "jdbc:postgresql://"
-                    + PdNetworks.alias(environmentName, POSTGRES_APPLICATION)
-                    + ":"
-                    + POSTGRES_PORT
-                    + "/"
-                    + row.databaseName,
-                row.databaseName,
-                row.password));
-      }
-    }
-    return List.copyOf(bindings);
   }
 }
