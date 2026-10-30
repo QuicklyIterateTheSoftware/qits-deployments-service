@@ -537,6 +537,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     String own = ownServiceName();
     boolean self = own.equals(name) || own.equals(SEED_STACK_PREFIX + name);
     String target = self ? own : name;
+    if (self && spec.renamedFrom() != null) {
+      // The deploy service refuses this before anything is provisioned; this is the belt. A rename
+      // cutover retires the predecessor's service, and the deployer cannot retire the one it is.
+      String refusal = DeploymentDriver.selfRenameRefusal(spec.applicationName(), spec.renamedFrom());
+      LOG.warnf("Refusing to deploy %s: %s", name, refusal);
+      return new ApplyResult(ApplyOutcome.REFUSED, refusal);
+    }
     boolean exists = serviceExists(target);
     // A declared volume the live service does not have can only reach it through a CREATE — see
     // `missingDeclaredVolume`. Never for a self-update: removing the service this process answers
@@ -1052,6 +1059,28 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     }
     String twin = SEED_STACK_PREFIX + name;
     return serviceExists(twin) ? twin : null;
+  }
+
+  /** The seed stack's twin counts: it is the deployer too, under the stack's prefix. */
+  @Override
+  public boolean isOwnService(String name) {
+    String own = ownServiceName();
+    return !own.isBlank() && (own.equals(name) || own.equals(SEED_STACK_PREFIX + name));
+  }
+
+  /**
+   * The union {@link #buildCreateArgv} would render — the repository's {@code publishes:} and
+   * deployment config's — so a rename cutover orders itself by what the service will actually bind.
+   * An extras read that refuses answers with the declaration alone: the deployment reaches the same
+   * refusal at the argv build a moment later and changes nothing.
+   */
+  @Override
+  public boolean publishesPorts(ServiceSpec spec) {
+    try {
+      return !shapeOf(spec, extrasOf(spec)).publishes().isEmpty();
+    } catch (ServiceExtras.Refused e) {
+      return !spec.shape().publishes().isEmpty();
+    }
   }
 
   /** Whether the named service is the one this process is a task of. False outside a container. */
@@ -1653,6 +1682,19 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   }
 
   /**
+   * The predecessor's wire address, when the repository declares {@code renamed_from:} — or null.
+   * Derived from the spec, never written to deployment config: a dialer that still holds the old
+   * name reaches the successor once the predecessor's service is gone. Never equal to the service's
+   * own name, because the parser refuses a file that names itself as its predecessor.
+   */
+  private static String predecessorAlias(ServiceSpec spec) {
+    String renamedFrom = spec.renamedFrom();
+    return renamedFrom == null || renamedFrom.isBlank()
+        ? null
+        : PdNetworks.alias(spec.environmentName(), renamedFrom);
+  }
+
+  /**
    * Deployment config's extras with the repository's declared shape folded in — the UNION of the
    * two, the declaration winning wherever both speak about one thing:
    *
@@ -1675,7 +1717,11 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   private ServiceExtras shapeOf(ServiceSpec spec, ServiceExtras extras) {
     DeclaredShape shape = spec.shape();
-    if (shape.binds().isEmpty() && shape.publishes().isEmpty() && shape.aliases().isEmpty()) {
+    String predecessor = predecessorAlias(spec);
+    if (shape.binds().isEmpty()
+        && shape.publishes().isEmpty()
+        && shape.aliases().isEmpty()
+        && predecessor == null) {
       return extras;
     }
     List<ServiceExtras.Mount> mounts = new ArrayList<>(shape.binds());
@@ -1696,6 +1742,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     }
     Set<String> aliases = new LinkedHashSet<>(shape.aliasesFor(spec.environmentName()));
     aliases.addAll(extras.aliases());
+    if (predecessor != null) {
+      // Last, so a service that declares nothing else keeps every other alias where it was.
+      aliases.add(predecessor);
+    }
     return new ServiceExtras(
         mounts, publishes, extras.groups(), extras.env(), List.copyOf(aliases));
   }
@@ -2239,14 +2289,28 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   private String missingDeclaredAlias(ServiceSpec spec, String name, List<String> networks) {
     List<String> declared;
+    List<String> configAliases;
     try {
-      declared =
-          aliasesOf(spec, extrasOf(spec), networks);
+      ServiceExtras extras = extrasOf(spec);
+      configAliases = extras.aliases();
+      declared = aliasesOf(spec, extras, networks);
     } catch (ServiceExtras.Refused e) {
       // Config states something swarm cannot express. The argv build in `apply` reaches the same
       // refusal a line later and returns REFUSED, having changed nothing — so the one thing this
       // must not do is destroy a service on the way there.
       return null;
+    }
+    String predecessor = predecessorAlias(spec);
+    if (predecessor != null
+        && !spec.takesOverPredecessor()
+        && !spec.shape().aliasesFor(spec.environmentName()).contains(predecessor)
+        && !configAliases.contains(predecessor)) {
+      // The `renamed_from` address is worth a recreate only while its predecessor is SERVING, the
+      // one moment a dialer of the old name exists. A successor whose predecessor is a scaled-down
+      // shell (or already retired) gains it on its next create instead: a recreate is a `service
+      // rm`, and for qits-edge that is the platform's ingress going dark for an address nothing
+      // can have been answering on.
+      declared = declared.stream().filter(alias -> !alias.equals(predecessor)).toList();
     }
     if (declared.isEmpty()) {
       // Every environment application that declares no alias of its own. Not one CLI call is spent.

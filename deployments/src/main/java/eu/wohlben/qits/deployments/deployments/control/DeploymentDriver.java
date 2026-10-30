@@ -368,6 +368,39 @@ public interface DeploymentDriver {
   Optional<RunningImage> runningImage(String name);
 
   /**
+   * Whether {@code name} is the service this deployer itself runs as — the case {@link #apply}
+   * answers {@link ApplyOutcome#HANDED_OFF} for. Asked by a rename cutover before anything moves,
+   * because renaming the deployer is the one rename the deployer cannot perform on itself: it would
+   * have to retire the service it answers on. False for a driver that cannot tell.
+   */
+  default boolean isOwnService(String name) {
+    return false;
+  }
+
+  /**
+   * The sentence a self-rename is refused with — one spelling for the deploy service, which refuses
+   * before anything is provisioned, and for a driver's own belt in {@link #apply}.
+   */
+  static String selfRenameRefusal(String applicationName, String renamedFrom) {
+    return applicationName
+        + " is this deployer's own service and its spec declares renamed_from: "
+        + renamedFrom
+        + " — a rename cutover would have to retire the service the deployer answers on, so"
+        + " renaming the deployer stays a manual operation; remove renamed_from and do it by hand";
+  }
+
+  /**
+   * Whether the service {@code spec} describes publishes a host port — declared in the repository's
+   * {@code publishes:} or stated by deployment config. A rename cutover asks it to choose its order:
+   * a successor that publishes the predecessor's port cannot start beside it, so the predecessor has
+   * to stop first. The default reads the declaration alone; a driver that also renders config's
+   * publishes answers for the union it would render.
+   */
+  default boolean publishesPorts(ServiceSpec spec) {
+    return !spec.shape().publishes().isEmpty();
+  }
+
+  /**
    * The environment a deployment of {@code spec} would state, as {@code KEY=VALUE} entries in argv
    * order — this component's own variables and the resource family, then, when {@code
    * includeExtras}, the deployment config's own {@code env}; where a key repeats the LAST entry
@@ -478,6 +511,19 @@ public interface DeploymentDriver {
    * from deployment config. The shape that DOES travel here was read at the released tag of the
    * repository's own file, through the same reviewed path as {@code volumes} and {@code resources}
    * — never from the HTTP intake, which carries a coordinate and no part of a spec.
+   *
+   * <p>{@code renamedFrom} is the repository's {@code renamed_from:} — the application this one used
+   * to be called — or null, which is every file that does not use the key. A driver derives ONE
+   * thing from it: the predecessor's wire address ({@code PdNetworks.alias(environment,
+   * renamedFrom)}) as a network alias on this service, so a dialer still holding the old address
+   * reaches the successor once the predecessor is gone. Derived from the spec and never written to
+   * deployment config: the file said it, and the address follows from the name.
+   *
+   * <p>{@code takesOverPredecessor} is true only for the deployment that replaces a predecessor that
+   * is SERVING (its newest row {@code ACTIVE}) — the one moment dialers of the old address exist.
+   * It decides whether the derived alias is worth a recreate on a service that already exists
+   * without it; see the swarm driver's {@code missingDeclaredAlias}. Everywhere else the alias rides
+   * the next create and an existing service is updated in place.
    */
   record ServiceSpec(
       String environmentId,
@@ -500,7 +546,9 @@ public interface DeploymentDriver {
       List<ResourceBinding> resources,
       List<VolumeMount> volumes,
       Duration stopGracePeriod,
-      DeclaredShape shape) {
+      DeclaredShape shape,
+      String renamedFrom,
+      boolean takesOverPredecessor) {
 
     /** Null lists and empty ones are the same statement: this application declared none. */
     public ServiceSpec {
@@ -511,6 +559,55 @@ public interface DeploymentDriver {
       updateOrder = updateOrder == null ? UpdateOrder.START_FIRST : updateOrder;
       publishMode = publishMode == null ? PublishMode.HOST : publishMode;
       stopGracePeriod = stopGracePeriod == null ? DEFAULT_STOP_GRACE_PERIOD : stopGracePeriod;
+    }
+
+    /** The shape before {@code renamed_from} reached the driver: no predecessor to answer for. */
+    public ServiceSpec(
+        String environmentId,
+        String environmentName,
+        String applicationId,
+        String applicationName,
+        String deploymentId,
+        String commitSha,
+        String version,
+        boolean declarationSeeded,
+        String deploymentName,
+        String wireAlias,
+        List<String> networks,
+        String imageRef,
+        String healthPath,
+        String healthCmd,
+        boolean availableOnEnv,
+        UpdateOrder updateOrder,
+        PublishMode publishMode,
+        List<ResourceBinding> resources,
+        List<VolumeMount> volumes,
+        Duration stopGracePeriod,
+        DeclaredShape shape) {
+      this(
+          environmentId,
+          environmentName,
+          applicationId,
+          applicationName,
+          deploymentId,
+          commitSha,
+          version,
+          declarationSeeded,
+          deploymentName,
+          wireAlias,
+          networks,
+          imageRef,
+          healthPath,
+          healthCmd,
+          availableOnEnv,
+          updateOrder,
+          publishMode,
+          resources,
+          volumes,
+          stopGracePeriod,
+          shape,
+          null,
+          false);
     }
 
     /** The shape before {@code binds}/{@code publishes}/{@code aliases}: it declares none. */
