@@ -1598,6 +1598,42 @@ class SwarmDeploymentDriverTest {
   }
 
   @Test
+  void theStagedEnvironmentIsExactlyWhatTheUpdateArgvStatesInTheSameOrder() {
+    // The settings preview's "next" half (qits-1390) must be the argv's environment and nothing
+    // else, or the preview would describe a deployment that never runs.
+    SwarmDeploymentDriver driver =
+        driver(
+            Map.of(
+                DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.env.QITS_EVENTS_URL",
+                "http://dev-qits-events:8080"));
+
+    List<String> argv = driver.buildUpdateArgv(spec(), "dev-qits-gateway");
+    List<String> stated = new ArrayList<>();
+    for (int i = 0; i < argv.size() - 1; i++) {
+      if (argv.get(i).equals("--env-add")) {
+        stated.add(argv.get(i + 1));
+      }
+    }
+
+    assertEquals(stated, driver.stagedEnvironment(spec()));
+    assertTrue(stated.contains("QITS_EVENTS_URL=http://dev-qits-events:8080"), stated.toString());
+  }
+
+  @Test
+  void theLiveEnvironmentReadsTheSpecAndJoinsAWrappedValue() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script(
+        SwarmDeploymentDriver.SPEC_ENV_FORMAT + " dev-qits-gateway",
+        result(0, "A=1\nPEM=-----BEGIN\nbody\n-----END\nB=x=y\n"));
+    cli.script(SwarmDeploymentDriver.SPEC_ENV_FORMAT + " dev-nothing", result(1, "no such service"));
+
+    assertEquals(
+        Optional.of(List.of("A=1", "PEM=-----BEGIN\nbody\n-----END", "B=x=y")),
+        driver.liveEnvironment("dev-qits-gateway"));
+    assertEquals(Optional.empty(), driver.liveEnvironment("dev-nothing"));
+  }
+
+  @Test
   void theDeployersOwnSelfUpdateKeepsTheKeysThatPointItAtQitsConfiguration() {
     // THE SCARIEST REGRESSION THIS DIFF COULD MAKE. The deployer's own extras carry the flip — the
     // extras url and the named oidc client that reads it — so a self-update that env-rm'd them

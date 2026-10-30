@@ -55,6 +55,12 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   /** What {@link #runningImage} answers per name — the startup sweep's evidence. */
   private final Map<String, String> runningImages = new ConcurrentHashMap<>();
 
+  /** What {@link #stagedEnvironment} answers per application name; unscripted is empty. */
+  private final Map<String, List<String>> stagedEnvironments = new ConcurrentHashMap<>();
+
+  /** What {@link #liveEnvironment} answers per service name; unscripted is "no such service". */
+  private final Map<String, List<String>> liveEnvironments = new ConcurrentHashMap<>();
+
   /**
    * What {@link #observe} answers per name. A name nothing scripted is <b>gone</b>: this fake runs
    * nothing, so the only services there can be are the ones a test said exist.
@@ -108,6 +114,8 @@ public class FakeDeploymentDriver implements DeploymentDriver {
     removeServiceFailure = null;
     calls.clear();
     runningImages.clear();
+    stagedEnvironments.clear();
+    liveEnvironments.clear();
     observations.clear();
     declaredReplicas.clear();
     nextScale = new ScaleResult(ScaleOutcome.SCALED, null);
@@ -140,6 +148,16 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   /** What the startup sweep is told is running, per name. Nothing scripted means no such service. */
   public void scriptRunningImage(String name, String imageRef) {
     runningImages.put(name, imageRef);
+  }
+
+  /** The {@code KEY=VALUE} entries a deployment of {@code applicationName} would state. */
+  public void scriptStagedEnvironment(String applicationName, List<String> variables) {
+    stagedEnvironments.put(applicationName, List.copyOf(variables));
+  }
+
+  /** The {@code KEY=VALUE} entries the live service {@code name} carries. */
+  public void scriptLiveEnvironment(String name, List<String> variables) {
+    liveEnvironments.put(name, List.copyOf(variables));
   }
 
   /**
@@ -293,6 +311,18 @@ public class FakeDeploymentDriver implements DeploymentDriver {
       throw failure;
     }
     removedServices.add(name);
+  }
+
+  @Override
+  public List<String> stagedEnvironment(ServiceSpec spec) {
+    calls.add("stagedEnvironment:" + spec.applicationName());
+    return stagedEnvironments.getOrDefault(spec.applicationName(), List.of());
+  }
+
+  @Override
+  public Optional<List<String>> liveEnvironment(String name) {
+    calls.add("liveEnvironment:" + name);
+    return Optional.ofNullable(liveEnvironments.get(name));
   }
 
   @Override
