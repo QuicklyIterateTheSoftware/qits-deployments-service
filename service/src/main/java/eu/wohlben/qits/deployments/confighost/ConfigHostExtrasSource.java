@@ -239,6 +239,31 @@ public class ConfigHostExtrasSource implements DeploymentExtrasSource {
    * rather than a retry on the 404: a retry cannot tell those two 404s apart, and the one it would
    * quietly paper over is the one worth failing on.
    */
+  /**
+   * The SERVED properties of one place, read version-less and with nothing of the boot config
+   * layered under them — for {@link SettingsImport} alone (qits-1392), which copies what the store
+   * resolves today into {@code pd_setting} once. Same request, same retries, same parsing as {@link
+   * #forDeployment}; it only skips the "declared nothing" WARN, because no deployment is being
+   * configured here, and it does NOT log the per-read revision line either — the importer logs
+   * one line per run. Deleted with this package in qits-1393.
+   *
+   * @throws ServiceExtras.Refused when no url is configured, a name is not one, or the read fails
+   */
+  Map<String, String> currentProperties(String application, String environmentName) {
+    String base = extrasUrl.map(String::trim).filter(url -> !url.isEmpty()).orElse(null);
+    if (base == null) {
+      throw new ServiceExtras.Refused("no qits.deployments.extras-url is configured");
+    }
+    String place =
+        trimTrailingSlash(base)
+            + "/configuration/api/applications/"
+            + segment(application)
+            + "/envs/"
+            + segment(environmentName)
+            + "/resolved";
+    return properties(place, fetch(place));
+  }
+
   private static String versionlessBecauseNothingWasDeclared(
       String place, String application, String version) {
     // Built rather than deferred to `warnf`, for the reason the revision line above is built: this
