@@ -13,7 +13,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * The strict reader of {@code .config/qits/deployments.yml}. Eighteen scalar keys, no nesting, no
+ * The strict reader of {@code .config/qits/deployments.yml}. Twenty-one scalar keys, no nesting, no
  * YAML lists — so this is a line reader rather than a YAML library, and being one is what makes every
  * rejection a sentence naming the file and the line.
  *
@@ -26,6 +26,9 @@ import java.util.regex.Pattern;
  * health_cmd: pg_isready -U postgres   # instead of health_path: the probe runs in the container
  * resources: postgresql:db             # a database of its own, injected as QITS_RESOURCE_DB_*
  * volumes: private:data:/data          # a volume of its own, mounted at /data
+ * binds: /var/run/docker.sock:/var/run/docker.sock   # host paths, &lt;host&gt;:&lt;target&gt;[:ro]
+ * publishes: 8080:8080, 443:8443       # host ports, [&lt;ipv4&gt;:]&lt;host-port&gt;:&lt;port&gt;[/tcp|/udp]
+ * aliases: registry.${QITS_ENVIRONMENT}.localhost   # extra names on the shared network
  * update_order: start-first            # default | stop-first for anything single-writer
  * publish_mode: host                   # default | ingress for a port the routing mesh holds
  * stop_grace_period: 10m               # default 30s; SIGTERM to SIGKILL, for long transfers
@@ -230,12 +233,44 @@ import java.util.regex.Pattern;
  * {@code shared:} is the opposite case and names its volume in full, because a platform-owned
  * volume is not this application's to derive; the vocabulary is closed ({@link #SHARED_VOLUMES}).
  *
- * <p><b>HOST BINDS ARE DELIBERATELY NOT IN THIS GRAMMAR, and completing it later would be a
- * mistake.</b> {@code bind:/var/run/docker.sock:…} stays in deployment config
- * ({@code qits.deployments.extras.<app>.mounts[i]}, see {@link ServiceExtras}) and belongs
- * there: a host path is a statement about the MACHINE — which socket exists, which directory the
- * operator laid out — and it is true of a platform rather than of an application. That is the line
- * this key draws. A repository that could name a host path could mount any of it.
+ * <p><b>{@code volumes} still carries no host path, and that line stays where it is</b>: a volume
+ * name is derived or drawn from a closed vocabulary, so nothing written there can address storage
+ * that is not the application's own. A host path is a different statement and it got a different
+ * KEY rather than a third scope here — {@code binds}, below.
+ *
+ * <p><b>{@code binds}, {@code publishes} and {@code aliases} are the shape that used to live only in
+ * deployment config</b> ({@code qits.deployments.extras.<app>.mounts[i] bind:…}, {@code
+ * publishes[i]}, {@code aliases[i]} — see {@link ServiceExtras}), authored in another repository
+ * and identical everywhere. They moved here because qits-configuration is being retired as a
+ * source of deployment shape (qits-765): what an application needs from the host — the docker
+ * socket, a published port, a vhost name docker's DNS cannot synthesize — is reviewed in the
+ * application's own commit and read at its released tag, like everything else in this file. The
+ * price is stated rather than hidden: a repository that can write {@code binds} can mount any host
+ * path, so the review of this file is the guard, exactly as it is for the image itself.
+ *
+ * <ul>
+ *   <li>{@code binds: <abs-host-path>:<abs-target>[:ro], …} — a host bind mount. Both paths are
+ *       absolute and take the mount-target charset; {@code :ro} is the one option. A repeated
+ *       target is refused, and so is a target one of the file's own {@code volumes} already
+ *       occupies. Binding {@code /var/run/docker.sock} also earns the container the socket's own
+ *       group, read by the deployer off the socket it mounts itself — a gid is a fact about the
+ *       host, so no file states it.
+ *   <li>{@code publishes: [<ipv4>:]<host-port>:<port>[/tcp|/udp], …} — {@link ServiceExtras}'
+ *       {@code publishes[n]} grammar, read by the same code. A repeated published port and protocol
+ *       (an unnamed protocol is tcp) is refused. Where the port is held is still {@code
+ *       publish_mode}.
+ *   <li>{@code aliases: <dns-name>, …} — extra names on the shared network. {@code
+ *       ${QITS_ENVIRONMENT}} inside one is replaced by the deployment's environment name at deploy
+ *       time ({@code registry.${QITS_ENVIRONMENT}.localhost} is {@code registry.dev.localhost} in
+ *       dev); no other {@code $} is allowed. No comma and no whitespace, checked here and again
+ *       after the substitution. A repeated alias is refused.
+ * </ul>
+ *
+ * <p>While deployment config still states the same things (until qits-1393), the driver takes the
+ * union of both and the file wins: a mount by target, a publish by port and protocol, an alias by
+ * name, a group by gid. Nothing reaches swarm twice. And none of the three is restated by an
+ * update — a service keeps the mounts and ports it was created with, and a declared alias missing
+ * from a live service forces a recreate exactly as a config-declared one does.
  *
  * <p><b>Once this key ships it can never become unknown again</b>, and that is worth writing down
  * in the commit that adds it rather than learning later. A spec is fetched at the BUILT sha, so a
@@ -300,6 +335,9 @@ public final class DeploymentSpecParser {
   private static final String HEALTH_CMD = "health_cmd";
   private static final String RESOURCES = "resources";
   private static final String VOLUMES = "volumes";
+  private static final String BINDS = "binds";
+  private static final String PUBLISHES = "publishes";
+  private static final String ALIASES = "aliases";
   private static final String UPDATE_ORDER = "update_order";
   private static final String PUBLISH_MODE = "publish_mode";
   private static final String STOP_GRACE_PERIOD = "stop_grace_period";
@@ -425,6 +463,10 @@ public final class DeploymentSpecParser {
     String healthCmd = null;
     List<DeploymentSpec.ResourceSpec> resources = List.of();
     List<DeploymentSpec.VolumeSpec> volumes = List.of();
+    List<ServiceExtras.Mount> binds = List.of();
+    int bindsLine = 0;
+    List<ServiceExtras.Publish> publishes = List.of();
+    List<String> aliases = List.of();
     DeploymentDriver.UpdateOrder updateOrder = DeploymentDriver.UpdateOrder.START_FIRST;
     DeploymentDriver.PublishMode publishMode = DeploymentDriver.PublishMode.HOST;
     Duration stopGracePeriod = DeploymentDriver.DEFAULT_STOP_GRACE_PERIOD;
@@ -467,6 +509,12 @@ public final class DeploymentSpecParser {
         case HEALTH_CMD -> healthCmd = healthCmd(value, source, lineNumber);
         case RESOURCES -> resources = resources(value, source, lineNumber);
         case VOLUMES -> volumes = volumes(value, source, lineNumber);
+        case BINDS -> {
+          binds = binds(value, source, lineNumber);
+          bindsLine = lineNumber;
+        }
+        case PUBLISHES -> publishes = publishes(value, source, lineNumber);
+        case ALIASES -> aliases = aliases(value, source, lineNumber);
         case UPDATE_ORDER -> updateOrder = updateOrder(value, source, lineNumber);
         case PUBLISH_MODE -> publishMode = publishMode(value, source, lineNumber);
         case STOP_GRACE_PERIOD -> stopGracePeriod = stopGracePeriod(value, source, lineNumber);
@@ -502,6 +550,12 @@ public final class DeploymentSpecParser {
                     + ", "
                     + VOLUMES
                     + ", "
+                    + BINDS
+                    + ", "
+                    + PUBLISHES
+                    + ", "
+                    + ALIASES
+                    + ", "
                     + UPDATE_ORDER
                     + ", "
                     + PUBLISH_MODE
@@ -532,6 +586,27 @@ public final class DeploymentSpecParser {
               + "` are alternatives — the command replaces the HTTP probe rather than adjusting"
               + " it, so a file setting both says two things about one gate. Keep the one that"
               + " describes this image.");
+    }
+    for (ServiceExtras.Mount bind : binds) {
+      for (DeploymentSpec.VolumeSpec volume : volumes) {
+        if (volume.target().equals(bind.target())) {
+          // Two statements about one directory, and swarm refuses the create outright. Neither
+          // can win silently: the file contradicts itself, and only its author knows which half
+          // was meant.
+          throw error(
+              source,
+              bindsLine,
+              "`"
+                  + BINDS
+                  + "` mounts `"
+                  + bind.source()
+                  + "` at `"
+                  + bind.target()
+                  + "`, which `"
+                  + VOLUMES
+                  + "` already mounts a volume at — one directory takes one mount");
+        }
+      }
     }
     if (renamedFrom != null && renamedFrom.equals(application)) {
       // Only visible when `application` is stated: with it absent the effective name is the
@@ -610,7 +685,8 @@ public final class DeploymentSpecParser {
         apiDocs,
         application,
         renamedFrom,
-        stopGracePeriod);
+        stopGracePeriod,
+        new DeclaredShape(binds, publishes, aliases));
   }
 
   /**
@@ -1180,10 +1256,9 @@ public final class DeploymentSpecParser {
    * volume name by creating an empty one, and a container that boots with an empty volume passes
    * its health gate and has lost its data.
    *
-   * <p><b>There is no {@code bind} word here and there must never be one.</b> A host path is
-   * platform topology — a statement about the machine rather than about the application — and it
-   * stays in deployment config, which is the trust domain that already holds the docker socket. See
-   * the class javadoc.
+   * <p><b>There is no {@code bind} word here.</b> A host path is a different statement from a
+   * volume — its name is not derived and not drawn from a closed list — so it has a key of its own,
+   * {@link #binds}, rather than a third scope here. See the class javadoc.
    *
    * <p>{@code :ro} is the only option, which is {@link ServiceExtras.Mount}'s grammar and not a
    * narrowing of it. Both duplicates are refused: a repeated <b>target</b> would be two volumes over
@@ -1220,8 +1295,9 @@ public final class DeploymentSpecParser {
                 + PRIVATE
                 + "` and `"
                 + SHARED
-                + "` and no others — a host path is deployment config rather than a repository's"
-                + " own declaration, got: "
+                + "` and no others — a host path is a `"
+                + BINDS
+                + "` entry rather than a volume, got: "
                 + parts[0]);
       }
       String name = shared ? sharedVolume(parts[1], entry, source, line)
@@ -1267,6 +1343,144 @@ public final class DeploymentSpecParser {
   }
 
   /**
+   * Host bind mounts: {@code <abs-host-path>:<abs-target>[:ro]}, comma-separated — deployment
+   * config's {@code mounts[n] bind:…}, minus the word {@code bind}, because this key holds nothing
+   * else.
+   *
+   * <p>Both paths take {@link DeploymentIdentifiers#requireMountTarget}'s charset, which is
+   * stricter than deployment config's ever was: this value is repository-authored and spliced into
+   * a comma-separated {@code --mount} argument, so a stray comma or space would forge a field. A
+   * repeated TARGET is refused (two mounts on one directory is a create swarm refuses); a repeated
+   * host path at two targets is allowed, because that is a thing a person can mean.
+   */
+  private static List<ServiceExtras.Mount> binds(String value, String source, int line) {
+    List<ServiceExtras.Mount> declared = new ArrayList<>();
+    Set<String> targets = new HashSet<>();
+    for (String candidate : value.split(",", -1)) {
+      String entry = candidate.strip();
+      if (entry.isBlank()) {
+        throw error(source, line, "`" + BINDS + "` has a blank entry");
+      }
+      String[] parts = entry.split(":", -1);
+      if (parts.length < 2 || parts.length > 3) {
+        throw error(
+            source,
+            line,
+            "`"
+                + BINDS
+                + "` entries are `<abs-host-path>:<abs-target>[:"
+                + READ_ONLY
+                + "]`, got: "
+                + entry);
+      }
+      String hostPath = mountPath(parts[0], "host paths", entry, source, line);
+      String target = mountPath(parts[1], "targets", entry, source, line);
+      if (parts.length == 3 && !READ_ONLY.equals(parts[2])) {
+        throw error(
+            source,
+            line,
+            "`" + parts[2] + "` is not a `" + BINDS + "` option here — only `" + READ_ONLY + "` is");
+      }
+      if (!targets.add(target)) {
+        throw error(source, line, "`" + BINDS + "` names the target `" + target + "` twice");
+      }
+      declared.add(
+          new ServiceExtras.Mount(ServiceExtras.MountKind.BIND, hostPath, target, parts.length == 3));
+    }
+    return List.copyOf(declared);
+  }
+
+  /** One absolute path of a bind, held to the mount-target charset. */
+  private static String mountPath(
+      String value, String what, String entry, String source, int line) {
+    try {
+      return DeploymentIdentifiers.requireMountTarget(value);
+    } catch (RuntimeException e) {
+      throw error(
+          source,
+          line,
+          "`"
+              + BINDS
+              + "` "
+              + what
+              + " are absolute paths — segments of letters, digits, dots, underscores and inner"
+              + " dashes, never `/` alone — got: "
+              + (value.isBlank() ? entry : value));
+    }
+  }
+
+  /**
+   * Published host ports: {@code [<ipv4>:]<host-port>:<port>[/tcp|/udp]}, comma-separated — read by
+   * {@link ServiceExtras#publish}, the one spelling of the grammar, so the file and deployment
+   * config can never disagree about what a publish is. A port named with an ip that is not {@code
+   * 0.0.0.0} parses here and is refused by the swarm driver, as config's is: swarm's publish has no
+   * ip field. A repeated published port and protocol is refused — swarm would refuse the create.
+   */
+  private static List<ServiceExtras.Publish> publishes(String value, String source, int line) {
+    List<ServiceExtras.Publish> declared = new ArrayList<>();
+    Set<String> ports = new HashSet<>();
+    for (String candidate : value.split(",", -1)) {
+      String entry = candidate.strip();
+      if (entry.isBlank()) {
+        throw error(source, line, "`" + PUBLISHES + "` has a blank entry");
+      }
+      ServiceExtras.Publish publish;
+      try {
+        publish = ServiceExtras.publish("`" + PUBLISHES + "`", entry);
+      } catch (ServiceExtras.Refused e) {
+        throw error(source, line, e.getMessage());
+      }
+      if (!ports.add(publish.portKey())) {
+        throw error(
+            source, line, "`" + PUBLISHES + "` publishes `" + publish.portKey() + "` twice");
+      }
+      declared.add(publish);
+    }
+    return List.copyOf(declared);
+  }
+
+  /**
+   * Extra names on the shared network, comma-separated, kept AS WRITTEN — {@link
+   * DeclaredShape#ENVIRONMENT_TOKEN} included, because this parser never knows which tier it reads
+   * for. Each is checked here by {@link ServiceExtras}' alias rule with the token stood in for (no
+   * comma, no whitespace), and again after the real substitution at deploy time. Any {@code $} that
+   * is not part of the token is refused: a placeholder nothing replaces would be registered
+   * literally, a name nothing dials.
+   */
+  private static List<String> aliases(String value, String source, int line) {
+    List<String> declared = new ArrayList<>();
+    Set<String> seenAliases = new HashSet<>();
+    for (String candidate : value.split(",", -1)) {
+      String alias = candidate.strip();
+      if (alias.isBlank()) {
+        throw error(source, line, "`" + ALIASES + "` has a blank entry");
+      }
+      String substituted = alias.replace(DeclaredShape.ENVIRONMENT_TOKEN, "env");
+      if (substituted.indexOf('$') >= 0) {
+        throw error(
+            source,
+            line,
+            "`"
+                + ALIASES
+                + "` knows the one placeholder "
+                + DeclaredShape.ENVIRONMENT_TOKEN
+                + " and no other, got: "
+                + alias);
+      }
+      try {
+        ServiceExtras.alias("`" + ALIASES + "`", substituted);
+      } catch (ServiceExtras.Refused e) {
+        throw error(source, line, "`" + ALIASES + "`: '" + alias + "' is not one name");
+      }
+      if (!seenAliases.add(alias)) {
+        throw error(source, line, "`" + ALIASES + "` names `" + alias + "` twice");
+      }
+      declared.add(alias);
+    }
+    return List.copyOf(declared);
+  }
+
+  /**
    * The {@code <name>} half of a private volume — the segment the application's own name is
    * prefixed to. An absolute path here is the mistake worth its own sentence: it is a repository
    * reaching for a host bind, which this grammar does not have.
@@ -1282,7 +1496,9 @@ public final class DeploymentSpecParser {
               + PRIVATE
               + ":`, not the path `"
               + value
-              + "` — a host path is deployment config, never a repository's own declaration");
+              + "` — a host path is a `"
+              + BINDS
+              + "` entry, never a volume");
     }
     try {
       return DeploymentIdentifiers.requireVolumeName(value);

@@ -1231,7 +1231,8 @@ public class DeployService implements ReleaseAnnouncements {
       List<NavigationEntry> navigation,
       String apiDocs,
       String renamedFrom,
-      Duration stopGracePeriod) {}
+      Duration stopGracePeriod,
+      DeclaredShape shape) {}
 
   /**
    * One software-release event, start to finish, on the worker thread: read what the repository
@@ -1948,7 +1949,10 @@ public class DeployService implements ReleaseAnnouncements {
               spec.navigationEntries(),
               spec.apiDocs(),
               spec.renamedFrom(),
-              spec.stopGracePeriod()));
+              spec.stopGracePeriod(),
+              // binds/publishes/aliases as WRITTEN: the driver resolves ${QITS_ENVIRONMENT} in an
+              // alias against the place it deploys into, which is where a refusal can end a row.
+              spec.shape()));
     }
     return List.copyOf(targets);
   }
@@ -2104,6 +2108,8 @@ public class DeployService implements ReleaseAnnouncements {
                 // is no claim for a declared rename to move.
                 null,
                 // ...and no grace period: nothing is stopped off one of them either.
+                null,
+                // ...and no declared shape: nothing is created off one of them at all.
                 null));
       }
     }
@@ -2338,6 +2344,11 @@ public class DeployService implements ReleaseAnnouncements {
     /** The repository's {@code stop_grace_period}, or null for a target no spec was read for. */
     Duration stopGracePeriod() {
       return target.stopGracePeriod();
+    }
+
+    /** The repository's {@code binds}/{@code publishes}/{@code aliases}, or null with no spec. */
+    DeclaredShape shape() {
+      return target.shape();
     }
 
     /**
@@ -2715,7 +2726,10 @@ public class DeployService implements ReleaseAnnouncements {
         // needs to exist before it can serve — and, unlike the extras, it is the application's own
         // statement rather than the platform's.
         plan.volumes(),
-        plan.stopGracePeriod());
+        plan.stopGracePeriod(),
+        // ...and the host-facing half the repository declared beside them. The driver unions it
+        // with deployment config's mounts, publishes and aliases while both sources are live.
+        plan.shape());
   }
 
   /**

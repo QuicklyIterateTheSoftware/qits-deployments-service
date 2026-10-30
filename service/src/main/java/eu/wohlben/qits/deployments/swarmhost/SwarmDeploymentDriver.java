@@ -1,5 +1,6 @@
 package eu.wohlben.qits.deployments.swarmhost;
 
+import eu.wohlben.qits.deployments.deployments.control.DeclaredShape;
 import eu.wohlben.qits.deployments.deployments.control.DeployedIdentity;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentExtrasSource;
@@ -95,7 +96,11 @@ import org.jboss.logging.Logger;
  * <p><b>What a deployment adds beyond its image</b> — mounts, published ports, groups, environment
  * — is {@link ServiceExtras}, stated in deployment config and rendered here in swarm's own words.
  * Nothing translates a {@code docker run} argv any more: config states the intent, and the one
- * intent swarm cannot express — a publish bound to an ip — is refused rather than widened.
+ * intent swarm cannot express — a publish bound to an ip — is refused rather than widened. The
+ * repository's own {@code binds:}, {@code publishes:} and {@code aliases:} ({@link DeclaredShape})
+ * are folded into the same statement first, the declaration winning wherever both name one target,
+ * port or alias — see {@link #shapeOf}. They follow the extras' rules exactly: rendered by the
+ * create only, and a declared alias missing from a live service forces the recreate.
  *
  * <p><b>There is no plane to read at all.</b> Every spec that reaches this class carries a tier, the
  * environment label and {@code QITS_ENVIRONMENT} are written for all of them, the wire alias is
@@ -464,6 +469,18 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * driver.
    */
   @Inject DeploymentExtrasSource extrasSource;
+
+  /**
+   * The docker socket THIS process has mounted, whose group a declared socket bind earns — see
+   * {@link #socketGroup}. A field rather than a constant so the suite can point it at a file of its
+   * own; package-private and set through {@link #scriptDockerSocket} for the proxy reason {@link
+   * #scriptCli} gives.
+   */
+  private volatile Path dockerSocket = Path.of(DeclaredShape.DOCKER_SOCKET);
+
+  void scriptDockerSocket(Path socket) {
+    this.dockerSocket = socket;
+  }
 
   /**
    * One docker CLI call. A seam so the suite can script the conversation: the argv IS the contract
@@ -1525,7 +1542,11 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // Read once, off ONE snapshot: the same refusal would otherwise be reached twice, the aliases
     // belong to the membership while everything else belongs to the flags below it, and one
     // snapshot is what keeps every reading of one deployment in agreement.
-    ServiceExtras extras = extrasOf(spec);
+    //
+    // The repository's declared shape (binds, publishes, aliases) is folded in here, ONCE, with the
+    // socket's group when it binds the socket: from this line on there is one statement of what the
+    // service needs from the host, and nothing below can render a target, a port or an alias twice.
+    ServiceExtras extras = withSocketGroup(spec, shapeOf(spec, extrasOf(spec)));
     List<String> argv =
         new ArrayList<>(
             List.of(
@@ -1540,7 +1561,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
                 "--no-resolve-image"));
     registryAuthFlag(argv);
     // The FULL membership, here and nowhere else: every later --network-add recreates the task.
-    networkFlags(argv, networks, aliasesOf(spec, extras, networks));
+    networkFlags(argv, networks, extras.aliases());
     // A deployed application outlives the daemon's restart.
     argv.add("--restart-condition");
     argv.add("any");
@@ -1628,7 +1649,95 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * it always produced — and every application does, unless config says otherwise.
    */
   private List<String> aliasesOf(ServiceSpec spec, ServiceExtras extras, List<String> networks) {
-    return extras.aliases();
+    return shapeOf(spec, extras).aliases();
+  }
+
+  /**
+   * Deployment config's extras with the repository's declared shape folded in — the UNION of the
+   * two, the declaration winning wherever both speak about one thing:
+   *
+   * <ul>
+   *   <li>a mount by TARGET — every declared bind, then every config mount on a target no bind
+   *       holds (two mounts on one target is a create swarm refuses);
+   *   <li>a publish by published port and PROTOCOL ({@link ServiceExtras.Publish#portKey}) —
+   *       every declared one, then every config one on a port none of them holds;
+   *   <li>an alias by NAME — every declared one with {@code ${QITS_ENVIRONMENT}} resolved against
+   *       this deployment's tier, then every config one not already among them.
+   * </ul>
+   *
+   * <p>Groups and env are config's alone here; the socket's group is {@link #withSocketGroup}'s,
+   * asked by the create only. <b>A spec that declares nothing returns {@code extras} itself</b>, so
+   * every application that has not written one of the three keys gets the argv it always got, byte
+   * for byte. While qits-1393 has not retired the extras source both sides say the same thing on
+   * the estate, and the union is what makes that inert rather than a refused create.
+   *
+   * @throws ServiceExtras.Refused when a declared alias does not resolve to one name in this tier
+   */
+  private ServiceExtras shapeOf(ServiceSpec spec, ServiceExtras extras) {
+    DeclaredShape shape = spec.shape();
+    if (shape.binds().isEmpty() && shape.publishes().isEmpty() && shape.aliases().isEmpty()) {
+      return extras;
+    }
+    List<ServiceExtras.Mount> mounts = new ArrayList<>(shape.binds());
+    Set<String> targets = new HashSet<>();
+    shape.binds().forEach(bind -> targets.add(bind.target()));
+    for (ServiceExtras.Mount mount : extras.mounts()) {
+      if (targets.add(mount.target())) {
+        mounts.add(mount);
+      }
+    }
+    List<ServiceExtras.Publish> publishes = new ArrayList<>(shape.publishes());
+    Set<String> ports = new HashSet<>();
+    shape.publishes().forEach(publish -> ports.add(publish.portKey()));
+    for (ServiceExtras.Publish publish : extras.publishes()) {
+      if (ports.add(publish.portKey())) {
+        publishes.add(publish);
+      }
+    }
+    Set<String> aliases = new LinkedHashSet<>(shape.aliasesFor(spec.environmentName()));
+    aliases.addAll(extras.aliases());
+    return new ServiceExtras(
+        mounts, publishes, extras.groups(), extras.env(), List.copyOf(aliases));
+  }
+
+  /**
+   * {@code extras} with the docker socket's group added when the repository BINDS the socket —
+   * deduplicated by gid, because deployment config still sends {@code groups[0]=<gid>} for the
+   * same socket until qits-1393, and two {@code --group} flags of one gid is noise at best.
+   *
+   * <p>The gid is a fact about the HOST, so no file states it: it is read off the socket this
+   * process has mounted itself, which is the same host socket the bind hands the container. A
+   * socket that cannot be read adds NO group and says so in a WARN — the container then gets the
+   * bind without the permission to use it, which is a failure a person can read about, where a
+   * guessed gid is one they cannot.
+   */
+  private ServiceExtras withSocketGroup(ServiceSpec spec, ServiceExtras extras) {
+    if (!spec.shape().bindsDockerSocket()) {
+      return extras;
+    }
+    String gid = socketGroup();
+    if (gid == null || extras.groups().contains(gid)) {
+      return extras;
+    }
+    List<String> groups = new ArrayList<>(extras.groups());
+    groups.add(gid);
+    return new ServiceExtras(
+        extras.mounts(), extras.publishes(), groups, extras.env(), extras.aliases());
+  }
+
+  /** The socket's owning gid, or null — with a WARN — when it cannot be read. */
+  private String socketGroup() {
+    Path socket = dockerSocket;
+    try {
+      Object gid = Files.getAttribute(socket, "unix:gid");
+      return String.valueOf(gid);
+    } catch (Exception e) {
+      LOG.warnf(
+          "Could not read the group of %s, so a declared bind of the docker socket gets no --group:"
+              + " %s",
+          socket, e.toString());
+      return null;
+    }
   }
 
   /**

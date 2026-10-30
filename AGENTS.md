@@ -974,8 +974,9 @@ Argvs are assembled for `ProcessBuilder`, which never re-splits — but do not l
 validation stays at the boundary and the belt stays at the argv.
 
 Mounts, published ports, groups, network aliases and extra env in a *started* container's argv come
-from the **deployment's own config and nowhere else** (`qits.deployments.extras.<application>.*`,
-read by `ServiceExtras`). **Nothing PUSHED over HTTP may contribute to a `docker run`**; this
+from the **deployment's own config** (`qits.deployments.extras.<application>.*`, read by
+`ServiceExtras`) **and the repository's own `deployments.yml` read at its released tag** (`binds:`,
+`publishes:`, `aliases:`, see the Volumes section), **and nowhere else**. **Nothing PUSHED over HTTP may contribute to a `docker run`**; this
 component's own API is deliberately open on the platform's networks, so nothing arriving on it may
 shape an argv. `ServiceExtrasTest.anotherApplicationsKeysAreNeverRead`, plus
 `extrasOfAnotherApplicationDoNotLeakIn` on **both** driver tests, asserts the absence as the
@@ -1373,10 +1374,9 @@ whose only identity was the index. Four things decide how it behaves:
   vocabulary (`qits_shared_dot_claude`, `qits_shared_m2`, `qits_shared_pnpm` —
   `qits.containers.shared-volumes` in qits-containers), because a platform-owned volume is not this
   application's to derive, and docker answers an unknown volume name by creating an empty one.
-- **HOST BINDS ARE DELIBERATELY NOT IN THIS GRAMMAR.** `bind:/var/run/docker.sock:…` stays in extras
-  config on qits-containers, qits-deployments and qits-platform-system. A host path is platform
-  topology — a statement about the machine, not about the application — and that is the line this key
-  draws. Do not "complete" the grammar later; the parser's javadoc says so for the same reason.
+- **A host bind is not a volume SCOPE — it is its own key, `binds:`** (below). A volume's name is
+  derived or drawn from a closed list, so nothing written in `volumes:` can address storage that is
+  not the application's own; a host path cannot make that promise, so it does not hide in this key.
 - **The create renders declared volumes FIRST and then drops every extras mount naming a target a
   declaration already covers.** That dedupe is what makes the migration safe rather than tidy: an
   application declaring `/data` while `ComposeTemplate` still supplies `mounts[0]` for `/data` would
@@ -1401,6 +1401,43 @@ whose only identity was the index. Four things decide how it behaves:
 
 And, like every spec key: **it must ship in the deployer before any repository writes the line**,
 since a spec is read at the released tag and an unknown key fails a deployment.
+
+### `binds:`, `publishes:`, `aliases:` — the shape that used to be extras-only (qits-765)
+
+The three things deployment config's `mounts[n] bind:…`, `publishes[n]` and `aliases[n]` state
+can now be declared in `.config/qits/deployments.yml`, because qits-configuration is being retired
+as a source of deployment shape (qits-1393 stops reading it):
+
+    binds: /var/run/docker.sock:/var/run/docker.sock[, <abs-host-path>:<abs-target>[:ro]]
+    publishes: 8080:8080, 443:8443[, [<ipv4>:]<host-port>:<port>[/tcp|/udp]]
+    aliases: registry.${QITS_ENVIRONMENT}.localhost, githost.${QITS_ENVIRONMENT}.internal
+
+- **One grammar, one reader.** `publishes:` is parsed by `ServiceExtras.publish` and `aliases:` is
+  checked by `ServiceExtras.alias` — the extras' own code, so the two sources cannot disagree about
+  what a value means. `binds:` paths take the stricter mount-target charset (this value is
+  repository-authored). Duplicates are refused: a bind target twice or over one of the file's own
+  `volumes`, a published port+protocol twice (no protocol = tcp), an alias twice.
+- **`${QITS_ENVIRONMENT}` is the one placeholder**, kept as written by the parser (which never
+  knows the tier) and substituted by the driver against the deployment's environment
+  (`DeclaredShape.aliasesFor`), then re-checked. Any other `$` is refused at the line.
+- **The union, the declaration winning.** `SwarmDeploymentDriver.shapeOf` folds the declaration into
+  the extras: a mount by target, a publish by port+protocol, an alias by name — declared first, then
+  whatever config adds that the declaration does not cover. Nothing reaches swarm twice, so a file
+  and config saying the same thing during the migration is inert. A spec declaring none of the three
+  returns the extras untouched — byte-identical argvs for every application that has not written
+  the keys.
+- **Binding `/var/run/docker.sock` earns the socket's group.** The gid is a host fact, read off the
+  socket this process mounts itself (`Files.getAttribute(…, "unix:gid")`, path injectable for the
+  suite); deduped against config's `groups[n]` (which still sends `989`), and an unreadable socket
+  adds no group and WARNs. `groups[n]` in extras stays parseable until qits-1393.
+- **The update path is the extras' exactly.** Binds, publishes and groups are rendered by the create
+  only — an update never restates shape, and a declared bind or port missing from a live service is
+  NOT a recreate (it is not for config's either, and recreating the edge over a port is an outage).
+  A declared alias missing from a live service DOES force the recreate, because `missingDeclaredAlias`
+  reads the same union config's aliases always fed it.
+
+**Do not write these keys into a repository before this deployer is live** — the running parser
+refuses unknown keys, and a spec is read at the released tag.
 
 ## Addressing and auth
 
@@ -2267,6 +2304,17 @@ is COMPARED against a stored application name. Five things about it, each easy t
 `ResourceProvisioning.IDP_APPLICATION` (the idp URL handed to every provisioned container) and
 `HttpIdpClientProvisioner.IDP_APPLICATION` (this component's own dial to the service-client API) —
 must move in the release AFTER the idp successor is serving, never before.
+
+**The settings table takes the same declaration (qits-1398), and the same shape as the resource
+claim transfer.** `Settings.copyForRename(renamedFrom, applicationName, environmentName)` copies
+every row `renamedFrom` holds in that tier onto `applicationName`, skipping a key the successor
+already has, `value` and `secret` carried over unchanged and `updated_by` stamped `rename from
+<renamedFrom>` — a second run copies nothing, because "the successor does not have it yet" is read
+fresh each time. `Settings.retire(applicationName, environmentName)` is the predecessor's half,
+for later: it deletes that application's rows in that tier, idempotently, once the predecessor is
+decommissioned. Nothing calls either method yet; the cutover that will (qits-1399) runs
+`copyForRename` in the same transaction as `ResourceProvisioning.ensureAll`'s claim transfer, for
+the reason that transfer gives: either both land or neither does.
 
 **The release door was unaffected**, and that was checked rather than assumed at the time:
 qits-workspaces' `DeploymentSpecReader` **statted** this file and never opened it (a file means

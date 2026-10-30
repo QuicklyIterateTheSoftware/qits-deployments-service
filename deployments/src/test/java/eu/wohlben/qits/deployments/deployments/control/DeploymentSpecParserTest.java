@@ -557,14 +557,14 @@ class DeploymentSpecParserTest {
   }
 
   @Test
-  void aHostBindIsNotInThisGrammarAndThatIsTheWholeLine() {
-    // A host path is a statement about the MACHINE — which socket exists, which directory an
-    // operator laid out — so it stays in deployment config, which is the trust domain that already
-    // holds the docker socket. Completing the grammar later would give every repository the ability
-    // to mount any of the host. The refusal names the two words that do exist.
+  void aHostBindIsNotAVolumeScopeItIsTheBindsKey() {
+    // A host path is not a volume: its name is neither derived nor drawn from a closed list, so it
+    // has a key of its own (`binds:`) rather than a third scope here. The refusal names the two
+    // words that do exist, and the key a host path belongs under.
     String message = messageOf("volumes: bind:/var/run/docker.sock:/var/run/docker.sock\n");
     assertTrue(message.contains("private"), message);
     assertTrue(message.contains("shared"), message);
+    assertTrue(message.contains("binds"), message);
     // And a path written where a private volume's NAME belongs is the same reach, said differently.
     assertTrue(
         messageOf("volumes: private:/var/run:/var/run\n").contains("host path"),
@@ -975,5 +975,143 @@ class DeploymentSpecParserTest {
     assertEquals(
         List.of("environment/prod"),
         parse("deployment_target: platform\ndeploy_branches: environment/prod\n").deployBranches());
+  }
+  // --- binds, publishes, aliases: the host-facing shape (qits-765) -----------------------------
+
+  @Test
+  void aFileThatNamesNoneOfTheThreeDeclaresNoShape() {
+    // Every file that exists today, and DEFAULTS with it: nothing reaches the argv from here.
+    assertEquals(DeclaredShape.NONE, parse("available_on_env: false\n").shape());
+    assertEquals(DeclaredShape.NONE, DeploymentSpec.DEFAULTS.shape());
+  }
+
+  @Test
+  void bindsAreHostPathsMountedAtTargetsAndRoSurvives() {
+    DeclaredShape shape =
+        parse("binds: /var/run/docker.sock:/var/run/docker.sock, /srv/certs:/certs:ro\n").shape();
+
+    assertEquals(
+        List.of(
+            new ServiceExtras.Mount(
+                ServiceExtras.MountKind.BIND,
+                "/var/run/docker.sock",
+                "/var/run/docker.sock",
+                false),
+            new ServiceExtras.Mount(ServiceExtras.MountKind.BIND, "/srv/certs", "/certs", true)),
+        shape.binds());
+    assertTrue(shape.bindsDockerSocket());
+    assertFalse(parse("binds: /srv/certs:/certs\n").shape().bindsDockerSocket());
+  }
+
+  @Test
+  void aBindIsTwoAbsolutePathsAndRoIsTheOnlyOption() {
+    assertTrue(messageOf("binds: var/run/docker.sock:/var/run/docker.sock\n").contains("absolute"));
+    assertTrue(messageOf("binds: /var/run/docker.sock:docker.sock\n").contains("absolute"));
+    assertTrue(messageOf("binds: /var/run/docker.sock\n").contains("<abs-host-path>"));
+    assertTrue(messageOf("binds: /a:/b:rw\n").contains("only `ro`"));
+    assertTrue(messageOf("binds: /my dir:/b\n").contains("absolute"), "a space forges nothing");
+    assertTrue(messageOf("binds: /a:/b,\n").contains("blank entry"));
+  }
+
+  @Test
+  void aBindTargetTwiceOrOverADeclaredVolumeIsRefused() {
+    // Two mounts on one directory is a create swarm refuses outright, and the file contradicts
+    // itself: only its author knows which half was meant.
+    assertTrue(messageOf("binds: /a:/data, /b:/data\n").contains("twice"));
+    String message = messageOf("volumes: private:data:/data\nbinds: /srv/data:/data\n");
+    assertTrue(message.contains("volumes"), message);
+    assertTrue(message.contains("line 2"), message);
+    // One host path at two targets is a thing a person can mean.
+    assertEquals(2, parse("binds: /srv/a:/a, /srv/a:/b\n").shape().binds().size());
+  }
+
+  @Test
+  void publishesAreTheExtrasGrammarReadByTheSameCode() {
+    DeclaredShape shape = parse("publishes: 8080:8080, 443:8443/tcp, 0.0.0.0:5353:53/UDP\n").shape();
+
+    assertEquals(
+        List.of(
+            new ServiceExtras.Publish(null, 8080, 8080, null),
+            new ServiceExtras.Publish(null, 443, 8443, "tcp"),
+            new ServiceExtras.Publish("0.0.0.0", 5353, 53, "udp")),
+        shape.publishes());
+  }
+
+  @Test
+  void aMalformedPublishIsRefusedWithTheExtrasSentence() {
+    assertTrue(messageOf("publishes: 8080\n").contains("[<ip>:]<host-port>:<port>"));
+    assertTrue(messageOf("publishes: 8080:8080/sctp\n").contains("neither tcp nor udp"));
+    assertTrue(messageOf("publishes: 70000:8080\n").contains("not a port number"));
+    assertTrue(messageOf("publishes: localhost:8080:8080\n").contains("IPv4"));
+    assertTrue(messageOf("publishes: 8080:8080,\n").contains("blank entry"));
+    // An ip that is not 0.0.0.0 PARSES here, as deployment config's does: it is the swarm driver
+    // that refuses it, because swarm's publish has no ip field.
+    assertEquals(
+        "127.0.0.1", parse("publishes: 127.0.0.1:8080:8080\n").shape().publishes().get(0).ip());
+  }
+
+  @Test
+  void aPublishedPortTwiceIsRefusedAndAnUnnamedProtocolIsTcp() {
+    assertTrue(messageOf("publishes: 8080:8080, 8080:9090\n").contains("twice"));
+    assertTrue(messageOf("publishes: 8080:8080, 8080:9090/tcp\n").contains("8080/tcp"));
+    // The same number over the other protocol is another port to swarm.
+    assertEquals(2, parse("publishes: 53:53/tcp, 53:53/udp\n").shape().publishes().size());
+  }
+
+  @Test
+  void aliasesAreKeptAsWrittenAndTheEnvironmentIsPutInAtDeployTime() {
+    DeclaredShape shape =
+        parse(
+                "aliases: registry.${QITS_ENVIRONMENT}.localhost, githost.${QITS_ENVIRONMENT}.internal,"
+                    + " plain.example\n")
+            .shape();
+
+    assertEquals(
+        List.of(
+            "registry.${QITS_ENVIRONMENT}.localhost",
+            "githost.${QITS_ENVIRONMENT}.internal",
+            "plain.example"),
+        shape.aliases(),
+        "the parser never knows the tier, so it keeps the token");
+    assertEquals(
+        List.of("registry.dev.localhost", "githost.dev.internal", "plain.example"),
+        shape.aliasesFor("dev"));
+    assertEquals(
+        List.of("registry.prod.localhost", "githost.prod.internal", "plain.example"),
+        shape.aliasesFor("prod"));
+  }
+
+  @Test
+  void anAliasIsOneNameAndOnlyTheOnePlaceholderIsKnown() {
+    assertTrue(messageOf("aliases: my alias\n").contains("not one name"));
+    assertTrue(messageOf("aliases: a.${QITS_DOMAIN}\n").contains("placeholder"));
+    assertTrue(messageOf("aliases: $HOME.localhost\n").contains("placeholder"));
+    assertTrue(messageOf("aliases: a,\n").contains("blank entry"));
+    assertTrue(messageOf("aliases: a.localhost, a.localhost\n").contains("twice"));
+  }
+
+  @Test
+  void anAliasIsCheckedAgainAfterTheSubstitution() {
+    // The substituted value is what reaches the argv, so it is held to the rule a second time — and
+    // a token with no tier to put there is a refusal, never a literal `${…}` registered as a name.
+    DeclaredShape shape = new DeclaredShape(List.of(), List.of(), List.of("r.${QITS_ENVIRONMENT}"));
+    assertThrows(ServiceExtras.Refused.class, () -> shape.aliasesFor("bad tier"));
+    assertThrows(ServiceExtras.Refused.class, () -> shape.aliasesFor(null));
+    assertEquals(List.of("plain"), new DeclaredShape(null, null, List.of("plain")).aliasesFor(null));
+  }
+
+  @Test
+  void eachOfTheThreeKeysIsStatedOnce() {
+    assertTrue(messageOf("binds: /a:/a\nbinds: /b:/b\n").contains("duplicate key"));
+    assertTrue(messageOf("publishes: 1:1\npublishes: 2:2\n").contains("duplicate key"));
+    assertTrue(messageOf("aliases: a\naliases: b\n").contains("duplicate key"));
+  }
+
+  @Test
+  void theUnknownKeySentenceNamesTheThreeNewKeys() {
+    String message = messageOf("bind: /a:/a\n");
+    assertTrue(message.contains("binds"), message);
+    assertTrue(message.contains("publishes"), message);
+    assertTrue(message.contains("aliases"), message);
   }
 }

@@ -121,6 +121,15 @@ public record ServiceExtras(
     public boolean bindsAllInterfaces() {
       return ip == null || "0.0.0.0".equals(ip);
     }
+
+    /**
+     * What makes two publishes the SAME port to swarm: the published port and its protocol, an
+     * unnamed protocol being tcp. Swarm refuses a service that publishes one twice, so this is the
+     * key a union of two sources is deduplicated by.
+     */
+    public String portKey() {
+      return published + "/" + (protocol == null ? "tcp" : protocol);
+    }
   }
 
   /**
@@ -254,7 +263,11 @@ public record ServiceExtras(
     return new Mount(kind, source, target, parts.length == 4);
   }
 
-  private static Publish publish(String key, String value) {
+  /**
+   * One {@code [<ipv4>:]<host-port>:<port>[/tcp|/udp]}. Package-private because it is the grammar's
+   * one spelling: {@code publishes:} in {@code deployments.yml} reads the same value through it.
+   */
+  static Publish publish(String key, String value) {
     String ports = value;
     String protocol = null;
     int slash = value.indexOf('/');
@@ -296,8 +309,11 @@ public record ServiceExtras(
    * name=<net>,alias=<a>}), so a comma in the value forges a second field; whitespace makes a name
    * nothing resolves — an argv element is never re-split, so the space would simply be part of the
    * name. Everything else is left to the daemon, which is the authority on what it will register.
+   *
+   * <p>Package-private for the same reason {@link #publish} is: {@code aliases:} in {@code
+   * deployments.yml} is checked with it, once at the line and again after the environment is put in.
    */
-  private static String alias(String key, String value) {
+  static String alias(String key, String value) {
     if (value.indexOf(',') >= 0) {
       throw refuse(key, "'" + value + "' has a comma in it, and an alias is one name");
     }
