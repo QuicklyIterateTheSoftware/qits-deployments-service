@@ -1525,14 +1525,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // Read once, off ONE snapshot: the same refusal would otherwise be reached twice, the aliases
     // belong to the membership while everything else belongs to the flags below it, and one
     // snapshot is what keeps every reading of one deployment in agreement.
-    ServiceExtras extras =
-        ServiceExtras.of(
-            extrasSource.forDeployment(
-                spec.applicationName(),
-                spec.environmentName(),
-                spec.version(),
-                spec.declarationSeeded()),
-            spec.applicationName());
+    ServiceExtras extras = extrasOf(spec);
     List<String> argv =
         new ArrayList<>(
             List.of(
@@ -1767,14 +1760,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     }
     // One snapshot for this argv, as the create's is: an update states the environment and nothing
     // else, so this is the whole of what deployment config contributes here.
-    ServiceExtras extras =
-        ServiceExtras.of(
-            extrasSource.forDeployment(
-                spec.applicationName(),
-                spec.environmentName(),
-                spec.version(),
-                spec.declarationSeeded()),
-            spec.applicationName());
+    ServiceExtras extras = extrasOf(spec);
     for (String variable : extras.env()) {
       // After this component's own, which is the precedence rule: the last assignment of a key
       // wins, so what config says outranks what this component defaults.
@@ -1926,6 +1912,76 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   }
 
   /**
+   * The deployment config's view of this deployment — ONE snapshot of {@code
+   * qits.deployments.extras.<application>.*}, read through the seam at the deployment's place and
+   * release. Every argv reads it through here, so the three readings (create, update, the alias
+   * check) and the settings preview ask exactly the same question.
+   */
+  private ServiceExtras extrasOf(ServiceSpec spec) {
+    return ServiceExtras.of(
+        extrasSource.forDeployment(
+            spec.applicationName(),
+            spec.environmentName(),
+            spec.version(),
+            spec.declarationSeeded()),
+        spec.applicationName());
+  }
+
+  /**
+   * {@link #environment}, followed — when {@code includeExtras} — by the deployment config's own
+   * {@code env}: exactly the {@code --env}/{@code --env-add} values {@link #buildCreateArgv} and
+   * {@link #buildUpdateArgv} state, in the same order, so the last entry of a key is the value the
+   * service would get. Without the extras the seam is not asked at all.
+   */
+  @Override
+  public List<String> stagedEnvironment(ServiceSpec spec, boolean includeExtras) {
+    List<String> variables = new ArrayList<>(environment(spec));
+    if (includeExtras) {
+      variables.addAll(extrasOf(spec).env());
+    }
+    return List.copyOf(variables);
+  }
+
+  /**
+   * The family {@link #envRemovals} never removes beyond what the argv states: {@link
+   * #DEPLOYER_OWN_VARIABLES} and anything under {@link #RESOURCE_PREFIX}. One predicate, read by
+   * the update diff and by the settings preview alike.
+   */
+  @Override
+  public boolean keptWhenUnstated(String key) {
+    return DEPLOYER_OWN_VARIABLES.contains(key) || key.startsWith(RESOURCE_PREFIX);
+  }
+
+  /**
+   * The live service's {@link #SPEC_ENV_FORMAT}, one entry per variable. A line with no {@code =}
+   * continues the value before it (a value may hold a newline) — {@link #currentSpecEnvKeys}' rule,
+   * read for values rather than keys. An inspect that cannot answer is empty: the preview then
+   * shows every variable as added, which is the honest reading of "nothing to compare with".
+   */
+  @Override
+  public Optional<List<String>> liveEnvironment(String name) {
+    PdProcess.Result inspected =
+        run(List.of(runtime, "service", "inspect", "--format", SPEC_ENV_FORMAT, name),
+            INSPECT_TIMEOUT);
+    if (inspected.exitCode() != 0) {
+      return Optional.empty();
+    }
+    List<String> variables = new ArrayList<>();
+    String output = safe(inspected.output());
+    if (output.endsWith("\n")) {
+      output = output.substring(0, output.length() - 1);
+    }
+    for (String line : output.split("\n", -1)) {
+      if (line.indexOf('=') > 0) {
+        variables.add(line);
+      } else if (!variables.isEmpty()) {
+        variables.set(variables.size() - 1, variables.get(variables.size() - 1) + "\n" + line);
+      }
+    }
+    return Optional.of(List.copyOf(variables));
+  }
+
+  /**
    * Who and where this service is, plus whatever was provisioned for it. Deliberately minimal —
    * application config (datasources, peers) is the image's and the environment's own story.
    */
@@ -2073,16 +2129,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     List<String> declared;
     try {
       declared =
-          aliasesOf(
-              spec,
-              ServiceExtras.of(
-                  extrasSource.forDeployment(
-                      spec.applicationName(),
-                      spec.environmentName(),
-                      spec.version(),
-                      spec.declarationSeeded()),
-                  spec.applicationName()),
-              networks);
+          aliasesOf(spec, extrasOf(spec), networks);
     } catch (ServiceExtras.Refused e) {
       // Config states something swarm cannot express. The argv build in `apply` reaches the same
       // refusal a line later and returns REFUSED, having changed nothing — so the one thing this
@@ -2204,9 +2251,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // Sorted, so one deployment's argv is the same argv twice and a diff of two run logs is
     // readable. A HashSet's order is not a contract and a reader would read it as one.
     for (String key : new TreeSet<>(currentSpecEnvKeys(name))) {
-      if (stated.contains(key)
-          || DEPLOYER_OWN_VARIABLES.contains(key)
-          || key.startsWith(RESOURCE_PREFIX)) {
+      if (stated.contains(key) || keptWhenUnstated(key)) {
         continue;
       }
       argv.add("--env-rm");

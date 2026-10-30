@@ -367,6 +367,34 @@ public interface DeploymentDriver {
    */
   Optional<RunningImage> runningImage(String name);
 
+  /**
+   * The environment a deployment of {@code spec} would state, as {@code KEY=VALUE} entries in argv
+   * order — this component's own variables and the resource family, then, when {@code
+   * includeExtras}, the deployment config's own {@code env}; where a key repeats the LAST entry
+   * wins, exactly as it does on the argv.
+   *
+   * <p>Read-only: no orchestrator call, no write. The settings preview's "next" half. With {@code
+   * includeExtras} it reads the deployment config the way a deployment does, so a config that
+   * cannot be read throws what the deployment would have refused with; without it, the deployment
+   * config is not read at all.
+   */
+  List<String> stagedEnvironment(ServiceSpec spec, boolean includeExtras);
+
+  /**
+   * Whether an update keeps {@code key} on the live service even though its argv does not state it
+   * — the exemption the update's {@code --env-rm} diff applies (this component's own identity
+   * variables and the provisioned-resource family). The settings preview reads it so that it never
+   * reports as removed a key the real update would leave in place.
+   */
+  boolean keptWhenUnstated(String key);
+
+  /**
+   * The environment the named live service carries now, as {@code KEY=VALUE} entries — or empty
+   * when the orchestrator has no such service (or cannot say). The settings preview's "running"
+   * half; a deployment never calls it.
+   */
+  Optional<List<String>> liveEnvironment(String name);
+
   /** What a service runs, as the sweep reads it. {@code detail} is the orchestrator's own words. */
   record RunningImage(String imageRef, String detail) {}
 

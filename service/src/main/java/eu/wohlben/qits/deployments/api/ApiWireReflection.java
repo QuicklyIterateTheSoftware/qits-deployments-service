@@ -3,6 +3,8 @@ package eu.wohlben.qits.deployments.api;
 import eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto;
 import eu.wohlben.qits.deployments.deployments.dto.PdDeploymentRequestDto;
 import eu.wohlben.qits.deployments.deployments.dto.PdPinDto;
+import eu.wohlben.qits.deployments.deployments.dto.PdSettingDto;
+import eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto;
 import eu.wohlben.qits.deployments.deployments.entity.PdQualityGate;
 import eu.wohlben.qits.deployments.environments.dto.PdApplicationDto;
 import eu.wohlben.qits.deployments.environments.dto.PdEnvironmentDto;
@@ -38,6 +40,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       PdDeploymentRequestController.ListDeploymentRequestsResponse.class,
       PdDeploymentRequestController.DeploymentRequestResponse.class,
       PdPinController.ListPinsResponse.class,
+      PdSettingController.PutSettingRequest.class,
+      PdSettingController.ListSettingsResponse.class,
       PdEventController.SoftwareReleasedEvent.class,
       PdEnvironmentDto.class,
       PdApplicationDto.class,
@@ -46,6 +50,10 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       PdDeploymentDto.class,
       PdDeploymentRequestDto.class,
       PdPinDto.class,
+      PdSettingDto.class,
+      PdSettingsPreviewDto.class,
+      PdSettingsPreviewDto.PreviewEntry.class,
+      PdSettingsPreviewDto.PreviewChange.class,
       PdQualityGate.class
     })
 final class ApiWireReflection {

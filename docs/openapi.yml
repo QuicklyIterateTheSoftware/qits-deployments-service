@@ -112,6 +112,13 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PdServiceDto"
+    ListSettingsResponse:
+      type: object
+      properties:
+        settings:
+          type: array
+          items:
+            $ref: "#/components/schemas/PdSettingDto"
     PdApplicationDto:
       type: object
       properties:
@@ -278,6 +285,78 @@ components:
           type: array
           items:
             type: string
+    PdSettingDto:
+      type: object
+      properties:
+        application:
+          type: string
+        environment:
+          type: string
+        key:
+          type: string
+        value:
+          type: string
+        secret:
+          type: boolean
+        updatedAt:
+          $ref: "#/components/schemas/Instant"
+        updatedBy:
+          type: string
+    PdSettingsPreviewDto:
+      type: object
+      properties:
+        application:
+          type: string
+        environment:
+          type: string
+        extrasIncluded:
+          type: boolean
+        added:
+          type: array
+          items:
+            $ref: "#/components/schemas/PreviewEntry"
+        removed:
+          type: array
+          items:
+            $ref: "#/components/schemas/PreviewEntry"
+        changed:
+          type: array
+          items:
+            $ref: "#/components/schemas/PreviewChange"
+        kept:
+          type: array
+          items:
+            $ref: "#/components/schemas/PreviewEntry"
+        unchanged:
+          type: integer
+          format: int32
+    PreviewChange:
+      type: object
+      properties:
+        key:
+          type: string
+        from:
+          type: string
+        to:
+          type: string
+        secret:
+          type: boolean
+    PreviewEntry:
+      type: object
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+        secret:
+          type: boolean
+    PutSettingRequest:
+      type: object
+      properties:
+        value:
+          type: string
+        secret:
+          type: boolean
     RetirementResponse:
       type: object
       properties:
@@ -932,6 +1011,186 @@ paths:
       security:
       - SecurityScheme:
         - qits:system
+  /deployments/api/settings:
+    get:
+      summary: "Every setting, optionally filtered by application and environment;\
+        \ secret values are null"
+      operationId: listSettings
+      parameters:
+      - name: application
+        in: query
+        schema:
+          type: string
+      - name: environment
+        in: query
+        schema:
+          type: string
+      responses:
+        "200":
+          description: "The settings, ordered by application, environment and key"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListSettingsResponse"
+        "400":
+          description: A filter is not a valid name
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Setting Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:admin-agent
+        - qits:desk-admin
+        - qits:system
+        - qits:agent
+  /deployments/api/settings/preview/{application}/{environment}:
+    get:
+      summary: What switching the deployer to settings would change on the live service
+      description: "Compares the environment the next deployment would set with the\
+        \ live service's. Default (no extras parameter, or extras=exclude): the deployment\
+        \ AFTER the switch from qits-configuration to settings — the variables the\
+        \ deployer injects itself (QITS_ENVIRONMENT, QITS_APPLICATION, QITS_DOMAIN,\
+        \ the OTEL identity, QITS_RESOURCE_*) plus the settings rows; qits-configuration's\
+        \ extras are not read. extras=include: today's deployment — the deployer's\
+        \ own variables, then the extras env, then the settings rows (a setting wins\
+        \ over an extras key of the same name). added/removed/changed compare the\
+        \ two sides; kept lists live keys the next deployment does not state but an\
+        \ update never removes (the deployer's own variables and QITS_RESOURCE_*),\
+        \ so removed is exactly what an update would --env-rm. A value is null on\
+        \ both sides when the key is a secret setting or its name contains SECRET,\
+        \ TOKEN, PASSWORD or CREDENTIAL, or ends with _AUTH. A service that is not\
+        \ running makes everything added."
+      operationId: previewSettings
+      parameters:
+      - name: application
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: environment
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: extras
+        in: query
+        schema:
+          type: string
+      responses:
+        "200":
+          description: The difference
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PdSettingsPreviewDto"
+        "400":
+          description: "A name is invalid, or extras is neither include nor exclude"
+        "404":
+          description: "No such environment, or an application the deployer does not\
+            \ know"
+        "502":
+          description: extras=include and the application's deployment config cannot
+            be read
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Setting Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:admin-agent
+        - qits:desk-admin
+        - qits:system
+        - qits:agent
+  /deployments/api/settings/{application}/{environment}/{key}:
+    put:
+      summary: "Insert or replace one setting; answers the stored row, its value null\
+        \ if secret"
+      operationId: putSetting
+      parameters:
+      - name: application
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: environment
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PutSettingRequest"
+        required: true
+      responses:
+        "200":
+          description: The stored setting
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PdSettingDto"
+        "400":
+          description: "The key is not an environment variable name, a name is invalid,\
+            \ or no value"
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Setting Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:system
+    delete:
+      summary: Remove one setting
+      operationId: deleteSetting
+      parameters:
+      - name: application
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: environment
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          description: Removed
+        "400":
+          description: The key or a name is invalid
+        "404":
+          description: No such setting
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Setting Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:system
 info:
   title: qits-platform-deployments API
-  version: 2026.1008.164327
+  version: 2026.1030.164656
