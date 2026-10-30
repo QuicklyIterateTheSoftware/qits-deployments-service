@@ -10,7 +10,6 @@ import eu.wohlben.qits.deployments.environments.control.PdNetworks;
 import eu.wohlben.qits.deployments.environments.control.ServiceCatalog;
 import eu.wohlben.qits.deployments.environments.entity.PdEnvironment;
 import eu.wohlben.qits.deployments.environments.error.NotFoundException;
-import eu.wohlben.qits.deployments.environments.error.PdException;
 import eu.wohlben.qits.deployments.environments.persistence.PdEnvironmentRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -24,14 +23,12 @@ import java.util.Set;
  * What the next deployment of one application would set, compared with what its live service
  * carries now (qits-1390, epic qits-765).
  *
- * <p><b>Its purpose is the switch.</b> The epic moves an application's environment from
- * qits-configuration's extras to the settings store, and this proves, before the switch, that it
- * removes nothing unintended. So by DEFAULT "next" is the deployment AFTER the switch: the
- * environment this component injects itself ({@link DeploymentDriver#stagedEnvironment} without
- * extras — the identity variables, {@code QITS_DOMAIN}, {@code QITS_RESOURCE_*}) with the settings
- * rows overlaid, and qits-configuration is not asked at all. With {@code includeExtras} it is
- * today's deployment plus the settings: the extras {@code env} after the deployer's own, then the
- * settings rows over both — a setting wins over an extras key of the same name.
+ * <p><b>"Next" is the deployment as it runs now</b>, since the switch (qits-1393): the environment
+ * this component injects itself ({@link DeploymentDriver#stagedEnvironment} without extras — the
+ * identity variables, {@code QITS_DOMAIN}, {@code QITS_RESOURCE_*}) with the settings rows overlaid.
+ * That is exactly what a deployment renders, because the settings store is its one extras source.
+ * There used to be a second mode, today's deployment with qits-configuration's extras; with that
+ * service gone the two are one, and the door answers both spellings identically.
  *
  * <p><b>A live key the update would keep is never "removed".</b> The update's {@code --env-rm}
  * diff exempts this component's own variables and the resource family; the preview asks the
@@ -65,8 +62,7 @@ public class SettingsPreview {
   /** What the place is, as plain values read in one bracket. */
   private record Place(String environmentId, String version, String serviceName) {}
 
-  public PdSettingsPreviewDto preview(
-      String application, String environment, boolean includeExtras) {
+  public PdSettingsPreviewDto preview(String application, String environment) {
     String app = PdIdentifiers.requireName(application, "application");
     String env = PdIdentifiers.requireName(environment, "environment");
     Place place =
@@ -97,7 +93,6 @@ public class SettingsPreview {
             null,
             place.version(),
             place.version(),
-            false,
             null,
             PdNetworks.alias(env, app),
             List.of(),
@@ -110,13 +105,9 @@ public class SettingsPreview {
             resources.recordedBindings(app, env),
             List.of());
 
-    Map<String, String> next;
-    try {
-      next = SettingsDiff.parse(driver.stagedEnvironment(spec, includeExtras));
-    } catch (ServiceExtras.Refused e) {
-      throw new PdException(
-          502, "the deployment config of " + app + " in " + env + " cannot be read: " + e.getMessage());
-    }
+    // Without the extras: the settings rows ARE the extras now, and they are overlaid below with
+    // their secret flags, which the extras grammar does not carry.
+    Map<String, String> next = SettingsDiff.parse(driver.stagedEnvironment(spec, false));
     Set<String> secretKeys = new HashSet<>();
     for (PdSetting row : settings.rowsOf(app, env)) {
       next.put(row.settingKey, row.value);
@@ -135,6 +126,6 @@ public class SettingsPreview {
         driver.liveEnvironment(serviceName).map(SettingsDiff::parse).orElse(Map.of());
 
     return SettingsDiff.diff(
-        app, env, includeExtras, next, running, secretKeys, driver::keptWhenUnstated);
+        app, env, false, next, running, secretKeys, driver::keptWhenUnstated);
   }
 }

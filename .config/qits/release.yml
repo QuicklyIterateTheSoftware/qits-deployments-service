@@ -13,12 +13,11 @@ contracts:
   application: qits-deployments
   golden-masters: { from: golden-masters/, packages: [maven, npm] }
   pacts:
-    qits-configuration-service: { packages: [maven] }
     # Three-part: pacts/qits-deployments-service_qits-eventstream-javalib_qits-events-service.json
     # (qits-1163), what the qits-eventstream library asks on this service's behalf, written by
     # service/src/test/.../pacts/EventstreamPactTest.
     qits-events-service: { packages: [maven] }
-    # GitHostSpecSource's blob reads of deployments.yml and configuration.yml (qits-1149).
+    # GitHostSpecSource's blob reads of deployments.yml (qits-1149).
     qits-githost-service: { packages: [maven] }
     qits-idp-service: { packages: [maven] }
 # THE SITE IS SPELLED, AND IT NAMES THE COMPONENT. `true` derives it from the REPOSITORY name,

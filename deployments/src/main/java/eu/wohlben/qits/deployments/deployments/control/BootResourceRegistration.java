@@ -103,11 +103,12 @@ public class BootResourceRegistration {
   static final String IDP_RESOURCE_TYPE = "idp-client";
 
   /**
-   * The idp triple's fallback names — today's {@code quarkus.oidc-client.configuration.*} extras,
-   * read directly rather than through {@code ${…}} because this class reads raw env, not config.
-   * This component does not declare {@code idp:client} for itself (D10), so {@code
-   * QITS_RESOURCE_IDP_*} stays unset today and every boot takes this fallback — the same pair the
-   * adapter and the {@code configuration} named oidc client both read.
+   * The idp triple's fallback names — the {@code QUARKUS_OIDC_CLIENT_CONFIGURATION_*} variables the
+   * deployment has carried since qits-configuration's extras (settings of this component now), read
+   * directly rather than through {@code ${…}} because this class reads raw env, not config. No oidc
+   * client reads them any more; the names are just where the pair lives. This component does not
+   * declare {@code idp:client} for itself (D10), so {@code QITS_RESOURCE_IDP_*} stays unset today
+   * and every boot takes this fallback — the same pair the adapter reads.
    */
   static final String FALLBACK_URL = "QUARKUS_OIDC_CLIENT_CONFIGURATION_AUTH_SERVER_URL";
 

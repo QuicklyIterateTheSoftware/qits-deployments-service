@@ -13,9 +13,9 @@ import java.time.Instant;
  * One environment variable the deployer holds for one application in one tier — a secret or an
  * installation fact that used to live in qits-configuration's extras (epic qits-765).
  *
- * <p><b>Nothing deploys from this row yet.</b> The store, its doors and the preview arrived first
- * (qits-1390); every deployment still takes its environment from {@code DeploymentExtrasSource}. The
- * preview is what shows what switching the read over would change.
+ * <p><b>Every deployment reads it</b> (qits-1393): {@code SettingsExtrasSource} is the deployer's
+ * one extras source, so this row is the container's {@code KEY=value} from the next deployment of
+ * its place on, and its deletion is an {@code --env-rm} on that deployment.
  *
  * <p>{@code settingKey} is the env var name itself, validated at the door. {@code secret} decides how the
  * value is SHOWN — never, on any read — not how it is stored: this database already holds every

@@ -51,7 +51,6 @@ public class PdSpecRetryTest {
   @Inject FakeSpecSource specs;
   @Inject FakeResourceProvisioner provisioner;
   @Inject FakeIdpClientProvisioner idpProvisioner;
-  @Inject FakeDeclarationSeed seeds;
 
   /** The bus door, for the one case whose rule is the bus door's — see the method. */
   @Inject PdSoftwareReleaseSubscriber subscriber;
@@ -62,7 +61,6 @@ public class PdSpecRetryTest {
     specs.reset();
     provisioner.reset();
     idpProvisioner.reset();
-    seeds.reset();
   }
 
   @Test
@@ -235,47 +233,6 @@ public class PdSpecRetryTest {
         ((String) rows.get(0).get("detail")).contains(".config/qits/deployments.yml"),
         "with the reason the wait ended: " + rows.get(0).get("detail"));
     assertEquals("ACTIVE", rows.get(1).get("status"), "and what was serving is still serving");
-  }
-
-  @Test
-  public void aDeclarationTheGitHostWillNotServeHoldsTheReleaseTheSameWayASpecDoes() {
-    // TWO FILES, ONE HOP, ONE POSTURE. The declaration is read from the same git host at the same
-    // tag, so a 503 on it is the same host having the same bad second — and it has to be answered
-    // the same way, or the second file would strand releases exactly as the first one used to. The
-    // spec here answers perfectly well: what is held is the release, not the file that failed.
-    String environmentId = createEnvironment("spec-declaration-held");
-    postRelease("repo-declaration-held", V_A);
-    awaitSettled(environmentId, 1);
-    driver.reset();
-
-    specs.scriptDeclarationRetryableFailure(
-        "repo-declaration-held", "the git host answered 503 for the declaration");
-    postRelease("repo-declaration-held", V_B);
-
-    List<Map<String, Object>> held = awaitSettled(environmentId, 2);
-    assertEquals(
-        "SPEC_UNREADABLE",
-        held.get(0).get("status"),
-        "a declaration that was never served is the hop failing, not a refused declaration");
-    assertTrue(
-        ((String) held.get(0).get("detail")).contains("declaration"),
-        "the row says WHICH of the two files did not answer: " + held.get(0).get("detail"));
-    assertEquals(List.of(), driver.pulled(), "a held release still starts nothing");
-    assertEquals(List.of(), seeds.seeded(), "and seeds nothing");
-
-    // The git host comes back with both files, and the tick deploys the release for real.
-    specs.recover("repo-declaration-held");
-    specs.scriptDeclaration("repo-declaration-held", "defaults:\n  FLAGS: on\n");
-    tick();
-
-    List<Map<String, Object>> deployed = awaitSettled(environmentId, 3);
-    assertEquals("ACTIVE", deployed.get(0).get("status"), "the release deployed for real");
-    assertEquals(V_B, deployed.get(0).get("version"));
-    // ...and the recovered path is not a second code path: it seeds exactly as the first attempt
-    // would have, under the version that was held.
-    assertEquals(1, seeds.seeded().size(), "the recovered release seeded once: " + seeds.seeded());
-    assertEquals(V_B, seeds.seeded().get(0).version());
-    assertEquals("defaults:\n  FLAGS: on\n", seeds.seeded().get(0).yaml());
   }
 
   // --- helpers ----------------------------------------------------------------------------------

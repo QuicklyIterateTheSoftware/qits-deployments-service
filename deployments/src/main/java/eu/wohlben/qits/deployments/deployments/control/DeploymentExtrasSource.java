@@ -5,11 +5,11 @@ import org.eclipse.microprofile.config.Config;
 /**
  * Where one argv build reads {@code qits.deployments.extras.<application>.*} from.
  *
- * <p><b>It is a seam because the answer may be another service's.</b> The extras were the config
- * volume's properties file and nothing else, re-read per argv by {@link ExtrasSnapshot}; a platform
- * that sets {@code qits.deployments.extras-url} moves the authority to qits-configuration,
- * which is an HTTP call and therefore belongs in {@code service/} — the {@code SpecSource} rule
- * applied a fourth time.
+ * <p><b>The one implementation is {@link SettingsExtrasSource}</b>: the settings store's rows for
+ * the place, rendered in the extras grammar over the boot config (qits-1393). It used to be the
+ * config volume's properties file, then qits-configuration over HTTP; both are gone. It stays an
+ * interface because the driver's suite states a snapshot in a lambda, which is the cheapest double
+ * there is for a seam that returns a value rather than holding a conversation.
  *
  * <p><b>One call is one snapshot, and that is the invariant {@link ServiceExtras} rests on.</b> Its
  * javadoc says every reading agrees, which is only true of a fixed {@link Config}: a caller takes
@@ -27,39 +27,14 @@ public interface DeploymentExtrasSource {
   /**
    * The config this deployment's extras are read out of, as it reads now.
    *
-   * <p><b>One call is one snapshot for one DEPLOYMENT</b>, which is the invariant above narrowed to
-   * what it always meant. The answer used to be addressed by the application alone, which read as
-   * "this application's configuration" and could only ever be one thing per platform; it is
-   * addressed by the tier and the released version too, because a configuration that cannot differ
-   * between {@code dev} and {@code prod} is not configuration, and one that cannot differ between
-   * releases makes rolling a version back a config change nobody made. The seam still returns a
-   * fixed {@link Config} and a caller still takes exactly one per argv build.
-   *
-   * <p><b>The release says whether the read may be addressed by the version at all</b>, and that is
-   * {@code declarationSeeded}. The store answers a version-addressed read by resolving the stored
-   * entries over the DECLARATION of that version, so a version it holds no declaration for is a 404
-   * — deliberately, because "resolve me against this document" cannot be answered with a document
-   * that is not there. A release whose tag carries no {@link SpecSource#DECLARATION_PATH} seeds
-   * nothing, so asking by its version would be asking about a document nobody wrote. Those
-   * deployments read version-LESS, which is the store's own transitional form and is the entries
-   * alone; every other one reads exactly as it does today.
-   *
-   * <p><b>It is a parameter rather than a nullable version because the WARN needs both.</b> A
-   * version-less read is a signal for the config-declarations epic's cutover — it says this
-   * repository has not declared itself yet — and a signal that cannot name the application and the
-   * version it was made for is not one anybody can act on.
+   * <p><b>One call is one snapshot for one PLACE</b>: an application in a tier. A configuration
+   * that cannot differ between {@code dev} and {@code prod} is not configuration, so the tier is
+   * part of the address; the released version is not — the settings store holds one value per
+   * (application, environment, key), and a rollback deploys an older image with today's settings.
    *
    * @param application the deployed application's name — the segment in the key family
-   * @param environmentName the tier this deployment is going into. A platform-plane service has one
-   *     too: it is deployed into the designated environment like everything else, and what stays the
-   *     plane's own is its address rather than where it runs.
-   * @param version the released coordinate — what the image is tagged with and, where there was one,
-   *     what the declaration was seeded under
-   * @param declarationSeeded whether this release carried a declaration, which is the same question
-   *     the seed asked one step earlier: true and the store holds this version's document, so the
-   *     read is addressed by it; false and there is no such document to resolve against
+   * @param environmentName the tier this deployment is going into
    * @throws ServiceExtras.Refused the extras could not be read
    */
-  Config forDeployment(
-      String application, String environmentName, String version, boolean declarationSeeded);
+  Config forDeployment(String application, String environmentName);
 }

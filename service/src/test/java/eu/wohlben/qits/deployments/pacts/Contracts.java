@@ -5,11 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import eu.wohlben.qits.deployments.confighost.ConfigHostDeclarationSeed;
-import eu.wohlben.qits.deployments.confighost.ConfigHostExtrasSource;
-import eu.wohlben.qits.deployments.confighost.ExtrasBearer;
-import eu.wohlben.qits.deployments.confighost.ExtrasStub;
-import eu.wohlben.qits.deployments.confighost.IdpExtrasBearer;
 import eu.wohlben.qits.deployments.deployments.control.IdpClientProvisioner;
 import eu.wohlben.qits.deployments.deployments.control.RepositoryRef;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource;
@@ -23,8 +18,6 @@ import eu.wohlben.qits.pact.consumer.GoldenMasters;
 import eu.wohlben.qits.pact.consumer.Trigger;
 import io.quarkus.oidc.OidcConfigurationMetadata;
 import io.quarkus.oidc.runtime.JsonWebKeySet;
-import io.smallrye.config.PropertiesConfigSource;
-import io.smallrye.config.SmallRyeConfigBuilder;
 import io.vertx.core.json.JsonObject;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -34,8 +27,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
-import org.eclipse.microprofile.config.Config;
 
 /**
  * <b>Every JSON REST call qits-deployments-service makes to another qits service</b> (ticket
@@ -43,17 +34,16 @@ import org.eclipse.microprofile.config.Config;
  * each row the call this repository's real client makes against the pact mock server.
  *
  * <ul>
- *   <li>{@link #CONFIGURATION} — {@code ConfigHostExtrasSource}'s resolved read and {@code
- *       ConfigHostDeclarationSeed}'s declaration POST;
- *   <li>{@link #IDP} — {@code HttpIdpClientProvisioner}'s four service-client calls, the two
- *       reads quarkus-oidc makes at startup (the discovery document and the JWKS), and the
- *       client-credentials mint quarkus-oidc-client makes for {@code IdpExtrasBearer};
- *   <li>{@link #GITHOST} — {@code GitHostSpecSource}'s blob reads of {@code deployments.yml} and
- *       {@code configuration.yml}: name-addressed when the release carries the name pair,
- *       id-addressed when it does not, with no fallback between them (qits-883).
+ *   <li>{@link #IDP} — {@code HttpIdpClientProvisioner}'s four service-client calls and the two
+ *       reads quarkus-oidc makes at startup (the discovery document and the JWKS);
+ *   <li>{@link #GITHOST} — {@code GitHostSpecSource}'s blob reads of {@code deployments.yml}:
+ *       name-addressed when the release carries the name pair, id-addressed when it does not, with
+ *       no fallback between them (qits-883).
  * </ul>
  *
  * <p>The bus library qits-eventstream owns its catch-up and publish pact, so no events row is here.
+ * qits-configuration's contract (the resolved read and the declaration POST) and the token mint
+ * that authorised it went with that service (qits-1393).
  */
 public final class Contracts {
 
@@ -71,8 +61,8 @@ public final class Contracts {
    * @param method the public method of {@code client} that makes it
    * @param alongside rows the same call goes on to make against the same mock server, for a call
    *     that makes more than one request for one answer
-   * @param call null for a row whose client exists only inside the application — the token mint,
-   *     whose test is {@code IdpTokenMintPactTest}, a {@code @QuarkusTest} of its own
+   * @param call null for a row whose client exists only inside the application, tested by a
+   *     {@code @QuarkusTest} of its own
    */
   public record Check(
       GoldenInteraction row,
@@ -119,68 +109,6 @@ public final class Contracts {
     }
   }
 
-  // --- qits-configuration ----------------------------------------------------------------------
-
-  static final GoldenMasters CONFIGURATION_MASTERS =
-      GoldenMasters.of("qits-configuration-service", "qits-configuration");
-
-  private static final ExtrasBearer NO_BEARER = Optional::empty;
-
-  private static Config boot() {
-    return new SmallRyeConfigBuilder()
-        .withSources(new PropertiesConfigSource(Map.of(), "boot", 260))
-        .build();
-  }
-
-  private static Config resolved(String url, Map<String, String> params, boolean declared) {
-    return ExtrasStub.source(boot(), "config/application.properties", NO_BEARER, url)
-        .forDeployment(params.get("application"), params.get("env"), params.getOrDefault("version", "2026.101.1"), declared);
-  }
-
-  public static final Contract CONFIGURATION =
-      Contract.of(
-          CONFIGURATION_MASTERS,
-          // A release that seeded a declaration reads the overrides resolved against it.
-          Check.of(
-              ConfigHostExtrasSource.class,
-              "forDeployment",
-              GoldenInteraction.of(
-                      Trigger.event("SoftwareRelease"),
-                      "a declared application with entries",
-                      "resolveConfiguration")
-                  .consumes("properties", "headRevision"),
-              (url, recorded) -> {
-                Config served = resolved(url, recorded.params(), true);
-                assertEquals(
-                    "hello from the store",
-                    served.getValue(
-                        "qits.platform.deployments.extras.golden-declared-app.env.QITS_GREETING",
-                        String.class));
-              }),
-          // A release that declared nothing reads the stored entries alone.
-          Check.of(
-              ConfigHostExtrasSource.class,
-              "forDeployment",
-              GoldenInteraction.of(
-                      Trigger.event("SoftwareRelease"),
-                      "an application with stored entries and no declaration",
-                      "resolveConfiguration")
-                  .consumes("properties", "headRevision"),
-              (url, recorded) -> assertNotNull(resolved(url, recorded.params(), false))),
-          // The seed reads the status alone: 2xx is stored, 409/422 is the file's own fault.
-          Check.of(
-              ConfigHostDeclarationSeed.class,
-              "seed",
-              GoldenInteraction.of(
-                  Trigger.event("SoftwareRelease"), "an application with no declaration", "declareKeys"),
-              (url, recorded) -> {
-                ConfigHostDeclarationSeed seed = ExtrasStub.seed(NO_BEARER, url);
-                seed.seed(
-                    recorded.params().get("application"),
-                    recorded.params().get("version"),
-                    recorded.body().asText());
-              }));
-
   // --- qits-idp --------------------------------------------------------------------------------
 
   static final GoldenMasters IDP_MASTERS = GoldenMasters.of("qits-idp-service", "qits-idp");
@@ -188,14 +116,6 @@ public final class Contracts {
   static final String A_DATABASE_SERVICE_CLIENT = "a database service client";
   static final String NO_SERVICE_CLIENT = "no service client with the given id";
   static final String A_PUBLISHED_SIGNING_KEY = "a published signing key";
-
-  static final String A_PEER_CALLER = "a service client calling its peers";
-
-  /** The {@code qits} oidc client's token request: Basic client auth, the platform audience. */
-  static final GoldenInteraction TOKEN_MINT =
-      GoldenInteraction.of(Trigger.event("SoftwareRelease"), A_PEER_CALLER, "issueToken")
-          .header("Authorization", "{authorization}")
-          .consumes("access_token", "expires_in");
 
   /** The discovery read, whose {@code issuer} the pact binds by value: see {@link PactFileTest}. */
   static final GoldenInteraction DISCOVERY =
@@ -291,11 +211,7 @@ public final class Contracts {
               (url, recorded) -> {
                 JsonWebKeySet keys = new JsonWebKeySet(get(url + recorded.path()));
                 assertNotNull(keys.getKeyWithId(recorded.params().get("kid")), "the state's signing key");
-              }),
-          // quarkus-oidc-client's client-credentials grant, the bearer ConfigHostExtrasSource and
-          // ConfigHostDeclarationSeed present to qits-configuration. Its client exists only inside
-          // the application, so IdpTokenMintPactTest runs it.
-          new Check(TOKEN_MINT, IdpExtrasBearer.class, "token", List.of(), null));
+              }));
 
   // --- qits-githost ----------------------------------------------------------------------------
 
@@ -304,11 +220,9 @@ public final class Contracts {
   static final String DECLARING_DEPLOYMENTS = "a repository declaring its deployments";
   static final String DECLARING_NO_DEPLOYMENTS = "a repository declaring no deployments";
   static final String UNNAMED_DECLARING_DEPLOYMENTS = "an unnamed repository declaring its deployments";
-  static final String DECLARING_CONFIGURATION = "a repository declaring its configuration";
-  static final String DECLARING_NO_CONFIGURATION = "a repository declaring no configuration";
 
   /**
-   * One blob read. A release reads both files at the released tag; the recordings read them at
+   * One blob read. A release reads the spec at the released tag; the recordings read them at
    * {@code main}, and the rev is a provider-state value, so the pact sends whichever the state names.
    * No body is recorded for a blob (it is the file's raw bytes), so a 200 row reads the status and,
    * for the spec, the {@code Git-Commit-Sha} the deployment records.
@@ -378,40 +292,10 @@ public final class Contracts {
               "read",
               UNNAMED_SPEC_BY_ID,
               (url, recorded) ->
-                  declared(GitHostSources.at(url).read(byId(recorded.params()), recorded.params().get("rev")), recorded)),
-          // The declaration beside it: verbatim on 200, absent on 404, and no fallback either way.
-          Check.of(
-              GitHostSpecSource.class,
-              "readDeclaration",
-              blob(DECLARING_CONFIGURATION, "getBlob"),
-              (url, recorded) ->
-                  assertTrue(
-                      GitHostSources.at(url).readDeclaration(byName(recorded.params()), recorded.params().get("rev")).present())),
-          Check.of(
-              GitHostSpecSource.class,
-              "readDeclaration",
-              blob(DECLARING_CONFIGURATION, "getBlobById"),
-              (url, recorded) ->
-                  assertTrue(
-                      GitHostSources.at(url).readDeclaration(byId(recorded.params()), recorded.params().get("rev")).present())),
-          Check.of(
-              GitHostSpecSource.class,
-              "readDeclaration",
-              blob(DECLARING_NO_CONFIGURATION, "getBlob"),
-              (url, recorded) ->
-                  assertFalse(
-                      GitHostSources.at(url).readDeclaration(byName(recorded.params()), recorded.params().get("rev")).present(),
-                      "a name-addressed 404 is absent at once")),
-          Check.of(
-              GitHostSpecSource.class,
-              "readDeclaration",
-              blob(DECLARING_NO_CONFIGURATION, "getBlobById"),
-              (url, recorded) ->
-                  assertFalse(
-                      GitHostSources.at(url).readDeclaration(byId(recorded.params()), recorded.params().get("rev")).present())));
+                  declared(GitHostSources.at(url).read(byId(recorded.params()), recorded.params().get("rev")), recorded)));
 
   /** Every contract this repository holds. */
   public static List<Contract> all() {
-    return List.of(CONFIGURATION, IDP, GITHOST);
+    return List.of(IDP, GITHOST);
   }
 }

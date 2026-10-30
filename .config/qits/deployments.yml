@@ -133,7 +133,7 @@ navigation-entries: platform.Deployments:4, project.detail.Deployment Requests:5
 # idp:client PROVISIONS THIS COMPONENT'S OWN QITS-IDP CLIENT, derived id `<tier>-qits-deployments`
 # (dev-qits-deployments), injected as QITS_RESOURCE_IDP_URL / _CLIENT_ID / _CLIENT_SECRET. It
 # replaces the bootstrap pair — client `qits-deployments`,
-# QUARKUS_OIDC_CLIENT_CONFIGURATION_CLIENT_ID / _CREDENTIALS_SECRET — which stays in configuration
+# QUARKUS_OIDC_CLIENT_CONFIGURATION_CLIENT_ID / _CREDENTIALS_SECRET — which stays in the settings store
 # only as the rollback fallback, and the docker config.json in /work/config the same.
 #
 # SELF-PROVISIONING: the running deployer finds BootResourceRegistration's `qits-deployments` row,

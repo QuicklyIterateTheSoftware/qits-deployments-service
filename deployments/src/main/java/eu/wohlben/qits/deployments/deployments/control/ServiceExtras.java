@@ -160,15 +160,14 @@ public record ServiceExtras(
    * anything is applied is a deployment that changed nothing.
    *
    * <p><b>That Config is a per-argv snapshot, not the boot one</b> — {@link ExtrasSnapshot}, which
-   * argues why: the config volume's file enters the boot config once and then goes stale, so a
-   * deployment reading it would re-stamp whatever the process started with.
+   * argues why: the boot config carries a stale copy of the config volume's file, so a deployment
+   * reading it would re-stamp whatever the process started with.
    */
   public static ServiceExtras of(Config config, String application) {
     String prefix = DeploymentDriver.EXTRAS_PREFIX + application + ".";
-    // The retired spelling is read too, and the NEW one wins key by key. Neither qits-configuration
-    // nor the config volume's file moves when this repository does, so during the namespace
-    // migration every application's extras still arrive under the old prefix; reading only the new
-    // one would give every service on the estate an argv with no mounts, ports or environment.
+    // The retired spelling is read too, and the NEW one wins key by key. It is harmless now: the
+    // settings store renders the new prefix only and the boot layer under it hides both, so nothing
+    // arrives under the old one any more — deleting the read is a cleanup, not a fix.
     String legacyPrefix = DeploymentDriver.LEGACY_EXTRAS_PREFIX + application + ".";
     Map<Integer, Mount> mounts = new TreeMap<>();
     Map<Integer, Publish> publishes = new TreeMap<>();

@@ -48,15 +48,9 @@ import java.util.Map;
  *       shipped boot-time fetch is exercised rather than replaced.
  *   <li><b>{@code qits.deployments.container-runtime}</b> — {@link StorySwarm}, a recording
  *       executable. This is the seam that makes the orchestrator hop evidence instead of a claim.
- *   <li><b>{@code git-host-url} and {@code extras-url}</b> — {@link StoryPeers}. The extras url being
- *       SET is itself the posture under test: qits-configuration is then authoritative, meaning
- *       sole, and the config volume's file is not read at all.
- *   <li><b>the {@code qits} oidc client, pointed at the stub</b> — shipped on, so this only
- *       states the address it mints at and the secret it presents (the key is spelled anyway, so
- *       the story does not lean on which profile a packaged run resolves). It is what puts the
- *       deployer's own machine credential in the diagram, which is the fail-closed half of the
- *       handoff: the read presents an identity, and a service that refused it would refuse the
- *       deployment rather than deploy something stale.
+ *   <li><b>{@code git-host-url}</b> — {@link StoryPeers}, the one peer a deployment reads from.
+ *       An application's environment is the settings store, in this process's own database, so
+ *       there is no second peer to point anywhere.
  *   <li><b>{@code observe-interval-seconds=0}</b> — see below.
  *   <li><b>{@code otel} and {@code eventstream} dark</b> — a step container has no qits-observability
  *       and no qits-events, and an exporter retrying against an unresolvable host would bury the
@@ -87,13 +81,6 @@ public class StoryProfile extends PdPackagedSurfaceIT.PackagedUnderTarget {
   /** …and the bus client's store, which is opened and migrated even though the bus is dark. */
   private static final String EVENTSTREAM_PROPERTY = "qits.test.stories.eventstream-url";
 
-  /**
-   * The secret the {@code qits} client presents with its {@code client_credentials} grant.
-   * It is a fixture rather than a credential — {@link StoryPeers} mints for anybody — and it is here
-   * because the extension refuses to start a client that has no way to authenticate.
-   */
-  private static final String CLIENT_SECRET = "story-deployer-client-secret";
-
   @Override
   public Map<String, String> getConfigOverrides() {
     MockIdp idp = MockIdp.ensureStarted();
@@ -120,12 +107,8 @@ public class StoryProfile extends PdPackagedSurfaceIT.PackagedUnderTarget {
     // The orchestrator: a recording executable rather than a daemon this container cannot reach.
     overrides.put("qits.deployments.container-runtime", runtime);
 
-    // The two peers a deployment reads from, and the credential it presents to the second.
+    // The one peer a deployment reads from.
     overrides.put("qits.deployments.git-host-url", peers);
-    overrides.put("qits.deployments.extras-url", peers);
-    overrides.put("quarkus.oidc-client.qits.client-enabled", "true");
-    overrides.put("quarkus.oidc-client.qits.auth-server-url", peers + "/idp");
-    overrides.put("quarkus.oidc-client.qits.credentials.secret", CLIENT_SECRET);
 
     // The timer whose pass a recording cannot tell from a deployment's own. See the class javadoc.
     overrides.put("qits.deployments.observe-interval-seconds", "0");

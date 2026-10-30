@@ -12,7 +12,6 @@ import eu.wohlben.qits.eventstream.CausationHeader;
 import eu.wohlben.qits.eventstream.entity.OutboxEvent;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.DeployService;
-import eu.wohlben.qits.deployments.deployments.control.FakeDeclarationSeed;
 import eu.wohlben.qits.deployments.deployments.control.FakeDeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.FakeResourceProvisioner;
 import eu.wohlben.qits.deployments.deployments.control.FakeIdpClientProvisioner;
@@ -76,7 +75,6 @@ public class PdDeployPublishTest {
   @Inject FakeSpecSource specs;
   @Inject FakeResourceProvisioner provisioner;
   @Inject FakeIdpClientProvisioner idpProvisioner;
-  @Inject FakeDeclarationSeed seeds;
   @Inject DeployService deployService;
 
   /**
@@ -95,7 +93,6 @@ public class PdDeployPublishTest {
     specs.reset();
     provisioner.reset();
     idpProvisioner.reset();
-    seeds.reset();
     QuarkusTransaction.requiringNew()
         .run(() -> outbox.createQuery("delete from OutboxEvent").executeUpdate());
   }
@@ -354,37 +351,6 @@ public class PdDeployPublishTest {
     assertTrue(failed.payload.contains("\"status\":\"FAILED\""), failed.payload);
     assertTrue(failed.payload.contains("was still updating"), failed.payload);
     assertNull(only("DeploymentActive", 0), "a failed convergence leaves the predecessor serving");
-  }
-
-  @Test
-  public void aRefusedDeclarationAnnouncesItsOwnWordThroughTheSameFourEvents() {
-    // NO FIFTH EVENT, and that is the claim. A refused declaration is one more terminal outcome, so
-    // it rides the record's existing `status` STRING — which is exactly what a string on the wire
-    // was for, and is the same decision ROLLED_BACK and IMAGE_MISSING already took. To a consumer
-    // it means what they mean: it did not go live.
-    String environmentId = createEnvironment("pub-declaration");
-    specs.scriptDeclaration("repo-pub-declaration", "defaults:\n  FLAGS: on\n");
-    seeds.refuseBroken(
-        "repo-pub-declaration",
-        "qits-configuration refused the declaration of repo-pub-declaration"
-            + " (.config/qits/configuration.yml): 422 — line 3: mapping values are not allowed"
-            + " here. The file at the released tag is broken; fix it and cut a new release.");
-
-    postRelease("run-pub-declaration", "repo-pub-declaration", null);
-    awaitSettled(environmentId, 1);
-
-    OutboxEvent failed = only("DeploymentFailed");
-    assertTrue(failed.payload.contains("\"status\":\"DECLARATION_REFUSED\""), failed.payload);
-    assertTrue(failed.payload.contains("cut a new release"), failed.payload);
-    assertTrue(
-        failed.payload.contains("\"applicationName\":\"repo-pub-declaration\""), failed.payload);
-
-    // Queued is announced because a row really was written — the refusal comes after it, which is
-    // what makes it readable on the tier's listing. Nothing after that: the deployment never
-    // started, so there is no Started and certainly no Active.
-    assertNotNull(only("DeploymentQueued"));
-    assertNull(only("DeploymentStarted", 0), "the deployment was refused before it started");
-    assertNull(only("DeploymentActive", 0), "nothing was cut over");
   }
 
   // --- helpers ----------------------------------------------------------------------------------

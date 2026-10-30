@@ -23,7 +23,7 @@ package eu.wohlben.qits.deployments.deployments.entity;
  * {@code STARTING} belong to the worker's state machine, {@code IMAGE_MISSING} is a statement about
  * a registry rather than a container, {@code SPEC_UNREADABLE} is a statement about the git host,
  * {@code SUPERSEDED} is a statement about a row a later deployment overtook, {@code
- * DECLARATION_REFUSED} is a statement about a file and a store, and {@code DECOMMISSIONED} is a
+ * DECLARATION_REFUSED} is history (nothing writes it any more), and {@code DECOMMISSIONED} is a
  * decision another deployment made. A row that is not the latest for its place is history and is
  * never revisited.
  *
@@ -133,37 +133,16 @@ public enum PdDeploymentStatus {
    */
   SCALED_TO_ZERO,
   /**
-   * The release's {@code .config/qits/configuration.yml} was not seeded into qits-configuration, so
-   * the deployment was <b>not run at all</b>. Written by {@code DeployService} after the rows exist
-   * and before anything is scheduled, off {@code DeclarationRefused}.
+   * <b>HISTORY: nothing writes this any more</b> (qits-1393). It meant the release's {@code
+   * .config/qits/configuration.yml} was not seeded into qits-configuration, so the deployment was
+   * not run at all; that service and the seed are gone. The constant stays because rows written
+   * before the switch carry it in {@code pd_deployment.status} and the enum is read back by name —
+   * deleting it would make every such row unreadable.
    *
-   * <p><b>It is terminal like {@link #FAILED}, and the reason is that both of its flavours were
-   * ANSWERED.</b> Either the file was read by the store and refused — the released tag carries a
-   * broken declaration, and reading it again says the same thing — or the store outlasted the
-   * patience budget and the deployment had to be decided one way or the other. Neither is the
-   * {@link #SPEC_UNREADABLE} shape, where nothing was ever decided and the file is simply asked
-   * again: nothing re-asks this, and nothing should. A repository whose declaration is broken cuts a
-   * new release; a platform whose store was down redeploys when it is back.
-   *
-   * <p><b>The detail's first line is what distinguishes the two flavours</b>, because they ask
-   * different things of a person: one names the repository and the file to fix, the other names the
-   * url that would not answer. One word with two messages is deliberate — to everything downstream
-   * this means exactly one thing, "the version is not live and no container was asked for", and a
-   * second status would be a second thing for every reader of this enum to learn.
-   *
-   * <p><b>It is absent from every positive status list by construction</b>, which is this
-   * vocabulary's whole shape rather than a coincidence: {@code RequestLifecycle}'s in-flight set,
-   * the observer's candidate and recoverable sets, {@code RollbackPins.SERVED}, the startup sweep's
-   * two {@code listByStatus} queries and the retirement door's two refusal sets are all lists of the
-   * words they mean. So a row that says this is completed rather than pending, is pinned by nothing,
-   * is observed by nothing, and is retirable — each of which is the right answer for a deployment
-   * that never reached a container.
-   *
-   * <p>It funnels through {@code DeployService.finish} like every other non-{@code ACTIVE} outcome,
-   * so it announces {@code DeploymentFailed} carrying this word in the record's existing {@code
-   * status} STRING — which is exactly what a string on the wire was for. No fifth event, no
-   * vocabulary-jar change, no {@code EventWireReflection} entry. To a consumer it means what {@code
-   * IMAGE_MISSING} and {@code ROLLED_BACK} mean: it did not go live.
+   * <p>It is terminal like {@link #FAILED} and absent from every positive status list ({@code
+   * RequestLifecycle}'s in-flight set, the observer's candidate and recoverable sets, {@code
+   * RollbackPins.SERVED}, the startup sweep's queries, the retirement door's refusal sets), so an old
+   * row that says this is completed, pinned by nothing, observed by nothing and retirable.
    */
   DECLARATION_REFUSED,
   /** Was ACTIVE; replaced by a newer deployment that passed the health gate. */

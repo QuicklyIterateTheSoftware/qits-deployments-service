@@ -6,8 +6,6 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import eu.wohlben.qits.deployments.confighost.ConfigHostExtrasSource;
-import eu.wohlben.qits.deployments.confighost.ExtrasStub;
 import eu.wohlben.qits.deployments.deployments.control.DeclaredShape;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentExtrasSource;
@@ -15,6 +13,8 @@ import eu.wohlben.qits.deployments.deployments.control.ExtrasSnapshot;
 import eu.wohlben.qits.deployments.deployments.control.HealthGate;
 import eu.wohlben.qits.deployments.deployments.control.PdProcess;
 import eu.wohlben.qits.deployments.deployments.control.ServiceExtras;
+import eu.wohlben.qits.deployments.deployments.control.SettingsExtrasSource;
+import eu.wohlben.qits.deployments.deployments.entity.PdSetting;
 import eu.wohlben.qits.deployments.environments.error.BadRequestException;
 import io.smallrye.config.PropertiesConfigSource;
 import io.smallrye.config.SmallRyeConfigBuilder;
@@ -91,22 +91,14 @@ class SwarmDeploymentDriverTest {
   }
 
   private SwarmDeploymentDriver driver(Map<String, String> properties) {
-    // The shipped default, which no working directory of this suite has a file at: the extras come
-    // from the boot config alone, exactly as they did before the file was read per argv.
-    return driver(properties, "config/application.properties");
-  }
-
-  private SwarmDeploymentDriver driver(Map<String, String> properties, String extrasFile) {
-    Config boot =
+    // The extras as one snapshot states them, which is what every argv assertion below is about.
+    // The grammar is ServiceExtras' whatever the source; the settings store renders only env.<KEY>
+    // (SettingsExtrasSource), and the indexed families stay parsed and pinned here.
+    Config snapshot =
         new SmallRyeConfigBuilder()
             .withSources(new PropertiesConfigSource(properties, "test", 100))
             .build();
-    // The file half of the seam, which is what every argv assertion below is about: the boot config
-    // plus the config volume's file, one snapshot per call. The service half is
-    // ConfigHostExtrasSourceTest's, and the two argvs it reaches are two tests of their own.
-    return driver(
-        (application, environmentName, version, declarationSeeded) ->
-            ExtrasSnapshot.over(boot, extrasFile));
+    return driver((application, environmentName) -> snapshot);
   }
 
   private SwarmDeploymentDriver driver(DeploymentExtrasSource extras) {
@@ -186,9 +178,6 @@ class SwarmDeploymentDriverTest {
         "dep-id",
         "abc1234",
         VERSION,
-        // The ordinary release: its tag carried a declaration, so the store holds one for this
-        // version and the extras read is addressed by it. The undeclared arm is a test of its own.
-        true,
         "qits-pd-dev-qits-gateway-dep",
         "dev-qits-gateway",
         List.of("qits-env-dev-qits-gateway", "qits-net", "qits-env-dev"),
@@ -1057,7 +1046,6 @@ class SwarmDeploymentDriverTest {
         spec.deploymentId(),
         spec.commitSha(),
         spec.version(),
-        spec.declarationSeeded(),
         spec.deploymentName(),
         spec.wireAlias(),
         spec.networks(),
@@ -1335,194 +1323,133 @@ class SwarmDeploymentDriverTest {
   }
 
   @Test
-  void theExtrasAreAskedForThisDeploymentsOwnPlaceAndRelease() {
-    // The read is addressed by (application, environment, version) now, and all three have to be
-    // THIS spec's. It is worth a test of its own rather than being implied by the argv, because the
+  void theExtrasAreAskedForThisDeploymentsOwnPlace() {
+    // The read is addressed by (application, environment), and both have to be THIS spec's. The
     // argv looks identical whichever place the answer came from: a builder that passed the wrong
-    // tier would produce a perfectly well-formed service carrying another environment's config, on
-    // both planes, silently. Once per argv, still — the tuple is recorded per call.
+    // tier would produce a perfectly well-formed service carrying another environment's settings.
+    // Once per argv — the pair is recorded per call.
     List<List<String>> asked = new ArrayList<>();
     SwarmDeploymentDriver driver =
         driver(
-            (application, environmentName, version, declarationSeeded) -> {
-              asked.add(
-                  List.of(application, environmentName, version, String.valueOf(declarationSeeded)));
+            (application, environmentName) -> {
+              asked.add(List.of(application, environmentName));
               return new SmallRyeConfigBuilder().build();
             });
 
     driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
+    driver.buildUpdateArgv(spec(), "dev-qits-gateway");
 
-    assertEquals(List.of(List.of("qits-gateway", "dev", VERSION, "true")), asked);
+    assertEquals(List.of(List.of("qits-gateway", "dev"), List.of("qits-gateway", "dev")), asked);
   }
 
   @Test
-  void whetherTheReleaseDeclaredAnythingReachesTheExtrasReadOnBothArgvs() {
-    // The fourth value on the read, and the one the argv cannot show either: a release that seeded
-    // no declaration has to be read version-less, because the store answers 404 for a version it
-    // holds none for. Passed unconditionally, every deployment of every repository without a
-    // .config/qits/configuration.yml refused its extras read and left the old container serving —
-    // so the flag is carried from where it is known (DeployService, at seed time) all the way down
-    // here, and BOTH builders have to hand it on or the create and the update disagree about one
-    // deployment.
-    List<Boolean> asked = new ArrayList<>();
-    SwarmDeploymentDriver driver =
-        driver(
-            (application, environmentName, version, declarationSeeded) -> {
-              asked.add(declarationSeeded);
-              return new SmallRyeConfigBuilder().build();
-            });
-    DeploymentDriver.ServiceSpec undeclared = undeclared(spec());
-
-    driver.buildCreateArgv(undeclared, "dev-qits-gateway", List.of("qits-net"));
-    driver.buildUpdateArgv(undeclared, "dev-qits-gateway");
-
-    assertEquals(List.of(false, false), asked);
-  }
-
-  /** The same spec, from a release whose tag carried no declaration. */
-  private static DeploymentDriver.ServiceSpec undeclared(DeploymentDriver.ServiceSpec spec) {
-    return new DeploymentDriver.ServiceSpec(
-        spec.environmentId(),
-        spec.environmentName(),
-        spec.applicationId(),
-        spec.applicationName(),
-        spec.deploymentId(),
-        spec.commitSha(),
-        spec.version(),
-        false,
-        spec.deploymentName(),
-        spec.wireAlias(),
-        spec.networks(),
-        spec.imageRef(),
-        spec.healthPath(),
-        spec.healthCmd(),
-        spec.availableOnEnv(),
-        spec.updateOrder(),
-        spec.publishMode(),
-        spec.resources(),
-        spec.volumes(),
-        spec.stopGracePeriod());
-  }
-
-  @Test
-  void anExtrasFileEditedAfterBootReachesTheNextArgv() throws IOException {
-    // The 2026-08-16 failure, on both argv builders: the boot config had read the config volume's
-    // file once, so a deployment re-stamped last boot's value over a fix applied to the live
-    // service. Both builders read the file, and the file outranks the boot config.
-    Path file = Files.createTempFile("qits-extras", ".properties");
-    file.toFile().deleteOnExit();
-    Files.writeString(
-        file,
-        DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.env.QITS_EVENTS_URL=http://dev-qits-events:9090\n");
-    SwarmDeploymentDriver driver =
-        driver(
-            Map.of(
-                DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.env.QITS_EVENTS_URL",
-                "http://dev-qits-events:8080"),
-            file.toString());
+  void aSettingChangedAfterBootReachesTheNextArgv() {
+    // The 2026-08-16 failure, on both argv builders: a deployment re-stamped last boot's value over
+    // a fix. The source is read per argv, so a value changed between two deployments is the value
+    // the second one carries.
+    PdSetting url = setting("QITS_EVENTS_URL", "http://dev-qits-events:9090", false);
+    List<PdSetting> rows = new ArrayList<>(List.of(url));
+    SwarmDeploymentDriver driver = settingsDriver(rows);
 
     assertTrue(
         driver
             .buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"))
-            .containsAll(List.of("--env", "QITS_EVENTS_URL=http://dev-qits-events:9090")),
-        "the file the operator edited, not the config this process booted with");
+            .containsAll(List.of("--env", "QITS_EVENTS_URL=http://dev-qits-events:9090")));
 
-    // Edited again while this process runs, which is the whole point of reading it per argv.
-    Files.writeString(
-        file,
-        DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.env.QITS_EVENTS_URL=http://dev-qits-events:9191\n");
+    url.value = "http://dev-qits-events:9191";
 
     assertTrue(
         driver
             .buildUpdateArgv(spec(), "dev-qits-gateway")
             .containsAll(List.of("--env-add", "QITS_EVENTS_URL=http://dev-qits-events:9191")),
-        "an update states the environment in full, so an edit reaches a live service");
+        "an update states the environment in full, so a changed setting reaches a live service");
   }
 
   @Test
-  void anExtrasFileThatCannotBeReadIsARefusedDeploymentRatherThanTheBootValues() throws IOException {
-    // A fall-back would ship the stale values invisibly: a green deployment carrying whatever the
-    // process booted with. A directory is the portable unreadable file — a chmod 000 one is still
-    // readable to root.
-    Path directory = Files.createTempDirectory("qits-extras");
-    directory.toFile().deleteOnExit();
-    SwarmDeploymentDriver driver = driver(Map.of(), directory.toString());
+  void aDeletedSettingIsRemovedFromTheLiveServiceByTheNextUpdate() {
+    // The settings store is SOLE: a row deleted from pd_setting is absent from the next argv, and
+    // the update's diff --env-rm's it from the live service — with no boot-config copy of the
+    // extras key able to bring it back (ExtrasSnapshot's filter).
+    List<PdSetting> rows =
+        new ArrayList<>(
+            List.of(
+                setting("QITS_EVENTS_URL", "http://dev-qits-events:8080", false),
+                setting("QITS_RETIRED_TOKEN", "s3cret", true)));
+    SwarmDeploymentDriver driver =
+        settingsDriver(
+            rows,
+            Map.of(
+                DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.env.QITS_RETIRED_TOKEN",
+                "stale-from-last-boot"));
+    cli.script(
+        SwarmDeploymentDriver.SPEC_ENV_FORMAT,
+        result(0, "QITS_EVENTS_URL=http://dev-qits-events:8080\nQITS_RETIRED_TOKEN=s3cret\n"));
+
+    List<String> before = driver.buildUpdateArgv(spec(), "dev-qits-gateway");
+    assertTrue(
+        before.containsAll(List.of("--env-add", "QITS_RETIRED_TOKEN=s3cret")),
+        "a secret setting renders verbatim: " + before);
+    assertFalse(before.contains("--env-rm"), before.toString());
+
+    rows.removeIf(row -> row.settingKey.equals("QITS_RETIRED_TOKEN"));
+    List<String> after = driver.buildUpdateArgv(spec(), "dev-qits-gateway");
+
+    assertTrue(after.containsAll(List.of("--env-rm", "QITS_RETIRED_TOKEN")), after.toString());
+    assertTrue(
+        after.stream().noneMatch(argument -> argument.startsWith("QITS_RETIRED_TOKEN=")),
+        "neither the deleted row nor the boot layer's stale copy is stated: " + after);
+    assertTrue(
+        after.containsAll(List.of("--env-add", "QITS_EVENTS_URL=http://dev-qits-events:8080")),
+        after.toString());
+  }
+
+  @Test
+  void anExtrasSourceThatCannotAnswerIsARefusedDeploymentRatherThanTheBootValues() {
+    // A fall-back would ship stale values invisibly: a green deployment carrying whatever the
+    // process booted with. The refusal names what could not be read, and nothing is created.
+    SwarmDeploymentDriver driver =
+        driver(
+            (application, environmentName) -> {
+              throw new ServiceExtras.Refused(
+                  "the settings of " + application + " in " + environmentName + " could not be read");
+            });
 
     cli.script("--format {{.ID}}", result(1, "no such service"));
     DeploymentDriver.ApplyResult applied = driver.apply(spec());
 
     assertEquals(DeploymentDriver.ApplyOutcome.REFUSED, applied.outcome());
-    assertTrue(applied.detail().contains(directory.toString()), applied.detail());
+    assertTrue(applied.detail().contains("the settings of qits-gateway in dev"), applied.detail());
     assertTrue(cli.matching("service create").isEmpty(), "nothing was created");
   }
 
-  @Test
-  void whatQitsConfigurationServesReachesBothArgvs() {
-    // The whole of WP2 from the argv's side: with an extras-url set, the service is where a
-    // deployment's mounts, ports and environment come from — on the create AND on the update, since
-    // an update states the environment in full and a live service is what an operator is fixing.
-    try (ExtrasStub configuration = new ExtrasStub()) {
-      configuration.resolves(
-          11,
-          DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.env.QITS_EVENTS_URL",
-          "http://dev-qits-events:8080",
-          DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.mounts[0]",
-          "volume:qits-gateway-data:/data");
-      ConfigHostExtrasSource extras =
-          configuration.source(
-              new SmallRyeConfigBuilder()
-                  .withSources(new PropertiesConfigSource(Map.of(), "test", 100))
-                  .build(),
-              "config/application.properties",
-              Optional::empty);
-      SwarmDeploymentDriver driver = driver(extras);
-
-      assertTrue(
-          driver
-              .buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"))
-              .containsAll(
-                  List.of(
-                      "--env",
-                      "QITS_EVENTS_URL=http://dev-qits-events:8080",
-                      "--mount",
-                      "type=volume,source=qits-gateway-data,target=/data")),
-          "a create carries the whole of what the service states");
-      assertTrue(
-          driver
-              .buildUpdateArgv(spec(), "dev-qits-gateway")
-              .containsAll(List.of("--env-add", "QITS_EVENTS_URL=http://dev-qits-events:8080")),
-          "and an update carries the environment half of it");
-    }
+  /** One settings row of {@code qits-gateway} in {@code dev}, as the store holds it. */
+  private static PdSetting setting(String key, String value, boolean secret) {
+    PdSetting row = new PdSetting();
+    row.applicationName = "qits-gateway";
+    row.environmentName = "dev";
+    row.settingKey = key;
+    row.value = value;
+    row.secret = secret;
+    return row;
   }
 
-  @Test
-  void anUnreachableConfigurationServiceRefusesRatherThanDeployingTheFileValues() {
-    // The refusal has to arrive as a REFUSED deployment naming the url, and it has to arrive with
-    // nothing created: a fall-back to the config volume's file would ship the stale value this
-    // service exists to replace, invisibly, as a green deployment.
-    String unreachable = "http://127.0.0.1:1";
-    ConfigHostExtrasSource extras =
-        ExtrasStub.source(
-            new SmallRyeConfigBuilder()
-                .withSources(
-                    new PropertiesConfigSource(
-                        Map.of(
-                            DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.env.QITS_EVENTS_URL",
-                            "http://stale:8080"),
-                        "test",
-                        100))
-                .build(),
-            "config/application.properties",
-            Optional::empty,
-            unreachable);
-    SwarmDeploymentDriver driver = driver(extras);
+  private SwarmDeploymentDriver settingsDriver(List<PdSetting> rows) {
+    return settingsDriver(rows, Map.of());
+  }
 
-    cli.script("--format {{.ID}}", result(1, "no such service"));
-    DeploymentDriver.ApplyResult applied = driver.apply(spec());
-
-    assertEquals(DeploymentDriver.ApplyOutcome.REFUSED, applied.outcome());
-    assertTrue(applied.detail().contains(unreachable), applied.detail());
-    assertTrue(cli.matching("service create").isEmpty(), "nothing was created");
+  /**
+   * A driver whose extras are {@code rows} exactly as {@code SettingsExtrasSource} renders them,
+   * over a boot config of {@code boot} — read per argv, so a test changes the rows between two.
+   */
+  private SwarmDeploymentDriver settingsDriver(List<PdSetting> rows, Map<String, String> boot) {
+    Config bootConfig =
+        new SmallRyeConfigBuilder()
+            .withSources(new PropertiesConfigSource(boot, "boot", 260))
+            .build();
+    return driver(
+        (application, environmentName) ->
+            ExtrasSnapshot.over(
+                bootConfig, SettingsExtrasSource.render(application, rows), "pd_setting"));
   }
 
   @Test
@@ -1624,11 +1551,11 @@ class SwarmDeploymentDriverTest {
 
   @Test
   void withoutExtrasTheStagedEnvironmentIsTheDeployersOwnAndTheSeamIsNotAsked() {
-    // The preview's default "next": the deployment after the switch to settings. The extras seam
-    // must not be read at all — that read is the confighost call the switch retires.
+    // The preview's "next": it overlays the settings rows itself, with their secret flags, so the
+    // extras seam must not be read at all.
     SwarmDeploymentDriver driver =
         driver(
-            (application, environmentName, version, declarationSeeded) -> {
+            (application, environmentName) -> {
               throw new AssertionError("the extras seam was asked for " + application);
             });
 
@@ -1684,40 +1611,37 @@ class SwarmDeploymentDriverTest {
   }
 
   @Test
-  void theDeployersOwnSelfUpdateKeepsTheKeysThatPointItAtQitsConfiguration() {
-    // THE SCARIEST REGRESSION THIS DIFF COULD MAKE. The deployer's own extras carry the flip — the
-    // extras url and the named oidc client that reads it — so a self-update that env-rm'd them
-    // would come back reading the file it was demoted from, silently, with a green deployment.
-    // They survive because they ARE extras: the diff removes what config no longer states, and
-    // config states these.
+  void theDeployersOwnSelfUpdateKeepsTheBootstrapPairItsSettingsState() {
+    // The deployer's own settings carry the bootstrap-rollback fallback BootResourceRegistration
+    // reads by raw env name — QUARKUS_OIDC_CLIENT_CONFIGURATION_* — so a self-update that env-rm'd
+    // them would leave a rollback with no idp pair. They survive because they ARE extras: the diff
+    // removes what the settings no longer state, and the settings state these.
     SwarmDeploymentDriver driver =
         driver(
             Map.of(
                 DeploymentDriver.EXTRAS_PREFIX
-                    + "qits-gateway.env.QITS_PLATFORM_DEPLOYMENTS_EXTRAS_URL",
-                "http://dev-qits-configuration:8080",
+                    + "qits-gateway.env.QUARKUS_OIDC_CLIENT_CONFIGURATION_CLIENT_ID",
+                "qits-deployments",
                 DeploymentDriver.EXTRAS_PREFIX
-                    + "qits-gateway.env.QUARKUS_OIDC_CLIENT_CONFIGURATION_CLIENT_ENABLED",
-                "true"));
+                    + "qits-gateway.env.QUARKUS_OIDC_CLIENT_CONFIGURATION_CREDENTIALS_SECRET",
+                "bootstrap-secret"));
     cli.script(
         SwarmDeploymentDriver.SPEC_ENV_FORMAT,
         result(
             0,
-            "QITS_PLATFORM_DEPLOYMENTS_EXTRAS_URL=http://dev-qits-configuration:8080\n"
-                + "QUARKUS_OIDC_CLIENT_CONFIGURATION_CLIENT_ENABLED=true\n"
-                + "QITS_SOMETHING_NOBODY_STATES=stale\n"));
+            "QUARKUS_OIDC_CLIENT_CONFIGURATION_CLIENT_ID=qits-deployments\n"
+                + "QUARKUS_OIDC_CLIENT_CONFIGURATION_CREDENTIALS_SECRET=bootstrap-secret\n"
+                + "QITS_PLATFORM_DEPLOYMENTS_EXTRAS_URL=http://dev-qits-configuration:8080\n"));
 
     List<String> argv = driver.buildUpdateArgv(spec(), "dev-qits-gateway");
 
     assertFalse(
-        argv.contains("QITS_PLATFORM_DEPLOYMENTS_EXTRAS_URL"),
-        "the deployer must never env-rm its own extras-url mid-self-deploy: " + argv);
-    assertFalse(
-        argv.contains("QUARKUS_OIDC_CLIENT_CONFIGURATION_CLIENT_ENABLED"),
-        "nor the credential that read presents: " + argv);
+        argv.contains("QUARKUS_OIDC_CLIENT_CONFIGURATION_CLIENT_ID"),
+        "the deployer must never env-rm a pair its settings still state: " + argv);
+    assertFalse(argv.contains("QUARKUS_OIDC_CLIENT_CONFIGURATION_CREDENTIALS_SECRET"), argv.toString());
     assertTrue(
-        argv.containsAll(List.of("--env-rm", "QITS_SOMETHING_NOBODY_STATES")),
-        "and the diff still works around them: " + argv);
+        argv.containsAll(List.of("--env-rm", "QITS_PLATFORM_DEPLOYMENTS_EXTRAS_URL")),
+        "and a retired key nothing states any more is removed: " + argv);
   }
 
   @Test
@@ -1824,7 +1748,6 @@ class SwarmDeploymentDriverTest {
             "dep-id",
             "abc1234",
             VERSION,
-            true,
             "qits-pd-dev-qits-gateway-dep",
             "dev-qits-gateway",
             List.of("qits-net"),
@@ -2648,7 +2571,6 @@ class SwarmDeploymentDriverTest {
         spec.deploymentId(),
         spec.commitSha(),
         spec.version(),
-        spec.declarationSeeded(),
         spec.deploymentName(),
         spec.wireAlias(),
         spec.networks(),
@@ -2988,7 +2910,6 @@ class SwarmDeploymentDriverTest {
         spec.deploymentId(),
         spec.commitSha(),
         spec.version(),
-        spec.declarationSeeded(),
         spec.deploymentName(),
         spec.wireAlias(),
         spec.networks(),

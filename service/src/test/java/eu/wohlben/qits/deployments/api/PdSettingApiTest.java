@@ -272,7 +272,7 @@ class PdSettingApiTest {
   }
 
   @Test
-  void theDefaultPreviewIsTheDeploymentAfterTheSwitchWithNoExtras() {
+  void theDefaultPreviewIsTheDeployersOwnVariablesWithTheSettingsOverlaid() {
     String env = "set-preview";
     String app = scriptPreviewPlace(env, "set-preview-app");
 
@@ -287,7 +287,7 @@ class PdSettingApiTest {
             .body("extrasIncluded", equalTo(false))
             .body("unchanged", equalTo(1))
             .body("added.key", equalTo(List.of("NEW_SETTING")))
-            // The extras key is what the switch would drop — the very thing this door exists to show.
+            // A live key neither the deployer nor a setting states is what the update would --env-rm.
             .body("removed.key", equalTo(List.of("FROM_EXTRAS", "HAND_ADDED")))
             .body("removed[1].value", equalTo("by-an-operator"))
             .body("changed.key", equalTo(List.of("OVERRIDDEN", "QITS_RESOURCE_DB_PASSWORD", "SIGNING_KEY")))
@@ -312,22 +312,27 @@ class PdSettingApiTest {
   }
 
   @Test
-  void extrasIncludeIsTodaysDeploymentWithTheSettingsOverlaid() {
+  void extrasIncludeAnswersExactlyWhatTheDefaultDoes() {
+    // qits-configuration, which `include` used to add, is gone: the settings rows are the whole of
+    // what a deployment states, so both spellings are the same preview and neither reads extras.
     String env = "set-preview-extras";
     String app = scriptPreviewPlace(env, "set-extras-app");
 
-    given()
-        .when()
-        .get(SETTINGS + "/preview/" + app + "/" + env + "?extras=include")
-        .then()
-        .statusCode(200)
-        .body("extrasIncluded", equalTo(true))
-        .body("unchanged", equalTo(2))
-        .body("added.key", equalTo(List.of("NEW_SETTING")))
-        .body("removed.key", equalTo(List.of("HAND_ADDED")))
-        .body("changed.key", equalTo(List.of("OVERRIDDEN", "QITS_RESOURCE_DB_PASSWORD", "SIGNING_KEY")))
-        .body("changed[0].to", equalTo("setting-value"))
-        .body("kept.key", equalTo(List.of("QITS_RESOURCE_DB_URL")));
+    for (String extras : List.of("include", "exclude")) {
+      given()
+          .when()
+          .get(SETTINGS + "/preview/" + app + "/" + env + "?extras=" + extras)
+          .then()
+          .statusCode(200)
+          .body("extrasIncluded", equalTo(false))
+          .body("unchanged", equalTo(1))
+          .body("added.key", equalTo(List.of("NEW_SETTING")))
+          .body("removed.key", equalTo(List.of("FROM_EXTRAS", "HAND_ADDED")))
+          .body("changed.key", equalTo(List.of("OVERRIDDEN", "QITS_RESOURCE_DB_PASSWORD", "SIGNING_KEY")))
+          .body("kept.key", equalTo(List.of("QITS_RESOURCE_DB_URL")));
+    }
+    assertFalse(
+        driver.calls().contains("stagedEnvironment:" + app + ":true"), driver.calls().toString());
     given()
         .when()
         .get(SETTINGS + "/preview/" + app + "/" + env + "?extras=sometimes")

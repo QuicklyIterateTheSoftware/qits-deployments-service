@@ -116,7 +116,7 @@
             <artifactId>qits-db-core</artifactId>
         </dependency>
         <dependency>
-            <!-- The four internal raw clients (confighost, githost, idphost) wrap their outbound
+            <!-- The internal raw clients (githost, idphost) wrap their outbound
                  HttpClient through QitsHttpClients, and this is the app module whose jandex index
                  CallerServerFilter / CallerClientFilter need to be discovered from. -->
             <groupId>${project.groupId}</groupId>
@@ -130,21 +130,6 @@
                  a request with no Authorization header still falls through to forward-auth. -->
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-oidc</artifactId>
-        </dependency>
-        <dependency>
-            <!-- The other direction: a bearer this service PRESENTS, to qits-configuration.
-
-                 It was deleted with the qits-serviceregistry merge — "there is no guarded peer to
-                 present a token to, so there is no client extension, no shipped-off switch and no
-                 secret a deployment has to supply. If this service ever calls a guarded peer
-                 again, all three arrive in that commit." qits-configuration is that peer, and this
-                 is that commit; the switch and the secret are in application.properties.
-
-                 The client is `qits`, on wherever the deployer runs and off under %dev and %test
-                 (quarkus.oidc-client.qits.client-enabled), so a clone-alone build needs no idp and
-                 reaches no network. -->
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-oidc-client</artifactId>
         </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
@@ -213,9 +198,9 @@
             <!-- The recording service mocks. The story profile points quarkus.oidc at idp.MockIdp —
                  a MockService plus key material: it serves the JWKS for a generated keypair, mints
                  tokens, and records what it answered, which is what makes the startup fetch
-                 assertable from the IDP's end rather than only from this service's. The two peers a
-                 DEPLOYMENT reads (the git host and qits-configuration) are stories/support/StoryPeers
-                 instead, because one of them answers YAML and MockService's stubs are JSON. -->
+                 assertable from the IDP's end rather than only from this service's. The one peer a
+                 DEPLOYMENT reads (the git host) is stories/support/StoryPeers instead, because it
+                 answers YAML and MockService's stubs are JSON. -->
             <groupId>${project.groupId}</groupId>
             <artifactId>qits-service-mock</artifactId>
             <scope>test</scope>
@@ -251,15 +236,10 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <!-- qits-idp's, qits-configuration's and qits-githost's golden masters: the answers the
+            <!-- qits-idp's and qits-githost's golden masters: the answers the
                  pacts bind. -->
             <groupId>${project.groupId}</groupId>
             <artifactId>qits-idp-golden-masters</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>${project.groupId}</groupId>
-            <artifactId>qits-configuration-golden-masters</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

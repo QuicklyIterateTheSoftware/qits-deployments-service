@@ -241,7 +241,7 @@ import java.util.regex.Pattern;
  * <p><b>{@code binds}, {@code publishes} and {@code aliases} are the shape that used to live only in
  * deployment config</b> ({@code qits.deployments.extras.<app>.mounts[i] bind:…}, {@code
  * publishes[i]}, {@code aliases[i]} — see {@link ServiceExtras}), authored in another repository
- * and identical everywhere. They moved here because qits-configuration is being retired as a
+ * and identical everywhere. They moved here because qits-configuration was retired as a
  * source of deployment shape (qits-765): what an application needs from the host — the docker
  * socket, a published port, a vhost name docker's DNS cannot synthesize — is reviewed in the
  * application's own commit and read at its released tag, like everything else in this file. The

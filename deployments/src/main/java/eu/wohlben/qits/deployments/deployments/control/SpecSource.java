@@ -21,17 +21,6 @@ public interface SpecSource {
   String SPEC_PATH = ".config/qits/deployments.yml";
 
   /**
-   * The second file a repository may carry: what its application DECLARES about its own
-   * configuration — the defaults, the keys it needs, and what a platform may override.
-   *
-   * <p>It sits beside {@link #SPEC_PATH} and is read the same way at the same rev, and that is the
-   * whole of what the two have in common. {@code deployments.yml} is read BY this component and
-   * decides where a container runs; this one is read THROUGH it and belongs to qits-configuration,
-   * which is the only thing on the platform that knows the grammar. See {@link #readDeclaration}.
-   */
-  String DECLARATION_PATH = ".config/qits/configuration.yml";
-
-  /**
    * The rev a released version is read at — <b>fully qualified, and that is the point</b>.
    *
    * <p>The git host resolves a bare {@code 2026.903.113443} perfectly well, but a bare name is
@@ -65,66 +54,6 @@ public interface SpecSource {
    *     deployment fails on it rather than guessing a topology
    */
   SpecRead read(RepositoryRef repository, String rev);
-
-  /**
-   * Read the configuration DECLARATION a repository carries at {@code rev} — {@link
-   * #DECLARATION_PATH}, raw.
-   *
-   * <p><b>The body is never parsed here, and that is the point of the seam rather than an
-   * omission.</b> qits-configuration owns the declaration grammar: it stores the file, validates it,
-   * layers the platform's overrides over it and answers the resolved document this component reads
-   * back one layer down. A parser here would be a second opinion about somebody else's document, and
-   * the two would disagree on the day the grammar grows a key — which is the day a deployment would
-   * refuse a file the store accepts perfectly well. So this hands the bytes on untouched and lets
-   * the store be the one thing that has read them.
-   *
-   * <p><b>It is a second method on this seam rather than a seam of its own</b> because it is the
-   * same read: the same git host, the same address pair, the same rev, the same 404-is-an-answer
-   * classification, and the same retryable-versus-permanent verdict that decides whether a release
-   * is held or failed. A second interface would be a second implementation of all of it.
-   *
-   * <p><b>{@code rev} is the released tag</b>, exactly as {@link #read}'s is, and for the identical
-   * reason: the declaration a deployment seeds has to be the declaration the version was cut from.
-   *
-   * @return the file's bytes, or {@link DeclarationRead#absent()} when the repository carries no
-   *     such file at that rev — a clean answer meaning "not yet migrated", the {@link
-   *     SpecRead#undeclared()} shape one file over
-   * @throws SpecException when the file exists but could not be fetched — classified exactly as
-   *     {@link #read}'s failures are, so a declaration the git host would not serve holds the
-   *     release rather than failing it
-   */
-  DeclarationRead readDeclaration(RepositoryRef repository, String rev);
-
-  /**
-   * A repository's configuration declaration as it was served: bytes, and whether there were any.
-   *
-   * <p><b>{@code yaml} is the file verbatim and is never parsed on this side</b> — see {@link
-   * #readDeclaration}. It travels to qits-configuration as the raw body of one POST, so anything
-   * done to it here would be a difference between what a repository wrote and what the platform
-   * stores.
-   *
-   * <p><b>{@code present} false is "not yet migrated", and it is a clean answer.</b> Every
-   * repository on this platform predates the file, so the ordinary case for a long while is a
-   * release that carries none: it seeds nothing, deploys exactly as it did, and says nothing about
-   * whether its application has configuration — only that it does not declare it here yet. It is
-   * deliberately not a refusal and deliberately not an empty declaration, which would be a
-   * repository stating that it needs nothing.
-   */
-  record DeclarationRead(String yaml, boolean present) {
-
-    /** The ordinary answer: the repository carries the file, and these are its bytes. */
-    public DeclarationRead(String yaml) {
-      this(yaml, true);
-    }
-
-    /**
-     * The 404 arm: no file at that rev, so no bytes and nothing to seed. A factory rather than a
-     * literal so the two values are stated once, where the reasoning is.
-     */
-    public static DeclarationRead absent() {
-      return new DeclarationRead(null, false);
-    }
-  }
 
   /**
    * A spec, and the commit the rev it was read at resolved to.

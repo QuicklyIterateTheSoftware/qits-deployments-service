@@ -471,9 +471,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
 
   /**
    * Where the extras are read from, ONCE PER ARGV — see {@link DeploymentExtrasSource} and, for the
-   * staleness a boot snapshot costs, {@link ExtrasSnapshot}. It is a seam because the answer may be
-   * qits-configuration's rather than the config volume's, and an HTTP call does not belong in a
-   * driver.
+   * staleness a boot snapshot costs, {@link ExtrasSnapshot}. The settings store answers it in
+   * production ({@code SettingsExtrasSource}); the suite states a snapshot in a lambda.
    */
   @Inject DeploymentExtrasSource extrasSource;
 
@@ -2082,17 +2081,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
 
   /**
    * The deployment config's view of this deployment — ONE snapshot of {@code
-   * qits.deployments.extras.<application>.*}, read through the seam at the deployment's place and
-   * release. Every argv reads it through here, so the three readings (create, update, the alias
+   * qits.deployments.extras.<application>.*}, read through the seam at the deployment's place. Every
+   * argv reads it through here, so the three readings (create, update, the alias
    * check) and the settings preview ask exactly the same question.
    */
   private ServiceExtras extrasOf(ServiceSpec spec) {
     return ServiceExtras.of(
-        extrasSource.forDeployment(
-            spec.applicationName(),
-            spec.environmentName(),
-            spec.version(),
-            spec.declarationSeeded()),
+        extrasSource.forDeployment(spec.applicationName(), spec.environmentName()),
         spec.applicationName());
   }
 
@@ -2409,7 +2404,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * removed the service — measured on 2026-08-17, on the deployment that proved the flip. The diff
    * closes it, and the consequence is the point of the campaign rather than a side effect: a hand
    * {@code service update --env-add} no longer survives the next deployment, because the source of
-   * an application's environment is qits-configuration and nothing else.
+   * an application's environment is the settings store and nothing else.
    *
    * <p><b>What is never removed is a family rather than a list of exceptions</b>, and it has three
    * members:

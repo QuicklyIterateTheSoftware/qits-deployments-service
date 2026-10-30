@@ -5,8 +5,9 @@ import java.util.List;
 /**
  * What the next deployment of one application would change in its live environment.
  *
- * <p>{@code extrasIncluded}: whether the "next" side carries qits-configuration's extras {@code env}
- * (today's deployment) or not (the default: the deployment after the switch to settings). {@code
+ * <p>{@code extrasIncluded}: always false. It said whether the "next" side carried
+ * qits-configuration's extras {@code env}; that service is gone and the settings rows are the whole
+ * of what a deployment states, so the field is kept for compatibility and means nothing. {@code
  * added}: keys the next deployment states and the live service lacks. {@code removed}: keys the
  * live service carries that the next deployment neither states nor keeps — what an update would
  * {@code --env-rm}. {@code changed}: keys on both sides with different values. {@code kept}: keys

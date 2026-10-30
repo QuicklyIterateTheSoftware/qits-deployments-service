@@ -15,8 +15,8 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * A qits-idp service-client API that answers whatever a test scripts, on a real socket — {@code
- * confighost/ExtrasStub}'s arrangement, for the same reason: what is under test here IS the
+ * A qits-idp service-client API that answers whatever a test scripts, on a real socket, because
+ * what is under test here IS the
  * request, the url it is built at, the Basic header it carries and the patience it spends, and a
  * fake at the seam would assert this suite's own model of a client rather than the adapter's.
  *
@@ -114,7 +114,7 @@ public final class IdpStub implements AutoCloseable {
   /**
    * An adapter pointed at this stub, with the retry pause zeroed so a refusal costs a test no
    * seconds. Here rather than in the adapter's own test because its fields are package-private and
-   * this is the package they are visible in — {@code ExtrasStub.source(...)}'s arrangement.
+   * this is the package they are visible in.
    */
   public HttpIdpClientProvisioner adapter(String ownClientId, String ownClientSecret) {
     return adapterAt(url(), ownClientId, ownClientSecret);

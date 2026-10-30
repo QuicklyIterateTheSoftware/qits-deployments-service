@@ -189,12 +189,6 @@ public class DeployService implements ReleaseAnnouncements {
   @Inject DeploymentDriver driver;
   @Inject SpecSource specs;
 
-  /**
-   * Where a released version's configuration declaration is handed to qits-configuration, between
-   * the rows being written and the containers being asked for — see {@link #deployReadSpec}.
-   */
-  @Inject DeclarationSeed declarationSeed;
-
   @Inject ServiceCatalog catalog;
   @Inject EnvironmentService environments;
   @Inject ResourceProvisioning resourceProvisioning;
@@ -799,12 +793,9 @@ public class DeployService implements ReleaseAnnouncements {
    * describe would be worse than leaving them — and the recovery is the application's next
    * deployment, which will carry the columns and never come back here.
    *
-   * <p><b>It reads the spec and nothing else: no declaration is fetched here and none is seeded.</b>
-   * An adopted row's declaration was seeded before its own deployment was queued, by the instance
-   * that ran it — the seed is a pre-scheduling step, and this is the sweep settling a row whose
-   * scheduling already happened. Seeding from here would also be the one thing the sweep is written
-   * not to do: it runs at BOOT, seconds after a cutover, and its whole design is to reach no peer it
-   * does not have to. This one read is already the exception, and it is bounded for that reason.
+   * <p><b>It reads the spec and nothing else.</b> The sweep runs at BOOT, seconds after a cutover,
+   * and its whole design is to reach no peer it does not have to. This one read is already the
+   * exception, and it is bounded for that reason.
    */
   private Snapshot legacySnapshot(InFlight row, String environmentName) {
     for (int attempt = 1; attempt <= ADOPTION_SPEC_ATTEMPTS; attempt++) {
@@ -1303,7 +1294,6 @@ public class DeployService implements ReleaseAnnouncements {
     // fresh attempt rather than a second entry beside the first.
     specRetries.remove(releasedName);
     SpecSource.SpecRead read;
-    SpecSource.DeclarationRead declaration;
     try {
       // The reference, not the application: the git host serves this blob under the repository's
       // own address. The REV is the released TAG, fully qualified — a bare version would let a
@@ -1311,7 +1301,6 @@ public class DeployService implements ReleaseAnnouncements {
       // the file the version was cut from. The answer carries the commit the tag resolved to, which
       // is the only place a release deployment can learn one.
       read = specs.read(repository, SpecSource.tagRev(version));
-      declaration = declarationOf(repository, version, read);
     } catch (RuntimeException e) {
       recordUnreadableSpec(
           runId, repository, releasedName, version, packageName, priority, causationId, door, e);
@@ -1329,32 +1318,7 @@ public class DeployService implements ReleaseAnnouncements {
         read.spec(),
         read.commitSha(),
         read.declared(),
-        declaration,
         List.of());
-  }
-
-  /**
-   * The second blob, read only when the first one said this repository asked to be deployed.
-   *
-   * <p><b>The condition is {@code declared} and not "always", and it is the undeclared refusal's
-   * own argument one file over.</b> A release that carries no {@link SpecSource#SPEC_PATH} is a
-   * published image that asked for no deployment — a workspace base image, a build image — and it is
-   * recorded and stopped a few lines later. Fetching a declaration for it would be a second request
-   * per such release, on the deploy worker, for a version nothing will deploy and whose declaration
-   * nothing would resolve.
-   *
-   * <p><b>It is inside the caller's try on purpose.</b> A declaration the git host would not serve
-   * is the same hop failing in the same way as a spec the git host would not serve, so it takes the
-   * same answer: {@code SPEC_UNREADABLE} and a held release, re-read on the observation cadence
-   * until the host answers. The message names the declaration's own url, which is what tells a
-   * reader which of the two files the hop failed on.
-   */
-  private SpecSource.DeclarationRead declarationOf(
-      RepositoryRef repository, String version, SpecSource.SpecRead read) {
-    if (!read.declared()) {
-      return SpecSource.DeclarationRead.absent();
-    }
-    return specs.readDeclaration(repository, SpecSource.tagRev(version));
   }
 
   /**
@@ -1371,18 +1335,6 @@ public class DeployService implements ReleaseAnnouncements {
    * released tag, or it does not — and on the {@link Door#RELEASE_EVENT} door a release that
    * carries no file is recorded and goes no further. See {@link #refuseUndeclaredSpec}.
    *
-   * <p><b>It is also where the release's configuration DECLARATION is seeded</b>, between {@link
-   * #queue} and the execute loop — after the rows exist so a refusal has somewhere to be recorded,
-   * and before anything is scheduled so a store that would not take the file has stopped the
-   * deployment rather than caught it halfway. This is still pre-scheduling: {@code queue} writes
-   * rows, {@code execute} is what asks an orchestrator for anything.
-   *
-   * <p><b>And whether there WAS one is carried into every {@code execute} below.</b> The extras read
-   * a driver makes at the bottom of its argv build is addressed by the released version, and the
-   * store answers 404 for a version it holds no declaration for — so a release that seeded nothing
-   * has to read version-less. This method is the only place that knows, so it says so rather than
-   * letting a layer further down guess. It is the honest answer for a rollback too: an older tag is
-   * read for a declaration exactly as a fresh release is, and simply does not carry one.
    */
   private void deployReadSpec(
       String runId,
@@ -1396,7 +1348,6 @@ public class DeployService implements ReleaseAnnouncements {
       DeploymentSpec spec,
       String commitSha,
       boolean declared,
-      SpecSource.DeclarationRead declaration,
       List<String> heldRows) {
     if (!declared && door == Door.RELEASE_EVENT) {
       refuseUndeclaredSpec(
@@ -1446,41 +1397,9 @@ public class DeployService implements ReleaseAnnouncements {
       }
       return;
     }
-    // THE ONE ANSWER, ASKED ONCE AND CARRIED. It decides the seed below and — because it is the
-    // same question — the address of every extras read this event's deployments make: the store
-    // resolves a version-addressed read against that version's declaration and answers 404 when
-    // there is none, so a release that seeds nothing must read version-less. Deriving it a second
-    // time further down would be a second opinion about what the git host served.
-    boolean declarationSeeded = declaration != null && declaration.present();
-    if (declarationSeeded) {
-      try {
-        // ONE seed for the whole event, not one per row. The POST is addressed by (application,
-        // version) and is idempotent by content hash, so a multi-tier fan-out is one call: a
-        // declaration is the repository's statement about a released VERSION and says nothing about
-        // where that version lands. The plane does reach the store, because a platform-plane
-        // declaration resolves against the platform's own overrides — and every row of one event
-        // shares it, which is what makes the spec's own target the honest thing to send.
-        declarationSeed.seed(applicationName, version, declaration.yaml());
-      } catch (DeclarationRefused refused) {
-        // The registration-failure path's exact shape: every queued row is settled with the one
-        // sentence that says why, and nothing is executed. The rows already exist, which is what
-        // makes the refusal readable where every other outcome is — on the tier's listing.
-        LOG.warnf(
-            "The declaration of %s@%s was not seeded, so nothing is deployed: %s",
-            applicationName, version, refused.getMessage());
-        for (Queued row : queued) {
-          finish(
-              row.deploymentId(),
-              row.target(),
-              PdDeploymentStatus.DECLARATION_REFUSED,
-              refused.getMessage());
-        }
-        return;
-      }
-    }
     for (Queued row : queued) {
       try {
-        execute(row.deploymentId(), row.target(), version, commitSha, declarationSeeded);
+        execute(row.deploymentId(), row.target(), version, commitSha);
       } catch (RuntimeException e) {
         LOG.errorf(e, "Deployment %s failed unexpectedly", row.deploymentId());
         finish(
@@ -1690,12 +1609,8 @@ public class DeployService implements ReleaseAnnouncements {
         continue;
       }
       SpecSource.SpecRead read;
-      SpecSource.DeclarationRead declaration;
       try {
         read = specs.read(held.repository(), SpecSource.tagRev(held.version()));
-        // The same conditional read the first attempt made, so a recovered release is not a second
-        // code path — a git host that has come back has to answer both files before this deploys.
-        declaration = declarationOf(held.repository(), held.version(), read);
       } catch (RuntimeException e) {
         if (SpecException.isRetryable(e) && !expired(held)) {
           specRetries.replace(held.releasedName(), held, held.next());
@@ -1726,7 +1641,6 @@ public class DeployService implements ReleaseAnnouncements {
           read.spec(),
           read.commitSha(),
           read.declared(),
-          declaration,
           held.rows());
     }
   }
@@ -2307,7 +2221,6 @@ public class DeployService implements ReleaseAnnouncements {
       String deploymentId,
       Target target,
       String version,
-      boolean declarationSeeded,
       String commitSha,
       String healthPath,
       String healthCmd,
@@ -2417,19 +2330,8 @@ public class DeployService implements ReleaseAnnouncements {
 
   /**
    * The synchronous deployment — package-private so tests drive it without the worker.
-   *
-   * <p>{@code declarationSeeded} is carried in from {@link #deployReadSpec} rather than re-derived:
-   * it is the same answer the seed acted on a few lines earlier — the released tag carried {@link
-   * SpecSource#DECLARATION_PATH}, or it did not — and it reaches the extras read at the bottom of
-   * the driver's argv build, which is the one place that has to know whether the store holds a
-   * declaration for this version. See {@link DeploymentExtrasSource#forDeployment}.
    */
-  void execute(
-      String deploymentId,
-      Target target,
-      String version,
-      String commitSha,
-      boolean declarationSeeded) {
+  void execute(String deploymentId, Target target, String version, String commitSha) {
     Plan plan =
         QuarkusTransaction.requiringNew()
             .call(
@@ -2443,7 +2345,6 @@ public class DeployService implements ReleaseAnnouncements {
                       deploymentId,
                       target,
                       version,
-                      declarationSeeded,
                       commitSha,
                       target.healthPath() != null ? target.healthPath() : defaultHealthPath,
                       // No default to fall back on, and none to want: an image that named no
@@ -2963,8 +2864,6 @@ public class DeployService implements ReleaseAnnouncements {
         rename.predecessorDeploymentId(),
         rename.predecessorVersion(),
         rename.predecessorVersion(),
-        // Version-less extras: nothing here knows whether that release seeded a declaration.
-        false,
         ContainerNames.of(plan.environmentName(), predecessor, rename.predecessorDeploymentId()),
         PdNetworks.alias(plan.environmentName(), predecessor),
         networks,
@@ -3257,18 +3156,11 @@ public class DeployService implements ReleaseAnnouncements {
         ApplicationKeys.of(plan.environmentId(), plan.applicationName()),
         plan.applicationName(),
         plan.deploymentId(),
-        // TWO SLOTS, ONE VALUE TODAY, and the duplication is honest rather than sloppy. The first
-        // is the identity the container is stamped with (`service.version`, which has been the
-        // released version since the coordinate changed and whose field kept its older name); the
-        // second is the coordinate the extras are ADDRESSED by. They are one string now and would
-        // stop being one the day a deployment is stamped with something other than its release —
-        // collapsing them here would make that a change to every caller instead of to this line.
+        // TWO SLOTS, ONE VALUE TODAY: the identity the container is stamped with (`service.version`,
+        // which has been the released version since the coordinate changed and whose field kept its
+        // older name), and the released coordinate itself.
         plan.version(),
         plan.version(),
-        // ...and whether the store holds a declaration for that coordinate, which is what decides
-        // whether the extras read may be addressed by it at all. Not derivable down here: the file
-        // was read at the tag and seeded before any of this was queued.
-        plan.declarationSeeded(),
         deploymentName,
         plan.wireAlias(),
         networks,

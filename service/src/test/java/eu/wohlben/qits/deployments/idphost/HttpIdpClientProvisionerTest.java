@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * The sole production implementation of {@link IdpClientProvisioner}, against a real socket —
- * {@code ConfigHostDeclarationSeedTest}'s arrangement and its reason: what is under test IS the
+ * {@code GitHostSpecSourceTest}'s arrangement and its reason: what is under test IS the
  * request — the url it is built at, the Basic header it carries, the status map, and the patience
  * it spends. A fake at the seam would assert this suite's own model of a client, which is exactly
  * what {@link eu.wohlben.qits.deployments.deployments.control.FakeIdpClientProvisioner} is

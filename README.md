@@ -360,18 +360,18 @@ serving, and the sha a rollback would put back.
   process at all. The postgres superuser credential comes from **deployment config**, the same trust
   domain that already holds the docker socket, and is never written into a row and never put in an
   argv. There is no `DROP` in the vocabulary and none is coming.
-- **Argv contributions come from deployment config and from this component itself.**
-  `qits.deployments.extras.<app>.*` is how a stateful application gets its volume, its
-  published port, its extra env and the extra DNS names it answers to on the shared network — a
-  structured family each driver renders in its own
-  orchestrator's words (`ServiceExtras`); the `QITS_RESOURCE_<NAME>_*` triple is generated here and
+- **Argv contributions come from the repository's `deployments.yml`, the settings store and this
+  component itself.** `binds:`/`publishes:`/`aliases:`/`volumes:` are how an application gets its
+  host mounts, published ports and extra DNS names; its extra env is the settings store
+  (`/deployments/api/settings`, one row per application, tier and variable), rendered as the
+  `qits.deployments.extras.<app>.env.*` family each driver reads in its own orchestrator's words
+  (`ServiceExtras`); the `QITS_RESOURCE_<NAME>_*` triple is generated here and
   injected here. **Nothing PUSHED over HTTP contributes a credential to a `docker run`** — which is
   the same sentence as before, now that a credential is a thing this component holds: what a
   repository can NAME is a database of its own, and the VALUES injected for it are ones this
-  component generated. The family may be **pulled** from qits-configuration where a deployment sets
-  `qits.deployments.extras-url` — this process reading a named service with its own machine
-  identity, which changes the source and not the guard; unset (the shipped state) the config volume's
-  file is the whole of it.
+  component generated. A setting is written by an operator or a machine through the settings doors
+  and reaches a container on that place's next deployment; the deployer's own config volume file and
+  qits-configuration, the two earlier sources, are gone (qits-1393).
 - **Untrusted strings are validated at the boundary.** Names become network names, aliases and image
   path segments (dns-label charset); shas become image tags (hex only); the health path is
   interpolated into a string the *container's* shell runs, so it gets the strictest allowlist and is

@@ -15,8 +15,8 @@ import java.util.Set;
  * @QuarkusTest} in this module, which is what keeps a clone's {@code mvn verify} free of any idp it
  * did not start itself.
  *
- * <p>It is the fifth fake now, beside {@link FakeDeploymentDriver}, {@link FakeSpecSource}, {@link
- * FakeResourceProvisioner} and {@link FakeDeclarationSeed} — the same rule applied a fifth time.
+ * <p>It is the fourth fake, beside {@link FakeDeploymentDriver}, {@link FakeSpecSource} and {@link
+ * FakeResourceProvisioner} — the same rule applied again.
  * What a real qits-idp does with these requests is proven against the JDK's own {@code HttpServer}
  * in {@code HttpIdpClientProvisionerTest}; what the ORCHESTRATION does with the answers is proven
  * here.

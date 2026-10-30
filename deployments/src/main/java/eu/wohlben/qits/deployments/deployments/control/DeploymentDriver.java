@@ -78,14 +78,11 @@ public interface DeploymentDriver {
   /**
    * The prefix this family had while the namespace carried the retired {@code platform} qualifier.
    *
-   * <p><b>It is still read, and that is a migration window rather than a courtesy.</b> The keys
-   * reaching an argv come from two places this component does not release: qits-configuration's
-   * served entries, which compose the prefix at resolve time, and the extras FILE on the deployment
-   * host's config volume, which qits-bootstrap-cli rendered at the last bootstrap. Neither moves
-   * when this repository does, so a build reading only the new spelling would find no extras at all
-   * for every application on the estate — no mounts, no published ports, no environment.
-   *
-   * <p>Delete it once both of those render {@link #EXTRAS_PREFIX}, and not before.
+   * <p><b>Still read, and nothing produces it any more.</b> It was a migration window for two
+   * sources this component did not release — qits-configuration's served entries and the extras
+   * file on the config volume. Both are gone (qits-1393): the settings store renders {@link
+   * #EXTRAS_PREFIX} only, and {@code ExtrasSnapshot} hides both prefixes in the boot layer, so
+   * deleting this is a cleanup with no behaviour attached.
    */
   String LEGACY_EXTRAS_PREFIX = "qits.platform.deployments.extras.";
 
@@ -403,13 +400,14 @@ public interface DeploymentDriver {
   /**
    * The environment a deployment of {@code spec} would state, as {@code KEY=VALUE} entries in argv
    * order — this component's own variables and the resource family, then, when {@code
-   * includeExtras}, the deployment config's own {@code env}; where a key repeats the LAST entry
-   * wins, exactly as it does on the argv.
+   * includeExtras}, the deployment config's own {@code env} (the settings rows, through {@link
+   * DeploymentExtrasSource}); where a key repeats the LAST entry wins, exactly as it does on the
+   * argv.
    *
-   * <p>Read-only: no orchestrator call, no write. The settings preview's "next" half. With {@code
-   * includeExtras} it reads the deployment config the way a deployment does, so a config that
-   * cannot be read throws what the deployment would have refused with; without it, the deployment
-   * config is not read at all.
+   * <p>Read-only: no orchestrator call, no write. The settings preview's "next" half, which asks
+   * without the extras and overlays the settings rows itself. With {@code includeExtras} it reads
+   * the extras the way a deployment does, so a source that cannot be read throws what the
+   * deployment would have refused with.
    */
   List<String> stagedEnvironment(ServiceSpec spec, boolean includeExtras);
 
@@ -439,23 +437,10 @@ public interface DeploymentDriver {
    * is the deployment's own identity — the sha the row was created with and the image was addressed
    * by — and it becomes the service's {@code service.version} resource attribute.
    *
-   * <p>{@code version} is the released CalVer coordinate, and it is here because the <b>extras read
-   * is addressed by it</b> now: a deployment's configuration is resolved for one (application,
-   * environment, version) rather than for an application in the abstract, so an implementation
-   * building an argv has to be able to say which release it is building it for. It is a second
-   * field rather than a reuse of the one above because they answer different questions — the
-   * coordinate the release published, and the commit it resolved to, which may legitimately be
-   * null.
-   *
-   * <p>{@code declarationSeeded} rides beside it and answers the one question the version alone
-   * cannot: whether the store holds a DECLARATION for that version. A release seeds one only when
-   * its tag carries {@link SpecSource#DECLARATION_PATH}, and the resolved read answers 404 for a
-   * version it has no declaration for — so an argv built for an undeclared release has to ask
-   * version-less or it cannot be built at all. See {@link DeploymentExtrasSource#forDeployment}. It
-   * is a value on the spec rather than something the driver could work out, because by the time an
-   * argv is built the file has long been read and thrown away; and it is the honest answer on the
-   * rollback path too, since a redeployed older tag is read for a declaration exactly as a fresh
-   * release is and simply does not carry one.
+   * <p>{@code version} is the released CalVer coordinate — what the image is tagged with and the
+   * identity variables are stamped with. It is a second field rather than a reuse of the one above
+   * because they answer different questions — the coordinate the release published, and the commit
+   * it resolved to, which may legitimately be null.
    *
    * <p>{@code networks} is the <b>full membership</b>, primary first, and declaring it whole is
    * what lets an orchestrator that cannot join afterwards do the job at all: every swarm {@code
@@ -533,7 +518,6 @@ public interface DeploymentDriver {
       String deploymentId,
       String commitSha,
       String version,
-      boolean declarationSeeded,
       String deploymentName,
       String wireAlias,
       List<String> networks,
@@ -570,7 +554,6 @@ public interface DeploymentDriver {
         String deploymentId,
         String commitSha,
         String version,
-        boolean declarationSeeded,
         String deploymentName,
         String wireAlias,
         List<String> networks,
@@ -592,7 +575,6 @@ public interface DeploymentDriver {
           deploymentId,
           commitSha,
           version,
-          declarationSeeded,
           deploymentName,
           wireAlias,
           networks,
@@ -619,7 +601,6 @@ public interface DeploymentDriver {
         String deploymentId,
         String commitSha,
         String version,
-        boolean declarationSeeded,
         String deploymentName,
         String wireAlias,
         List<String> networks,
@@ -640,7 +621,6 @@ public interface DeploymentDriver {
           deploymentId,
           commitSha,
           version,
-          declarationSeeded,
           deploymentName,
           wireAlias,
           networks,
@@ -665,7 +645,6 @@ public interface DeploymentDriver {
         String deploymentId,
         String commitSha,
         String version,
-        boolean declarationSeeded,
         String deploymentName,
         String wireAlias,
         List<String> networks,
@@ -685,7 +664,6 @@ public interface DeploymentDriver {
           deploymentId,
           commitSha,
           version,
-          declarationSeeded,
           deploymentName,
           wireAlias,
           networks,

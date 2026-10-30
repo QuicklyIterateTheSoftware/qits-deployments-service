@@ -46,7 +46,6 @@ public class PdHeldSpecSweepTest {
   @Inject FakeSpecSource specs;
   @Inject FakeResourceProvisioner provisioner;
   @Inject FakeIdpClientProvisioner idpProvisioner;
-  @Inject FakeDeclarationSeed seeds;
   @Inject PdDeploymentRepository deployments;
 
   @BeforeEach
@@ -55,7 +54,6 @@ public class PdHeldSpecSweepTest {
     specs.reset();
     provisioner.reset();
     idpProvisioner.reset();
-    seeds.reset();
   }
 
   @Test

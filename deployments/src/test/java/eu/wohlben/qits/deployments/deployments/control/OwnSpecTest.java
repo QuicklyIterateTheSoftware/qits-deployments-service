@@ -14,13 +14,9 @@ import org.junit.jupiter.api.Test;
 /**
  * This repository deploys ITSELF, so its own {@code .config/qits/deployments.yml} is the one spec on
  * the estate whose reader is in the same reactor — and the only one a build here can hold to account.
- * {@code OwnDeclarationTest} is the sibling for the other file; this is the same idea for the one
- * that decides where the container runs.
  *
- * <p><b>Unlike the declaration, this file IS parsed here, with the real parser.</b> The argument that
- * keeps {@code OwnDeclarationTest} from being a parser — qits-configuration owns that grammar and a
- * second opinion would disagree with it — runs the other way round for this document:
- * {@link DeploymentSpecParser} is this component's own, a spec is fetched at the released tag, and an
+ * <p><b>This file IS parsed here, with the real parser.</b> {@link DeploymentSpecParser} is this
+ * component's own, a spec is fetched at the released tag, and an
  * unknown key fails a deployment. So parsing it here is not a second opinion, it is the only opinion.
  *
  * <p><b>What it pins is the self-deploy's health gate.</b> {@link DeployService#resolveHealthPath}

@@ -268,7 +268,6 @@ public class PlatformOverviewIT {
     // hop this component could have been made to wait on while a sweep was being planned.
     ReportAssertions.assertEdgeCount(CATEGORY, PINS_SLUG, 2);
     ReportAssertions.assertNoEdgesTo(CATEGORY, PINS_SLUG, StorySwarm.ORCHESTRATOR);
-    ReportAssertions.assertNoEdgesTo(CATEGORY, PINS_SLUG, StoryPeers.CONFIGURATION);
     ReportAssertions.assertNoEdgesTo(CATEGORY, PINS_SLUG, StoryPeers.GIT_HOST);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY, PINS_SLUG, List.of(StoryIdentities.COLLECTOR, StoryTarget.SERVICE));

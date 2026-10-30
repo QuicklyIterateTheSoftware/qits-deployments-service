@@ -20,9 +20,10 @@ import org.jboss.logging.Logger;
  * The settings store (qits-1390): one environment variable per (application, tier, key), stated by
  * an operator or a machine, read back MASKED.
  *
- * <p><b>Nothing deploys from it yet.</b> A deployment still takes its environment from {@link
- * DeploymentExtrasSource} alone; {@link SettingsPreview} is what shows what reading this store
- * would change.
+ * <p><b>Every deployment takes its environment from it</b> (qits-1393): {@link
+ * SettingsExtrasSource} renders the place's rows as the extras {@code env} family on every argv
+ * build, so a written row reaches the service on its next deployment and a deleted one is removed
+ * from it. {@link SettingsPreview} shows what that next deployment would change.
  *
  * <p><b>The mask is applied here, once</b>, so no door can forget it: every {@link PdSettingDto}
  * this class hands out carries a null value when the row is secret — the answer to the write that
@@ -115,7 +116,10 @@ public class Settings {
     }
   }
 
-  /** Every row of one place, UNMASKED — for {@link SettingsPreview}, never for a door. */
+  /**
+   * Every row of one place, UNMASKED — for {@link SettingsExtrasSource} and {@link SettingsPreview},
+   * never for a door.
+   */
   List<PdSetting> rowsOf(String application, String environment) {
     return QuarkusTransaction.joiningExisting()
         .call(() -> settings.listFiltered(application, environment));

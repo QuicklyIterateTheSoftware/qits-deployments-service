@@ -23,8 +23,8 @@ import org.junit.jupiter.api.TestFactory;
  * made every one.
  *
  * <p>A row whose provider state is not recorded is SKIPPED, naming the state the provider has to
- * record. A row with no call here (the token mint) runs inside the application, in {@code
- * IdpTokenMintPactTest}.
+ * record. A row with no call here runs inside the application, in a {@code @QuarkusTest} of its
+ * own.
  */
 class ConsumerPactTest {
 

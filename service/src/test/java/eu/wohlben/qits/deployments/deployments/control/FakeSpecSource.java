@@ -21,12 +21,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * the default on the declared side is what keeps every test that only wants "and then it deploys"
  * saying that.
  *
- * <p><b>It answers the second file too, and there its default is ABSENT</b> ({@link
- * #readDeclaration}): a repository that carries no {@code .config/qits/configuration.yml} seeds
- * nothing, which is every repository on this platform until it is migrated and is what every test
- * written before the file existed still means. So scripting one is deliberate ({@link
- * #scriptDeclaration}) and every existing case is untouched by the arm's arrival.
- *
  * <p>Application-scoped and therefore shared: reset it in {@code @BeforeEach} and use distinct
  * repository ids per test. State is read through methods only — the injected reference is a CDI
  * client proxy.
@@ -63,21 +57,6 @@ public class FakeSpecSource implements SpecSource {
   /** How often each application's spec has been read, so a retry is countable rather than timed. */
   private final Map<String, Integer> reads = new ConcurrentHashMap<>();
 
-  /**
-   * What each application's {@link #DECLARATION_PATH} says — see {@link #scriptDeclaration}.
-   *
-   * <p><b>Absent is the default and every existing test depends on it.</b> A repository that carries
-   * no declaration seeds nothing, which is what every deployment on this platform did before the
-   * file existed and is what every test written before it still asserts. Making the declared side
-   * the default here would have quietly given the whole suite a seed it never asked for.
-   */
-  private final Map<String, String> declarations = new ConcurrentHashMap<>();
-
-  /** Failures of the DECLARATION read alone, and which of them say "read me again". */
-  private final Map<String, String> declarationFailures = new ConcurrentHashMap<>();
-
-  private final Set<String> declarationRetryable = ConcurrentHashMap.newKeySet();
-
   public void reset() {
     specs.clear();
     failures.clear();
@@ -86,9 +65,6 @@ public class FakeSpecSource implements SpecSource {
     retryable.clear();
     undeclared.clear();
     reads.clear();
-    declarations.clear();
-    declarationFailures.clear();
-    declarationRetryable.clear();
   }
 
   /**
@@ -152,16 +128,10 @@ public class FakeSpecSource implements SpecSource {
 
   /**
    * Stop failing this application's reads — what a git host that has come back looks like.
-   *
-   * <p>Both files, because there is one git host: a peer that has come back serves the spec and the
-   * declaration again, and a recovery that healed only one of them would be describing a failure
-   * mode nothing here has.
    */
   public void recover(String applicationName) {
     failures.remove(applicationName);
     retryable.remove(applicationName);
-    declarationFailures.remove(applicationName);
-    declarationRetryable.remove(applicationName);
   }
 
   /**
@@ -179,43 +149,6 @@ public class FakeSpecSource implements SpecSource {
   /** How many reads this application's spec has been asked for, retries included. */
   public int readsOf(String applicationName) {
     return reads.getOrDefault(applicationName, 0);
-  }
-
-  /**
-   * Script this application as carrying a configuration declaration, with exactly these bytes.
-   *
-   * <p>The bytes matter rather than their meaning: nothing in this component parses them, so a test
-   * that scripts one is asserting that what the git host served is what the store was handed.
-   */
-  public void scriptDeclaration(String applicationName, String yaml) {
-    declarations.put(applicationName, yaml);
-  }
-
-  /** A declaration read that fails permanently — the git host answering something terminal. */
-  public void scriptDeclarationFailure(String applicationName, String message) {
-    declarationFailures.put(applicationName, message);
-    declarationRetryable.remove(applicationName);
-  }
-
-  /**
-   * A declaration read the git host may yet survive. The release is held {@code SPEC_UNREADABLE}
-   * exactly as a retryable SPEC read holds it — one hop, one posture, and this is what pins that
-   * the second file did not get a posture of its own.
-   */
-  public void scriptDeclarationRetryableFailure(String applicationName, String message) {
-    declarationFailures.put(applicationName, message);
-    declarationRetryable.add(applicationName);
-  }
-
-  @Override
-  public DeclarationRead readDeclaration(RepositoryRef repository, String rev) {
-    revs.put(repository.applicationName(), rev);
-    String failure = declarationFailures.get(repository.applicationName());
-    if (failure != null) {
-      throw new SpecException(failure, declarationRetryable.contains(repository.applicationName()));
-    }
-    String yaml = declarations.get(repository.applicationName());
-    return yaml == null ? DeclarationRead.absent() : new DeclarationRead(yaml);
   }
 
   @Override

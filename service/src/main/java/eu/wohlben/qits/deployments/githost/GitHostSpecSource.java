@@ -25,13 +25,9 @@ import org.jboss.logging.Logger;
  * GET &lt;git-host-url&gt;/git/&lt;repoId&gt;/blob/&lt;rev&gt;/.config/qits/deployments.yml
  * </pre>
  *
- * <p><b>It reads TWO files now, and they are one read twice rather than two readers.</b> Beside the
- * spec sits {@link SpecSource#DECLARATION_PATH}, the configuration a repository declares for its own
- * application, fetched at the same rev through the same address pair and handed on <b>unparsed</b> —
- * qits-configuration owns that grammar. Almost everything below the file name is shared: the
- * encoding of the rev, the 404-is-an-answer stance and the retryable-versus-permanent
- * classification. <b>Neither read falls back from the name route to the id route</b> —
- * {@link #readDeclaration} says why, and qits-883 is why the spec read lost its fallback too.
+ * <p><b>It reads ONE file.</b> It used to read {@code .config/qits/configuration.yml} beside the
+ * spec and hand it unparsed to qits-configuration; that service and the seed are gone (qits-1393).
+ * <b>The read does not fall back from the name route to the id route</b> — qits-883 is why.
  *
  * <p><b>The rev is the RELEASED TAG, and it is fully qualified.</b> A deployment is a version now,
  * so the file that decides where its container runs has to be the file that version was cut from —
@@ -151,59 +147,6 @@ public class GitHostSpecSource implements SpecSource {
   }
 
   /**
-   * The second blob, at the same two addresses and with the same classification: {@link
-   * SpecSource#DECLARATION_PATH}, returned <b>unparsed</b>.
-   *
-   * <pre>
-   * GET &lt;git-host-url&gt;/git/&lt;projectId&gt;/&lt;repoName&gt;/blob/&lt;rev&gt;/.config/qits/configuration.yml
-   * GET &lt;git-host-url&gt;/git/&lt;repoId&gt;/blob/&lt;rev&gt;/.config/qits/configuration.yml
-   * </pre>
-   *
-   * <p><b>Nothing here reads the body.</b> qits-configuration owns the declaration grammar and is
-   * the one thing that validates it — this hands the bytes on as the body of one POST. So there is
-   * no parse arm, and therefore no permanent-failure arm that is this component's own: every failure
-   * this can raise is a failure of the HOP, which is why the classification below is {@link
-   * #statusFailure}'s unchanged.
-   *
-   * <p><b>There is NO name-then-id fallback here.</b> A 404 on the name-addressed route is {@link
-   * DeclarationRead#absent()} at once. The name a declaration read is addressed with comes off the
-   * release event or the acceptance ledger and is authoritative — the rename door corrects it — so
-   * there is no false miss to disbelieve; and the id route is refused to this caller anyway, because
-   * qits-githost's storage-client guard serves {@code /git/<repoId>} to qits-projects alone. So the
-   * fallback could only ever convert <b>not migrated yet</b>, which is most repositories, into a 403
-   * — and a 403 is classified retryable, which is a sixty-minute {@code SPEC_UNREADABLE} hold for a
-   * file that was never there. Measured on qits-ci@2026.907.184918 on 2026-09-07, where it held
-   * every unmigrated repository's deployment. {@link #read} dropped its fallback too, on
-   * 2026-10-30 (qits-883): image and daemon repositories carry no {@code deployments.yml}, and the
-   * fallback held every one of their releases on the same 403.
-   *
-   * <p><b>A ref that carries no name is still read id-addressed</b>, exactly as it always was — that
-   * is {@link #address}'s answer, not a fallback — and a 404 there is absent for the same reason.
-   *
-   * <p><b>No {@code Git-Commit-Sha} is wanted from this read.</b> The commit is the spec read's
-   * answer and the row already has it; asking twice would be two sources for one fact.
-   */
-  @Override
-  public DeclarationRead readDeclaration(RepositoryRef repository, String rev) {
-    String url = blobUrl(address(repository), rev, DECLARATION_PATH);
-    HttpResponse<String> response = get(url);
-
-    if (response.statusCode() == 404) {
-      LOG.debugf(
-          "%s carries no %s at %s — nothing to seed, which is what a repository that has not"
-              + " migrated its configuration yet looks like",
-          repository.applicationName(), DECLARATION_PATH, rev);
-      return DeclarationRead.absent();
-    }
-    if (response.statusCode() != 200) {
-      throw statusFailure(url, response.statusCode());
-    }
-    // Verbatim. Anything done to these bytes here is a difference between what the repository wrote
-    // and what the platform stores.
-    return new DeclarationRead(response.body());
-  }
-
-  /**
    * The failure a status that is neither 200 nor 404 raises, <b>classified</b>.
    *
    * <p>The message is what it always was; what is new is the second half of the answer — whether
@@ -252,10 +195,8 @@ public class GitHostSpecSource implements SpecSource {
    * charset refuses a literal slash — so {@code refs/tags/<version>} has to arrive percent-encoded.
    * Package-private so {@code GitHostSpecSourceTest} can spell the expected url without a socket.
    *
-   * <p><b>The FILE is a parameter now</b>, because the same blob endpoint serves two of them: the
-   * deployment spec this class parses, and the configuration declaration it hands on unread. One
-   * builder rather than two keeps the rev encoding — the thing that was got wrong once and cost
-   * every release-tag read a 404 — spelled in a single place.
+   * <p><b>The FILE is a parameter</b>, so the rev encoding — the thing that was got wrong once and
+   * cost every release-tag read a 404 — is spelled in a single place whatever the blob.
    */
   static String blobUrl(String gitHostUrl, String addressSegment, String rev, String path) {
     return trimTrailingSlash(gitHostUrl)

@@ -18,51 +18,6 @@
         }
       },
       "description": "SoftwareRelease: getBlob",
-      "key": "2943abc8",
-      "pending": false,
-      "providerStates": [
-        {
-          "name": "a repository declaring its configuration",
-          "params": {
-            "path": ".config/qits/configuration.yml",
-            "projectId": "00000000-0000-4000-8000-000000000001",
-            "repoName": "contract-service",
-            "repositoryId": "00000000-0000-4000-8000-000000000002",
-            "rev": "main"
-          }
-        }
-      ],
-      "request": {
-        "generators": {
-          "path": {
-            "dataType": "RAW",
-            "expression": "/git/${projectId}/${repoName}/blob/${rev}/${path}",
-            "type": "ProviderState"
-          }
-        },
-        "method": "GET",
-        "path": "/git/00000000-0000-4000-8000-000000000001/contract-service/blob/main/.config/qits/configuration.yml"
-      },
-      "response": {
-        "status": 200
-      },
-      "type": "Synchronous/HTTP"
-    },
-    {
-      "comments": {
-        "references": {
-          "qits-call": {
-            "app": "qits-githost-service",
-            "operationId": "getBlob"
-          },
-          "qits-trigger": {
-            "app": "qits-deployments-service",
-            "event": "SoftwareRelease",
-            "kind": "event"
-          }
-        }
-      },
-      "description": "SoftwareRelease: getBlob",
       "key": "3c54c288",
       "pending": false,
       "providerStates": [
@@ -126,51 +81,6 @@
         }
       },
       "description": "SoftwareRelease: getBlob",
-      "key": "c36b20af",
-      "pending": false,
-      "providerStates": [
-        {
-          "name": "a repository declaring no configuration",
-          "params": {
-            "path": ".config/qits/configuration.yml",
-            "projectId": "00000000-0000-4000-8000-000000000001",
-            "repoName": "contract-service",
-            "repositoryId": "00000000-0000-4000-8000-000000000002",
-            "rev": "main"
-          }
-        }
-      ],
-      "request": {
-        "generators": {
-          "path": {
-            "dataType": "RAW",
-            "expression": "/git/${projectId}/${repoName}/blob/${rev}/${path}",
-            "type": "ProviderState"
-          }
-        },
-        "method": "GET",
-        "path": "/git/00000000-0000-4000-8000-000000000001/contract-service/blob/main/.config/qits/configuration.yml"
-      },
-      "response": {
-        "status": 404
-      },
-      "type": "Synchronous/HTTP"
-    },
-    {
-      "comments": {
-        "references": {
-          "qits-call": {
-            "app": "qits-githost-service",
-            "operationId": "getBlob"
-          },
-          "qits-trigger": {
-            "app": "qits-deployments-service",
-            "event": "SoftwareRelease",
-            "kind": "event"
-          }
-        }
-      },
-      "description": "SoftwareRelease: getBlob",
       "key": "bfd2452f",
       "pending": false,
       "providerStates": [
@@ -198,51 +108,6 @@
       },
       "response": {
         "status": 404
-      },
-      "type": "Synchronous/HTTP"
-    },
-    {
-      "comments": {
-        "references": {
-          "qits-call": {
-            "app": "qits-githost-service",
-            "operationId": "getBlobById"
-          },
-          "qits-trigger": {
-            "app": "qits-deployments-service",
-            "event": "SoftwareRelease",
-            "kind": "event"
-          }
-        }
-      },
-      "description": "SoftwareRelease: getBlobById",
-      "key": "17df6bae",
-      "pending": false,
-      "providerStates": [
-        {
-          "name": "a repository declaring its configuration",
-          "params": {
-            "path": ".config/qits/configuration.yml",
-            "projectId": "00000000-0000-4000-8000-000000000001",
-            "repoName": "contract-service",
-            "repositoryId": "00000000-0000-4000-8000-000000000002",
-            "rev": "main"
-          }
-        }
-      ],
-      "request": {
-        "generators": {
-          "path": {
-            "dataType": "RAW",
-            "expression": "/git/${repositoryId}/blob/${rev}/${path}",
-            "type": "ProviderState"
-          }
-        },
-        "method": "GET",
-        "path": "/git/00000000-0000-4000-8000-000000000002/blob/main/.config/qits/configuration.yml"
-      },
-      "response": {
-        "status": 200
       },
       "type": "Synchronous/HTTP"
     },
@@ -306,51 +171,6 @@
           }
         },
         "status": 200
-      },
-      "type": "Synchronous/HTTP"
-    },
-    {
-      "comments": {
-        "references": {
-          "qits-call": {
-            "app": "qits-githost-service",
-            "operationId": "getBlobById"
-          },
-          "qits-trigger": {
-            "app": "qits-deployments-service",
-            "event": "SoftwareRelease",
-            "kind": "event"
-          }
-        }
-      },
-      "description": "SoftwareRelease: getBlobById",
-      "key": "b206e095",
-      "pending": false,
-      "providerStates": [
-        {
-          "name": "a repository declaring no configuration",
-          "params": {
-            "path": ".config/qits/configuration.yml",
-            "projectId": "00000000-0000-4000-8000-000000000001",
-            "repoName": "contract-service",
-            "repositoryId": "00000000-0000-4000-8000-000000000002",
-            "rev": "main"
-          }
-        }
-      ],
-      "request": {
-        "generators": {
-          "path": {
-            "dataType": "RAW",
-            "expression": "/git/${repositoryId}/blob/${rev}/${path}",
-            "type": "ProviderState"
-          }
-        },
-        "method": "GET",
-        "path": "/git/00000000-0000-4000-8000-000000000002/blob/main/.config/qits/configuration.yml"
-      },
-      "response": {
-        "status": 404
       },
       "type": "Synchronous/HTTP"
     },
