@@ -223,4 +223,64 @@ class HttpIdpClientProvisionerTest {
 
     assertEquals("perfectly-fine-32-hex", adapter().create(CLIENT_ID).secret());
   }
+
+  // --- delete ------------------------------------------------------------------------------
+
+  @Test
+  void deleteSendsADeleteToTheClientIdSegmentAndA204IsDone() {
+    idp.answers(204, "");
+
+    IdpClientProvisioner.Result result = adapter().delete(CLIENT_ID);
+
+    assertTrue(result.ok());
+    assertNull(result.secret(), "a delete hands no secret back");
+    assertNull(result.detail());
+    assertEquals(List.of("DELETE"), idp.methods());
+    assertEquals(List.of("/idp/api/service-clients/" + CLIENT_ID), idp.paths());
+    assertTrue(idp.authorizations().get(0).startsWith("Basic "), "the same Basic pair as every call");
+  }
+
+  @Test
+  void deleteAnswered200IsDone() {
+    idp.answers(200, "{}");
+
+    assertTrue(adapter().delete(CLIENT_ID).ok());
+  }
+
+  @Test
+  void deleteOfAClientAlreadyGoneIsDoneToo() {
+    // 404 is the state a delete asks for, so a retry after a lost answer converges.
+    idp.answers(404, "");
+
+    IdpClientProvisioner.Result result = adapter().delete(CLIENT_ID);
+
+    assertTrue(result.ok());
+    assertFalse(result.conflict());
+    assertEquals(1, idp.requestCount(), "a 404 is an answer, never retried");
+  }
+
+  @Test
+  void deleteThatKeepsAnswering5xxIsAFailureNamingTheClientNotAThrow() {
+    idp.answers(500, "{\"error\":\"boom\"}");
+
+    IdpClientProvisioner.Result result = adapter().delete(CLIENT_ID);
+
+    assertFalse(result.ok());
+    assertNull(result.secret());
+    assertTrue(result.detail().contains(CLIENT_ID), result.detail());
+    assertTrue(result.detail().contains("500"), result.detail());
+    assertEquals(2, idp.requestCount(), "the budget is spent before giving up");
+  }
+
+  @Test
+  void deleteRefusedWithAnotherStatusIsAFailureWithTheStatusAndNoRetry() {
+    idp.answers(403, "{\"error\":\"forbidden\"}");
+
+    IdpClientProvisioner.Result result = adapter().delete(CLIENT_ID);
+
+    assertFalse(result.ok());
+    assertTrue(result.detail().contains("403"), result.detail());
+    assertTrue(result.detail().contains("forbidden"), result.detail());
+    assertEquals(1, idp.requestCount());
+  }
 }

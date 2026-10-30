@@ -249,6 +249,72 @@ public class ResourceProvisioningTest {
   }
 
   @Test
+  public void aRenameThatDropsThePredecessorsDatabaseIsRefusedBeforeAnythingIsProvisioned() {
+    // The successor declares a database of its own and not the one its predecessor holds. Without
+    // the refusal it would start green on a new, empty database while the data stayed behind.
+    existingRow("prov-drop-old", "prov-v", "db", "qits_prov_drop_old", "the-predecessors-password");
+
+    ResourceException refused =
+        assertThrows(
+            ResourceException.class,
+            () ->
+                provisioning.ensureAll(
+                    "prov-drop-new", "prov-v", "prov-drop-old", one("db", "qits_prov_drop_new")));
+
+    assertEquals(
+        "the predecessor `prov-drop-old` holds the database `qits_prov_drop_old`, which this spec"
+            + " does not declare; a rename would start on a new, empty database — pin it in"
+            + " `resources:` (database: qits_prov_drop_old)",
+        refused.getMessage());
+    assertEquals(List.of(), provisioner.requests(), "nothing was provisioned, not even the new one");
+    assertTrue(row("prov-drop-new", "prov-v", "db").isEmpty(), "and nothing was written down");
+    assertEquals(
+        "prov-drop-old",
+        QuarkusTransaction.requiringNew()
+            .call(() -> resources.listByDatabase("qits_prov_drop_old"))
+            .get(0)
+            .applicationName,
+        "the predecessor's claim is exactly where it was");
+  }
+
+  @Test
+  public void aRenameThatDeclaresNoResourcesAtAllIsRefusedToo() {
+    existingRow("prov-none-old", "prov-w", "db", "qits_prov_none_old", "the-predecessors-password");
+
+    ResourceException refused =
+        assertThrows(
+            ResourceException.class,
+            () -> provisioning.ensureAll("prov-none-new", "prov-w", "prov-none-old", List.of()));
+
+    assertTrue(refused.getMessage().contains("qits_prov_none_old"), refused.getMessage());
+    assertEquals(List.of(), provisioner.requests());
+  }
+
+  @Test
+  public void aPredecessorsDatabaseInAnotherTierDoesNotRefuseThisOne() {
+    // The check is about the tier being deployed into: a claim elsewhere is not data this
+    // deployment would start without.
+    existingRow("prov-tier-old", "prov-x-other", "db", "qits_prov_tier_old", "elsewhere");
+
+    provisioning.ensureAll("prov-tier-new", "prov-x", "prov-tier-old", one("db", "qits_prov_tier_new"));
+
+    assertEquals(1, provisioner.requests().size());
+    assertEquals("qits_prov_tier_new", provisioner.requests().get(0).databaseName());
+  }
+
+  @Test
+  public void withNoPredecessorDeclaredAnotherApplicationsDatabaseIsNoConcernOfTheRename() {
+    // renamed_from absent: the predecessor-database check never runs, and an application holding
+    // some other database in the tier changes nothing about this deployment.
+    existingRow("prov-bystander", "prov-y", "db", "qits_prov_bystander", "theirs");
+
+    provisioning.ensureAll("prov-plain", "prov-y", null, one("db", "qits_prov_plain"));
+
+    assertEquals(1, provisioner.requests().size());
+    assertTrue(row("prov-plain", "prov-y", "db").isPresent());
+  }
+
+  @Test
   public void declaringYourOwnNameAsThePredecessorChangesNothing() {
     // Inert rather than refused here: the parser catches it where it can see both keys, and the
     // transfer arm is only ever reached for a claim belonging to a DIFFERENT application.

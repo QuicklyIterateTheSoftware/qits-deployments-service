@@ -383,4 +383,64 @@ public class IdpClientProvisioningTest {
     assertEquals("idp-tier-idp-plat", bindings.get(0).value("CLIENT_ID"));
     assertEquals("http://idp-tier-qits-idp:8080/idp", bindings.get(0).value("URL"));
   }
+
+  // --- retirement ----------------------------------------------------------------------------
+
+  @Test
+  void retiringDeletesTheClientAtIdpAndThenItsRowAndASecondRunIsANoOp() {
+    existingIdpRow("idp-retired", "idp-r", "idp-r-idp-retired", "a-secret-nobody-holds");
+    idpProvisioner.seedDatabaseClient("idp-r-idp-retired");
+
+    assertEquals(1, provisioning.retireIdpClient("idp-retired", "idp-r"));
+
+    assertEquals(List.of("idp-r-idp-retired"), idpProvisioner.deleteCalls());
+    assertFalse(idpProvisioner.holds("idp-r-idp-retired"), "qits-idp no longer holds it");
+    assertTrue(row("idp-retired", "idp-r").isEmpty(), "and the registry row went with it");
+
+    // Idempotent: no row is nothing to do, and qits-idp is not asked again.
+    assertEquals(0, provisioning.retireIdpClient("idp-retired", "idp-r"));
+    assertEquals(List.of("idp-r-idp-retired"), idpProvisioner.deleteCalls());
+  }
+
+  @Test
+  void retiringAnApplicationWithNoIdpRowCallsNothing() {
+    assertEquals(0, provisioning.retireIdpClient("idp-never-had-one", "idp-r"));
+    assertEquals(List.of(), idpProvisioner.deleteCalls());
+  }
+
+  @Test
+  void aRefusedDeleteKeepsTheRowForTheNextAttempt() {
+    existingIdpRow("idp-stubborn", "idp-s", "idp-s-idp-stubborn", "the-stored-secret");
+    idpProvisioner.scriptDeleteResult(
+        new IdpClientProvisioner.Result(false, false, null, "qits-idp answered 500"));
+
+    ResourceException refused =
+        assertThrows(
+            ResourceException.class, () -> provisioning.retireIdpClient("idp-stubborn", "idp-s"));
+
+    assertTrue(refused.getMessage().contains("idp-s-idp-stubborn"), refused.getMessage());
+    assertTrue(refused.getMessage().contains("answered 500"), refused.getMessage());
+    assertFalse(refused.getMessage().contains("the-stored-secret"), "no secret in a sentence");
+    assertEquals(
+        "idp-s-idp-stubborn",
+        row("idp-stubborn", "idp-s").orElseThrow().clientId,
+        "the row still names the client, so the next attempt can retire it");
+
+    // ...and once qits-idp answers, the retry converges.
+    idpProvisioner.scriptDeleteResult(null);
+    assertEquals(1, provisioning.retireIdpClient("idp-stubborn", "idp-s"));
+    assertTrue(row("idp-stubborn", "idp-s").isEmpty());
+  }
+
+  @Test
+  void retiringTouchesOnlyThatApplicationsRowInThatTier() {
+    existingIdpRow("idp-scoped", "idp-t", "idp-t-idp-scoped", "secret-t");
+    existingIdpRow("idp-scoped", "idp-u", "idp-u-idp-scoped", "secret-u");
+
+    provisioning.retireIdpClient("idp-scoped", "idp-t");
+
+    assertEquals(List.of("idp-t-idp-scoped"), idpProvisioner.deleteCalls());
+    assertTrue(row("idp-scoped", "idp-t").isEmpty());
+    assertTrue(row("idp-scoped", "idp-u").isPresent(), "another tier's client is not this call's");
+  }
 }
