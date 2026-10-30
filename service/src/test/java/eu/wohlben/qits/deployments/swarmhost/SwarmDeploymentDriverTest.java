@@ -1667,6 +1667,20 @@ class SwarmDeploymentDriverTest {
   }
 
   @Test
+  void theLiveEnvironmentDropsTheCliLineBreakAfterTheTemplatesOwn() {
+    // What docker really prints: println after each variable, then one more line break of its own.
+    // Live, the last value came back as "qits-landing\n" and the preview called it changed.
+    SwarmDeploymentDriver driver = driver();
+    cli.script(
+        SwarmDeploymentDriver.SPEC_ENV_FORMAT + " dev-qits-landing",
+        result(0, "A=1\nQITS_APPLICATION=qits-landing\n\n"));
+
+    assertEquals(
+        Optional.of(List.of("A=1", "QITS_APPLICATION=qits-landing")),
+        driver.liveEnvironment("dev-qits-landing"));
+  }
+
+  @Test
   void theDeployersOwnSelfUpdateKeepsTheKeysThatPointItAtQitsConfiguration() {
     // THE SCARIEST REGRESSION THIS DIFF COULD MAKE. The deployer's own extras carry the flip — the
     // extras url and the named oidc client that reads it — so a self-update that env-rm'd them

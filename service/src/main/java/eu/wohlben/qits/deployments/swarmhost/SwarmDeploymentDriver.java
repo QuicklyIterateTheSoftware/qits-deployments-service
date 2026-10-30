@@ -1968,7 +1968,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     }
     List<String> variables = new ArrayList<>();
     String output = safe(inspected.output());
-    if (output.endsWith("\n")) {
+    // The template's own println ends the last variable with a line break, and the docker CLI adds
+    // one more after the whole template; take off both, so the last value is not read as ending in
+    // a line break (which made the preview report it as changed).
+    for (int breaks = 0; breaks < 2 && output.endsWith("\n"); breaks++) {
       output = output.substring(0, output.length() - 1);
     }
     for (String line : output.split("\n", -1)) {
