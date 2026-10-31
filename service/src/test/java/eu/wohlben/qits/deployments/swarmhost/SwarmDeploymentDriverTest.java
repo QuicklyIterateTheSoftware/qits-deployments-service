@@ -3070,6 +3070,50 @@ class SwarmDeploymentDriverTest {
             .publishesPorts(spec()));
   }
 
+  @Test
+  void aVolumeIsPresentOnlyWhenTheListNamesItOnALineOfItsOwn() {
+    // qits-1772: a renamed application's private volume is resolved against what exists. The list
+    // is filtered by an anchored name, but docker's filter is a pattern, so the exact line decides.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("volume ls", result(0, "qits-edge-letsencrypt\n"));
+
+    assertEquals(
+        DeploymentDriver.VolumePresence.present(), driver.volumeExists("qits-edge-letsencrypt"));
+    assertEquals(
+        List.of("docker", "volume", "ls", "-q", "--filter", "name=^qits-edge-letsencrypt$"),
+        cli.matching("volume ls"));
+
+    cli.script("volume ls", result(0, "qits-edge-letsencrypt-old\n"));
+    assertEquals(
+        DeploymentDriver.VolumePresence.absent(), driver.volumeExists("qits-edge-letsencrypt"));
+    cli.script("volume ls", result(0, ""));
+    assertEquals(DeploymentDriver.VolumePresence.absent(), driver.volumeExists("qits-stt-data"));
+  }
+
+  @Test
+  void aVolumeListThatFailsIsUnknownNeverAbsent() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script("volume ls", result(1, "Cannot connect to the Docker daemon"));
+
+    DeploymentDriver.VolumePresence presence = driver.volumeExists("qits-stt-data");
+
+    assertEquals(DeploymentDriver.VolumeState.UNKNOWN, presence.state());
+    assertTrue(presence.detail().contains("Cannot connect"), presence.detail());
+
+    cli.script("volume ls", new PdProcess.Result(0, "", true, false));
+    assertEquals(
+        DeploymentDriver.VolumeState.UNKNOWN, driver.volumeExists("qits-stt-data").state());
+  }
+
+  @Test
+  void aVolumeNameThatCouldNotBeMountedIsUnknownWithoutAskingTheRuntime() {
+    SwarmDeploymentDriver driver = driver();
+
+    assertEquals(
+        DeploymentDriver.VolumeState.UNKNOWN, driver.volumeExists("bad,name=x").state());
+    assertEquals(0, cli.count("volume ls"));
+  }
+
   private static final class ScriptedCli implements SwarmDeploymentDriver.Cli {
 
     final List<List<String>> calls = Collections.synchronizedList(new ArrayList<>());

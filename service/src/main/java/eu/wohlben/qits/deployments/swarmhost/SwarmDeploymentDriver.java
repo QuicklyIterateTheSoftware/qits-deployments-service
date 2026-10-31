@@ -1539,6 +1539,48 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   }
 
   /**
+   * One {@code docker volume ls -q --filter name=^<name>$}, read for an exact line.
+   *
+   * <p><b>A list rather than {@code volume inspect}</b>, because the list tells its two answers apart
+   * by output and keeps the exit code for the third: an inspect of a missing volume exits non-zero
+   * exactly as a daemon that is down does, and telling the two apart would mean matching wording.
+   * Here exit zero is an answer — the name on a line of its own is present, anything else absent
+   * (docker's {@code name} filter is a substring/regex match, so the exact line is the check and the
+   * anchors only keep the output short) — and a non-zero exit or a timeout is {@code UNKNOWN} with
+   * the CLI's own words.
+   *
+   * <p>The name is validated as a mount source first, like every name {@link #volumeFlags} renders:
+   * one that could not be mounted is not a question worth asking the runtime, and the refusal comes
+   * back as {@code UNKNOWN} so the deployment fails naming it.
+   *
+   * <p>The volume list is the node's this CLI talks to. That is where a private volume lives on the
+   * single-node swarm this deployer drives, and it is the same daemon {@link #apply} creates the
+   * service through.
+   */
+  @Override
+  public VolumePresence volumeExists(String name) {
+    String volume;
+    try {
+      volume = DeploymentIdentifiers.requireVolumeSource(name);
+    } catch (RuntimeException e) {
+      return VolumePresence.unknown(e.getMessage());
+    }
+    PdProcess.Result listed =
+        run(
+            List.of(runtime, "volume", "ls", "-q", "--filter", "name=^" + volume + "$"),
+            INSPECT_TIMEOUT);
+    if (listed.exitCode() != 0 || listed.timedOut()) {
+      return VolumePresence.unknown(
+          listed.timedOut()
+              ? "docker volume ls timed out after " + INSPECT_TIMEOUT.toSeconds() + "s"
+              : safe(listed.output()).strip());
+    }
+    return lines(listed.output()).contains(volume)
+        ? VolumePresence.present()
+        : VolumePresence.absent();
+  }
+
+  /**
    * Classifying a missing image is ours, not swarm's — see the class javadoc.
    *
    * <p>The wording match is deliberately narrow: anything it does not recognise is {@code ERROR},

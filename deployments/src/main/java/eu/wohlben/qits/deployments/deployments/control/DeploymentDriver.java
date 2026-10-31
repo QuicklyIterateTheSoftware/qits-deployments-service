@@ -387,6 +387,47 @@ public interface DeploymentDriver {
   }
 
   /**
+   * Whether the named volume exists on the runtime — {@link VolumePresence#present()}, {@link
+   * VolumePresence#absent()}, or {@link VolumePresence#unknown(String)} when the runtime could not
+   * be asked or did not answer. Read-only: it never creates the volume it asks about.
+   *
+   * <p><b>A rename's private volumes are its only caller</b> (qits-1772). A successor that declares
+   * {@code renamed_from:} mounts the predecessor's {@code <renamed_from>-<name>} only while its own
+   * {@code <application>-<name>} does not exist and the predecessor's does — so the deploy service
+   * asks twice per private volume, and only for a spec that declares a rename. Every other
+   * deployment spends nothing here.
+   *
+   * <p><b>Unknown is not absent.</b> A daemon that is down must never read as "no such volume":
+   * that would pin a successor onto its predecessor's data, or move it off its own onto an empty
+   * one, on a guess. The caller fails the deployment instead, naming the volume and {@code detail}.
+   */
+  VolumePresence volumeExists(String name);
+
+  /** What {@link #volumeExists} found. {@code detail} is the runtime's own words when unknown. */
+  record VolumePresence(VolumeState state, String detail) {
+
+    public static VolumePresence present() {
+      return new VolumePresence(VolumeState.PRESENT, null);
+    }
+
+    public static VolumePresence absent() {
+      return new VolumePresence(VolumeState.ABSENT, null);
+    }
+
+    public static VolumePresence unknown(String detail) {
+      return new VolumePresence(VolumeState.UNKNOWN, detail);
+    }
+  }
+
+  /** The three answers {@link #volumeExists} can give. */
+  enum VolumeState {
+    PRESENT,
+    ABSENT,
+    /** The runtime could not be asked or did not answer: neither of the other two may be assumed. */
+    UNKNOWN
+  }
+
+  /**
    * Whether the service {@code spec} describes publishes a host port — declared in the repository's
    * {@code publishes:} or stated by deployment config. A rename cutover asks it to choose its order:
    * a successor that publishes the predecessor's port cannot start beside it, so the predecessor has

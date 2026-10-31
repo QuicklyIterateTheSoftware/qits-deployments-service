@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -108,6 +109,15 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   /** The service {@link #isOwnService} answers true for — the deployer's own; none by default. */
   private volatile String ownService;
 
+  /**
+   * The volumes {@link #volumeExists} answers {@code PRESENT} for. None by default: this fake runs
+   * nothing, so the only volumes there can be are the ones a test said exist.
+   */
+  private final Set<String> existingVolumes = ConcurrentHashMap.newKeySet();
+
+  /** The volumes {@link #volumeExists} answers {@code UNKNOWN} for, with the runtime's words. */
+  private final Map<String, String> unknownVolumes = new ConcurrentHashMap<>();
+
   public void reset() {
     applied.clear();
     awaited.clear();
@@ -122,6 +132,8 @@ public class FakeDeploymentDriver implements DeploymentDriver {
     removedServices.clear();
     removeServiceFailure = null;
     ownService = null;
+    existingVolumes.clear();
+    unknownVolumes.clear();
     calls.clear();
     runningImages.clear();
     stagedEnvironments.clear();
@@ -220,6 +232,16 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   /** Make {@link #isOwnService} answer true for this name: the deployer's own service. */
   public void scriptOwnService(String name) {
     ownService = name;
+  }
+
+  /** Make {@link #volumeExists} answer {@code PRESENT} for this volume. */
+  public void scriptExistingVolume(String name) {
+    existingVolumes.add(name);
+  }
+
+  /** Make {@link #volumeExists} answer {@code UNKNOWN} for this volume, with {@code detail}. */
+  public void scriptUnknownVolume(String name, String detail) {
+    unknownVolumes.put(name, detail);
   }
 
   // --- what was recorded -------------------------------------------------------------------------
@@ -328,6 +350,16 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   public boolean isOwnService(String name) {
     calls.add("isOwnService:" + name);
     return name.equals(ownService);
+  }
+
+  @Override
+  public VolumePresence volumeExists(String name) {
+    calls.add("volumeExists:" + name);
+    String unknown = unknownVolumes.get(name);
+    if (unknown != null) {
+      return VolumePresence.unknown(unknown);
+    }
+    return existingVolumes.contains(name) ? VolumePresence.present() : VolumePresence.absent();
   }
 
   @Override

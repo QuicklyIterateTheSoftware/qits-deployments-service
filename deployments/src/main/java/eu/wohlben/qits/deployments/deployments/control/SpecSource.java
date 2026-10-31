@@ -386,12 +386,11 @@ public interface SpecSource {
      *
      * <p><b>{@code name} is not the volume for a {@link Scope#PRIVATE} entry</b>: it is the segment
      * the application's own name is prefixed to, and the volume is {@code <application>-<name>} —
-     * or {@code <renamed_from>-<name>} while the file declares a rename, see {@link #source(String,
-     * String)}.
-     * The parser does not know the application name — exactly as it does not for a resource's
-     * defaulted database — so {@code DeployService.register} resolves it. That is the isolation
-     * rather than a convenience: a repository cannot write a literal volume name, so it cannot
-     * write a sibling's.
+     * or, under a declared rename whose own volume does not exist yet, the predecessor's {@code
+     * <renamed_from>-<name>}, see {@link #source(String, String)}. The parser does not know the
+     * application name — exactly as it does not for a resource's defaulted database — so {@code
+     * DeployService.resolveVolumes} resolves it. That is the isolation rather than a convenience: a
+     * repository cannot write a literal volume name, so it cannot write a sibling's.
      *
      * <p>For {@link Scope#SHARED} the name IS the volume, out of the closed vocabulary the parser
      * holds: a platform-owned volume is not this application's to derive.
@@ -409,39 +408,34 @@ public interface SpecSource {
       }
 
       /**
-       * The volume this mounts for an application that was never renamed — {@link #source(String,
-       * String)} with no predecessor, kept so a caller with no {@code renamed_from:} to hand does
-       * not have to spell the null.
+       * The volume this mounts for an application that never inherited one — {@code
+       * <application>-<name>} for a private volume, the stated name for a shared one. {@link
+       * #source(String, String)} with no predecessor, kept so a caller with no {@code renamed_from:}
+       * to hand does not have to spell the null.
        */
       public String source(String applicationName) {
         return source(applicationName, null);
       }
 
       /**
-       * The volume this mounts, once the application's name — and the name it was renamed from, if
-       * any — is known: {@code <owner>-<name>} for a private one, and the stated name for a shared
-       * one.
+       * The name this volume has when it is owned by the predecessor a file declares — {@code
+       * <renamed_from>-<name>} for a private one under a real rename — and the {@link
+       * #source(String)} name otherwise. A {@code renamedFrom} that is null, blank or the
+       * application's own name is no rename. A shared one is the stated name either way.
        *
-       * <p><b>The owner is the predecessor while {@code renamed_from:} is declared</b> (qits-1772).
-       * A private volume holds the application's data, and a rename moves nothing on disk: had the
-       * successor derived {@code <new>-<name>} it would have mounted a fresh, empty volume, started
-       * cleanly on it — an empty postgres data directory initialises and passes its health gate —
-       * and left every byte in {@code <old>-<name>} behind a cutover that reported success. So the
-       * successor PINS to the predecessor's volume instead: no copy (a copy is a second writer's
-       * worth of time, and a half-copied volume is worse than either side), no refusal (a rename
-       * is legitimate, and refusing it would make every application with private data
-       * unrenameable). A {@code renamedFrom} that is null, blank or the application's own name is
-       * no rename, and resolves exactly as it always did.
-       *
-       * <p>The pin lasts exactly as long as the key does. Removing {@code renamed_from:} later
-       * moves the application back onto an empty {@code <new>-<name>}, and a second rename
-       * resolves against whatever the newest key names — neither is something this method can
-       * see, which is why the deployment docs tell an application holding private data to keep the
-       * key.
+       * <p><b>This is a NAMING helper, not the decision</b> (qits-1772). A rename moves nothing on
+       * disk, so a successor holding private data has to mount the volume the old name wrote rather
+       * than a fresh, empty {@code <new>-<name>} — but only while that is still where its data is.
+       * Which of the two candidates a deployment mounts depends on what exists on the docker host,
+       * which this record cannot see: {@code DeployService.resolveVolumes} asks the driver and
+       * picks the predecessor's name only when the application's own volume is absent and the
+       * predecessor's is present. Every other case — own present (a rename completed before the
+       * pin existed, like qits-edge and qits-stt; or a rename BACK onto a name whose volume still
+       * exists), or neither present — mounts {@link #source(String)}.
        *
        * <p>One spelling of the derivation, here, because everything that has to agree about which
-       * volume an application holds takes it from this method — the argv that mounts it, and the
-       * comparison against a live service that decides whether the mount is there at all.
+       * volume an application holds takes its names from this record — the argv that mounts it, and
+       * the comparison against a live service that decides whether the mount is there at all.
        */
       public String source(String applicationName, String renamedFrom) {
         if (scope == Scope.SHARED) {
@@ -451,12 +445,14 @@ public interface SpecSource {
       }
 
       /**
-       * Whether {@link #source(String, String)} resolves this volume against the predecessor rather
-       * than the application itself — a private volume under a real rename. Asked off the scope,
-       * never off the resolved name's prefix: a shared volume may happen to start with either
-       * application's name, and one application's name may be a prefix of the other's.
+       * Whether this volume COULD be pinned to the predecessor — a private volume under a real
+       * rename, the only kind for which {@link #source(String, String)} and {@link #source(String)}
+       * differ, and therefore the only kind {@code DeployService.resolveVolumes} asks the driver
+       * about. Asked off the scope, never off a resolved name's prefix: a shared volume may happen
+       * to start with either application's name, and one application's name may be a prefix of the
+       * other's.
        */
-      public boolean pinnedToPredecessor(String applicationName, String renamedFrom) {
+      public boolean pinnableToPredecessor(String applicationName, String renamedFrom) {
         return scope == Scope.PRIVATE
             && !owner(applicationName, renamedFrom).equals(applicationName);
       }

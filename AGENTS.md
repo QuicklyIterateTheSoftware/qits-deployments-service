@@ -2260,11 +2260,16 @@ deployed here — runs the path it always ran. Seven things about it, each easy 
   only while the predecessor is still serving (`ACTIVE`) at cutover; behind a `SCALED_TO_ZERO` shell
   or an already-retired predecessor it rides the successor's next create instead.
 - **private volumes** (qits-1772) — while `renamed_from:` is declared, a `volumes:
-  private:<name>:<target>` resolves to the PREDECESSOR's volume, `<renamed_from>-<name>`, not to
-  `<new>-<name>`. The successor mounts the data the old name wrote; nothing is copied and nothing is
-  refused. One derivation does it, `VolumeSpec.source(applicationName, renamedFrom)`, so the mount
-  argv and the live-drift comparison agree on it. See the two warnings below the table further down
-  before you rename an application that holds private data.
+  private:<name>:<target>` resolves to the PREDECESSOR's volume, `<renamed_from>-<name>`, **only when
+  the application's own `<new>-<name>` does not exist on the docker host and `<renamed_from>-<name>`
+  does**; in every other case it is `<new>-<name>`, as for any application. The successor mounts the
+  data the old name wrote; nothing is copied and nothing is refused. The decision is made once per
+  deployment, at its start, by `DeployService.resolveVolumes` asking `DeploymentDriver.volumeExists`
+  (`docker volume ls -q --filter name=^<volume>$`); the names come from `VolumeSpec.source`, and the
+  mount argv, the live-drift comparison, the forced stop-old and the restore path all use the one
+  resolved result. A docker host that cannot answer fails THAT deployment's row naming the volume and
+  the error — it never guesses. An application without `renamed_from:` asks nothing. See the
+  warnings below the table further down before you rename an application that holds private data.
 - **the swap order** — `start-first` with no published port and no private volume: the successor is
   created and gated beside the predecessor, then the predecessor goes. `stop-first`, any published
   port, **or any private volume pinned to the predecessor** (the two would otherwise run side by side
@@ -2306,12 +2311,25 @@ deployed here — runs the path it always ran. Seven things about it, each easy 
 
 **Moved by a pin, and worth knowing before you rename — private volumes (qits-1772).** A declared
 `volumes: private:<name>:<target>` derives the docker volume `<application>-<name>` — except while
-`renamed_from:` is declared, when it derives `<renamed_from>-<name>`. So a renamed application keeps
+`renamed_from:` is declared AND `<application>-<name>` does not exist on the host AND
+`<renamed_from>-<name>` does, when it mounts `<renamed_from>-<name>`. So a renamed application keeps
 mounting the volume its old name wrote, rather than starting green on a brand-new, EMPTY
 `<new>-<name>` and leaving the data behind, which is what it did before qits-1772: an empty postgres
 data directory initialises and passes its health gate, so nothing failed. Nothing is copied — the
-volume keeps the old name for good — and such a rename always takes the stop-old swap above, a brief
-outage, because the predecessor has the same volume open. `shared:` was never an alternative: it
+volume keeps the old name for good, and the pin is stable because nothing ever creates
+`<new>-<name>` while it holds — and such a rename takes the stop-old swap above, a brief outage,
+because the predecessor has the same volume open. Each deployment logs at INFO which way every
+renamed private volume resolved and why (own volume present / pinned to predecessor / neither
+present).
+
+**Why the host is asked rather than the key alone.** The first cut of qits-1772 pinned
+unconditionally on the key, and that broke the renames completed BEFORE the pin existed:
+`qits-edge` (`renamed_from: qits-platform-edge`) has run on `qits-edge-letsencrypt` and `qits-stt`
+(`renamed_from: qits-speech`) on `qits-stt-data` ever since their cutovers, and both still declare
+the key — an unconditional pin moved their next deploy onto the stale or empty
+`qits-platform-edge-letsencrypt` / `qits-speech-data`, and the swarm drift check would have
+recreated the service onto it. An application's own volume existing always wins, so those two stay
+put, and so does any rename whose own volume has since been created by hand. `shared:` was never an alternative: it
 draws from a closed vocabulary (qits-containers' `qits.containers.shared-volumes`) that has no slot
 for an old name. Retirement does not delete the volume either way. The applications declaring
 `private:` volumes today, read off each repository's `origin/main` (`application -> volume(s)`):
@@ -2324,26 +2342,30 @@ for an old name. Retirement does not delete the volume either way. The applicati
 | `qits-stt` | `qits-stt-data` |
 | `qits-workspaces` | `qits-workspaces-data`, plus the closed-vocabulary `qits_shared_dot_claude` |
 
-Two warnings follow from the pin being a property of the key rather than of the volume:
+What the rule does and does not cover:
 
-- **Removing `renamed_from:` later moves the application back onto an empty `<new>-<name>`.** The
-  pin is read off the file at every deployment, so the first release without the key derives the
+- **Removing `renamed_from:` later moves a PINNED application back onto an empty `<new>-<name>`.**
+  The pin is read off the file at every deployment, so the first release without the key derives the
   successor's own name again and starts green on a fresh volume, with the data still sitting in
-  `<old>-<name>`. Keep the key for as long as the application holds private data.
-- **A second, chained rename of an application with private data resolves to the wrong volume.**
-  A→B→C declares `renamed_from: B` and pins `B-<name>`, but the data lives in `A-<name>`; renaming
-  back (B→A with `renamed_from: B`) pins `B-<name>` too, a volume that never held anything. The
-  derivation knows one predecessor, never a chain, so either case is a manual volume move: stop the
-  service, copy the data into the volume the new spec will derive, then release.
+  `<old>-<name>`. Keep the key for as long as a pinned application holds private data. (An
+  application on its own volume, like `qits-edge` and `qits-stt`, is unaffected either way.)
+- **A rename back is handled.** B→A with `renamed_from: B`, where `A-<name>` still exists from
+  before the first rename: A's own volume exists, so A mounts it — the data it left there.
+- **A chained rename is still manual.** A→B→C declares `renamed_from: B`, but B was pinned to
+  `A-<name>` and never created `B-<name>`; neither `C-<name>` nor `B-<name>` exists, so C resolves to
+  its own, EMPTY `C-<name>` while the data sits in `A-<name>`. The rule knows one predecessor, never
+  a chain: stop the service, copy the data into `C-<name>` (or whatever the new spec will mount),
+  then release.
 
 **Whether to keep `renamed_from:` declared once the predecessor is fully retired is not a close
 call — check `renameOf`, and then the volumes.** `renameOf` only reads a cutover out of the key when
 the predecessor's NEWEST row is still `ACTIVE` or `SCALED_TO_ZERO`; once retirement has stamped that
 row `DECOMMISSIONED`, the same key makes `renameOf` return null and every later deployment of the
 successor runs the ordinary, non-cutover path. So for the cutover the key sits inert once retirement
-has finished, and leaving it in costs nothing. **It is not inert for private volumes** (qits-1772):
-the pin to `<renamed_from>-<name>` is read off the key at every deployment, so for an application
-holding private data, taking the key out moves it onto an empty volume — keep it.
+has finished, and leaving it in costs nothing. **It is not inert for a PINNED private volume**
+(qits-1772): the pin to `<renamed_from>-<name>` is decided off the key at every deployment, so for
+an application whose own `<new>-<name>` was never created, taking the key out moves it onto an empty
+volume — keep it.
 
 **The release door was unaffected**, and that was checked rather than assumed at the time:
 qits-workspaces' `DeploymentSpecReader` **statted** this file and never opened it (a file means

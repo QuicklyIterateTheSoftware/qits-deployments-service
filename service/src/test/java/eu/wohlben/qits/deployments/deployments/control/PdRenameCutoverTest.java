@@ -196,15 +196,17 @@ public class PdRenameCutoverTest {
 
   @Test
   public void aStartFirstSuccessorWithPrivateDataMountsThePredecessorsVolumeAndStopsItFirst() {
-    // qits-1772: the successor's private volume is the predecessor's, not a fresh <new>-data —
-    // and because it is the SAME volume, start-first would run two writers on it, so the swap is
-    // forced stop-old even though nothing here asks for stop-first or publishes a port.
+    // qits-1772: the successor's own <new>-data does not exist and the predecessor's does, so it
+    // mounts the predecessor's rather than a fresh, empty one — and because it is the SAME volume,
+    // start-first would run two writers on it, so the swap is forced stop-old even though nothing
+    // here asks for stop-first or publishes a port.
     String env = "rn-vol";
     String environmentId = createEnvironment(env);
     String old = "rn-vol-old";
     String fresh = "rn-vol-new";
     deployPredecessor(environmentId, old, List.of(IDP));
     fake.reset();
+    fake.scriptExistingVolume(old + "-data");
 
     specs.script(fresh, spec(List.of(IDP), null, old, null, List.of(PRIVATE_DATA)));
     List<String> logged =
@@ -245,6 +247,7 @@ public class PdRenameCutoverTest {
     deployPredecessor(environmentId, old, List.of(IDP));
     String predecessorId = newest(old, environmentId).id;
     fake.reset();
+    fake.scriptExistingVolume(old + "-data");
     fake.scriptConvergence(DeploymentDriver.Convergence.failed("the task never went healthy"));
 
     specs.script(fresh, spec(List.of(IDP), null, old, null, List.of(PRIVATE_DATA)));
@@ -264,6 +267,68 @@ public class PdRenameCutoverTest {
     assertEquals(
         List.of(new DeploymentDriver.VolumeMount(old + "-data", "/data", false)),
         restored.volumes());
+  }
+
+  @Test
+  public void aCompletedRenameWhoseOwnVolumeExistsKeepsItAndIsNotForcedStopOld() {
+    // The qits-edge / qits-stt case qits-1772's first fix broke: the rename was cut over before
+    // the pin existed, the file still declares renamed_from, the predecessor is long retired and
+    // the application has run on its own <new>-data since. A stale <old>-data may still sit on the
+    // host. The own volume wins, and nothing about the swap is forced.
+    String env = "rn-done";
+    String environmentId = createEnvironment(env);
+    String old = "rn-done-old";
+    String fresh = "rn-done-new";
+    fake.scriptExistingVolume(fresh + "-data");
+    fake.scriptExistingVolume(old + "-data");
+
+    specs.script(fresh, spec(List.of(), null, old, null, List.of(PRIVATE_DATA)));
+    List<String> logged =
+        logsOf(
+            () -> {
+              postRelease("run-done", fresh);
+              awaitSettled(environmentId, 1);
+            });
+
+    assertEquals(PdDeploymentStatus.ACTIVE, newest(fresh, environmentId).status);
+    assertEquals(
+        List.of(new DeploymentDriver.VolumeMount(fresh + "-data", "/data", false)),
+        fake.applied().get(0).volumes(),
+        "its own data, never the predecessor's stale " + old + "-data");
+    List<String> calls = fake.calls();
+    assertTrue(calls.contains("volumeExists:" + fresh + "-data"), calls.toString());
+    assertFalse(calls.contains("volumeExists:" + old + "-data"), "own present settles it: " + calls);
+    assertFalse(calls.stream().anyMatch(c -> c.startsWith("removeService:")), calls.toString());
+    assertFalse(
+        logged.stream().anyMatch(line -> line.contains("stop-old order forced")), logged.toString());
+    assertTrue(
+        logged.stream()
+            .anyMatch(line -> line.contains("mounts its own volume") && line.contains(fresh + "-data")),
+        logged.toString());
+  }
+
+  @Test
+  public void aRenamedVolumeTheRuntimeCannotAnswerAboutFailsTheRowBeforeAnythingMoves() {
+    String env = "rn-volunk";
+    String environmentId = createEnvironment(env);
+    String old = "rn-volunk-old";
+    String fresh = "rn-volunk-new";
+    deployPredecessor(environmentId, old, List.of(IDP));
+    fake.reset();
+    fake.scriptUnknownVolume(fresh + "-data", "Cannot connect to the Docker daemon");
+
+    specs.script(fresh, spec(List.of(IDP), null, old, null, List.of(PRIVATE_DATA)));
+    postRelease("run-volunk", fresh);
+    awaitSettled(environmentId, 2);
+
+    PdDeployment failed = newest(fresh, environmentId);
+    assertEquals(PdDeploymentStatus.FAILED, failed.status);
+    assertTrue(failed.detail.contains(fresh + "-data"), failed.detail);
+    assertTrue(failed.detail.contains("Cannot connect to the Docker daemon"), failed.detail);
+    assertEquals(List.of(), fake.pulled());
+    assertEquals(List.of(), fake.applied());
+    assertEquals(PdDeploymentStatus.ACTIVE, newest(old, environmentId).status, "untouched");
+    assertTrue(catalog.find(old).isPresent());
   }
 
   @Test

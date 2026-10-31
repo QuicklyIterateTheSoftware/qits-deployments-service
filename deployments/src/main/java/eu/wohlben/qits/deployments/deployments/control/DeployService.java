@@ -1225,14 +1225,11 @@ public class DeployService implements ReleaseAnnouncements {
    * per-place rather than once per event for the reason every other spec value is — both uses are
    * made per target, and a {@link Plan} is plain values.
    *
-   * <p>{@code pinnedVolumes} follows from it: the resolved names of the private volumes that mount
-   * the PREDECESSOR's storage because the file declares a rename (qits-1772, see {@code
-   * VolumeSpec.source(String, String)}). Empty for every application that was not renamed or keeps
-   * no private data. It is computed beside {@code volumes}, off the declared scopes, rather than
-   * re-derived later from the resolved names — a name's prefix cannot tell a pinned private volume
-   * from a shared one that happens to share it. The cutover reads it for one decision: two
-   * applications on one private volume is two writers, so a rename that pins one is always swapped
-   * stop-old.
+   * <p>{@code volumes} is what the file DECLARED, names not yet resolved — and that is qits-1772's
+   * second fix. Which volume a private entry mounts under a declared rename depends on what exists
+   * on the docker host ({@link #resolveVolumes}), and registration has neither the per-place driver
+   * call nor a row to fail when the host cannot answer. So the names are resolved at deploy time,
+   * after the row is {@code STARTING}, and carried on the {@link Plan} from there.
    */
   record Target(
       String applicationName,
@@ -1243,7 +1240,7 @@ public class DeployService implements ReleaseAnnouncements {
       String healthPath,
       String healthCmd,
       List<ResourceProvisioning.Resolved> resources,
-      List<DeploymentDriver.VolumeMount> volumes,
+      List<DeploymentSpec.VolumeSpec> volumes,
       DeploymentDriver.UpdateOrder updateOrder,
       DeploymentDriver.PublishMode publishMode,
       List<String> routes,
@@ -1252,7 +1249,6 @@ public class DeployService implements ReleaseAnnouncements {
       List<NavigationEntry> navigation,
       String apiDocs,
       String renamedFrom,
-      List<String> pinnedVolumes,
       Duration stopGracePeriod,
       DeclaredShape shape) {}
 
@@ -1860,8 +1856,6 @@ public class DeployService implements ReleaseAnnouncements {
     // would be a fresh, empty store on the first deployment after the identity rollback.
     List<ResourceProvisioning.Resolved> resources =
         ResourceProvisioning.resolve(applicationName, spec.resources());
-    List<DeploymentDriver.VolumeMount> volumes = volumeMounts(applicationName, spec);
-    List<String> pinnedVolumes = pinnedVolumes(applicationName, spec);
     catalog.upsert(
         new ServiceCatalog.Upsert(
             applicationName,
@@ -1886,7 +1880,9 @@ public class DeployService implements ReleaseAnnouncements {
               healthPath,
               spec.healthCmd(),
               resources,
-              volumes,
+              // Declared, not resolved: under a rename the name depends on the docker host, which
+              // is asked at deploy time — see resolveVolumes.
+              spec.volumes(),
               spec.updateOrder(),
               spec.publishMode(),
               spec.routes(),
@@ -1895,7 +1891,6 @@ public class DeployService implements ReleaseAnnouncements {
               spec.navigationEntries(),
               spec.apiDocs(),
               spec.renamedFrom(),
-              pinnedVolumes,
               spec.stopGracePeriod(),
               // binds/publishes/aliases as WRITTEN: the driver resolves ${QITS_ENVIRONMENT} in an
               // alias against the place it deploys into, which is where a refusal can end a row.
@@ -1905,48 +1900,144 @@ public class DeployService implements ReleaseAnnouncements {
   }
 
   /**
-   * The volumes the repository declared, with every name resolved — which is this method's whole
-   * job, and it is the {@code resources} arrangement exactly: the parser reads what the file says
-   * and validates it, and the NAME is finished here, because this is the first place that knows
-   * which application the file was read for. A private {@code volumes: private:data:/data} becomes
-   * the volume {@code <application>-data}; a shared one was named in full and passes through.
+   * The volumes the repository declared, with every name resolved — the {@code resources}
+   * arrangement: the parser reads what the file says and validates it, and the NAME is finished
+   * here, because this is where the application name and the docker host are both to hand. A
+   * private {@code volumes: private:data:/data} becomes {@code <application>-data}; a shared one was
+   * named in full and passes through. It is also why a repository cannot reach another
+   * application's storage: the name it writes is a segment, and the prefix is not its to choose.
    *
-   * <p>A file that declares {@code renamed_from:} resolves its private volumes against the
-   * predecessor instead — {@code <renamed_from>-data} — so the successor mounts the data the old
-   * name wrote rather than a fresh, empty volume (qits-1772). The derivation is {@code
-   * VolumeSpec.source(String, String)}'s, not this method's; see {@link #pinnedVolumes} for which
-   * entries that touched.
+   * <p><b>The one place that decides which owner a renamed application's private volume has</b>
+   * (qits-1772). A rename moves nothing on disk, so a successor deriving {@code <new>-data} on its
+   * first deployment would mount a fresh, empty volume, start cleanly on it and leave every byte in
+   * {@code <old>-data} behind a cutover that reported success. So under a declared rename — {@code
+   * renamedFrom} non-blank and not the application's own name — each PRIVATE volume is resolved
+   * against what exists on the host:
    *
-   * <p>It is also why a repository cannot reach another application's storage: the name it writes
-   * is a segment, and the prefix is not its to choose. See {@code DeploymentSpec.VolumeSpec}.
+   * <ul>
+   *   <li>its own {@code <application>-<name>} exists: mount that. A rename completed before the
+   *       pin existed (qits-edge from qits-platform-edge, qits-stt from qits-speech) has run on its
+   *       own volume since, and still declares {@code renamed_from:}; mounting the predecessor's
+   *       stale or empty one there would be the very data loss this guards against, in reverse.
+   *       It is also what makes a rename BACK (B to A, where A's volume is still there) find A's
+   *       own data;
+   *   <li>its own is absent and the predecessor's {@code <renamed_from>-<name>} exists: PIN to the
+   *       predecessor's. No copy (a half-copied volume is worse than either side) and no refusal (a
+   *       rename is legitimate). Stable across deploys: nothing ever creates {@code <new>-<name>}
+   *       while the pin holds, so every later deployment answers the same;
+   *   <li>neither exists: its own, exactly as an application that was never renamed.
+   * </ul>
+   *
+   * <p>A runtime that cannot answer is NOT absent: the result carries a {@code failure} naming the
+   * volume and the runtime's words, and the caller fails the deployment row rather than guess one
+   * way onto the wrong data. An application without a rename, and every shared volume, resolves
+   * without a single driver call.
    */
-  private static List<DeploymentDriver.VolumeMount> volumeMounts(
-      String applicationName, DeploymentSpec spec) {
-    List<DeploymentDriver.VolumeMount> mounts = new ArrayList<>();
-    for (DeploymentSpec.VolumeSpec volume : spec.volumes()) {
-      mounts.add(
-          new DeploymentDriver.VolumeMount(
-              volume.source(applicationName, spec.renamedFrom()),
-              volume.target(),
-              volume.readOnly()));
+  static VolumeResolution resolveVolumes(
+      String applicationName,
+      String renamedFrom,
+      List<DeploymentSpec.VolumeSpec> declared,
+      DeploymentDriver driver) {
+    List<ResolvedVolume> resolved = new ArrayList<>();
+    for (DeploymentSpec.VolumeSpec volume :
+        declared == null ? List.<DeploymentSpec.VolumeSpec>of() : declared) {
+      String own = volume.source(applicationName);
+      if (!volume.pinnableToPredecessor(applicationName, renamedFrom)) {
+        resolved.add(resolvedVolume(volume, own, false));
+        continue;
+      }
+      String predecessors = volume.source(applicationName, renamedFrom);
+      DeploymentDriver.VolumePresence ownPresence = driver.volumeExists(own);
+      if (ownPresence.state() == DeploymentDriver.VolumeState.UNKNOWN) {
+        return VolumeResolution.failed(unknownVolume(applicationName, renamedFrom, own, ownPresence));
+      }
+      if (ownPresence.state() == DeploymentDriver.VolumeState.PRESENT) {
+        LOG.infof(
+            "%s (renamed from %s) mounts its own volume %s: it exists, so %s is not pinned",
+            applicationName, renamedFrom, own, predecessors);
+        resolved.add(resolvedVolume(volume, own, false));
+        continue;
+      }
+      DeploymentDriver.VolumePresence predecessorPresence = driver.volumeExists(predecessors);
+      if (predecessorPresence.state() == DeploymentDriver.VolumeState.UNKNOWN) {
+        return VolumeResolution.failed(
+            unknownVolume(applicationName, renamedFrom, predecessors, predecessorPresence));
+      }
+      if (predecessorPresence.state() == DeploymentDriver.VolumeState.PRESENT) {
+        LOG.infof(
+            "%s (renamed from %s) mounts %s pinned to its predecessor: its own %s does not exist and"
+                + " the predecessor's does",
+            applicationName, renamedFrom, predecessors, own);
+        resolved.add(resolvedVolume(volume, predecessors, true));
+        continue;
+      }
+      LOG.infof(
+          "%s (renamed from %s) mounts its own volume %s: neither it nor the predecessor's %s"
+              + " exists",
+          applicationName, renamedFrom, own, predecessors);
+      resolved.add(resolvedVolume(volume, own, false));
     }
-    return List.copyOf(mounts);
+    return new VolumeResolution(List.copyOf(resolved), null);
+  }
+
+  private static ResolvedVolume resolvedVolume(
+      DeploymentSpec.VolumeSpec declared, String source, boolean pinned) {
+    return new ResolvedVolume(
+        declared,
+        new DeploymentDriver.VolumeMount(source, declared.target(), declared.readOnly()),
+        pinned);
+  }
+
+  private static String unknownVolume(
+      String applicationName,
+      String renamedFrom,
+      String volume,
+      DeploymentDriver.VolumePresence presence) {
+    return "could not tell whether the volume "
+        + volume
+        + " exists, which decides whether "
+        + applicationName
+        + " (renamed_from: "
+        + renamedFrom
+        + ") mounts its own private volume or its predecessor's; nothing was deployed\n"
+        + (presence.detail() == null ? "" : presence.detail());
   }
 
   /**
-   * The resolved names of the volumes {@link #volumeMounts} pinned to the predecessor — the private
-   * ones, under a declared rename. Asked of the spec's scopes through {@code
-   * VolumeSpec.pinnedToPredecessor} rather than inferred from a {@code <renamed_from>-} prefix on
-   * the resolved names: a shared volume can carry that prefix without being anybody's private data.
+   * One declared volume and the mount {@link #resolveVolumes} decided for it. {@code pinned} is
+   * whether the mount is the PREDECESSOR's private volume. The declared entry stays beside the
+   * mount because the rename cutover's restore asks it the scope — a resolved name's prefix cannot
+   * tell a private volume from a shared one that happens to share it.
    */
-  private static List<String> pinnedVolumes(String applicationName, DeploymentSpec spec) {
-    List<String> pinned = new ArrayList<>();
-    for (DeploymentSpec.VolumeSpec volume : spec.volumes()) {
-      if (volume.pinnedToPredecessor(applicationName, spec.renamedFrom())) {
-        pinned.add(volume.source(applicationName, spec.renamedFrom()));
-      }
+  record ResolvedVolume(
+      DeploymentSpec.VolumeSpec declared, DeploymentDriver.VolumeMount mount, boolean pinned) {}
+
+  /**
+   * What {@link #resolveVolumes} decided: every declared volume resolved, or — when the runtime
+   * could not say whether a renamed application's volume exists — a {@code failure} to fail the
+   * deployment row with, and nothing resolved.
+   */
+  record VolumeResolution(List<ResolvedVolume> volumes, String failure) {
+
+    static final VolumeResolution NONE = new VolumeResolution(List.of(), null);
+
+    static VolumeResolution failed(String failure) {
+      return new VolumeResolution(List.of(), failure);
     }
-    return List.copyOf(pinned);
+
+    /** What the service mounts, in declaration order. */
+    List<DeploymentDriver.VolumeMount> mounts() {
+      return volumes.stream().map(ResolvedVolume::mount).toList();
+    }
+
+    /**
+     * The names of the private volumes pinned to the predecessor. The cutover reads it for one
+     * decision: two applications on one private volume is two writers, so a rename that pins one
+     * is always swapped stop-old.
+     */
+    List<String> pinned() {
+      return volumes.stream().filter(ResolvedVolume::pinned).map(v -> v.mount().source()).toList();
+    }
   }
 
   /**
@@ -2123,8 +2214,6 @@ public class DeployService implements ReleaseAnnouncements {
                 // No predecessor either: nothing is provisioned off one of these targets, so there
                 // is no claim for a declared rename to move.
                 null,
-                // ...and so no volume pinned to one.
-                List.of(),
                 // ...and no grace period: nothing is stopped off one of them either.
                 null,
                 // ...and no declared shape: nothing is created off one of them at all.
@@ -2309,7 +2398,23 @@ public class DeployService implements ReleaseAnnouncements {
       String healthCmd,
       String runId,
       UUID cause,
-      Instant startedAt) {
+      Instant startedAt,
+      VolumeResolution resolvedVolumes) {
+
+    /** This plan with its volumes resolved — see {@link #resolveVolumes}. */
+    Plan withVolumes(VolumeResolution resolved) {
+      return new Plan(
+          deploymentId,
+          target,
+          version,
+          commitSha,
+          healthPath,
+          healthCmd,
+          runId,
+          cause,
+          startedAt,
+          resolved);
+    }
 
     String applicationName() {
       return target.applicationName();
@@ -2340,14 +2445,21 @@ public class DeployService implements ReleaseAnnouncements {
       return target.renamedFrom();
     }
 
-    /** What the repository declared in {@code volumes:}, with every name already resolved. */
+    /**
+     * What the repository declared in {@code volumes:}, each resolved to the volume it mounts —
+     * resolved at deploy time, see {@link #resolveVolumes}. Empty before that.
+     */
     List<DeploymentDriver.VolumeMount> volumes() {
-      return target.volumes();
+      return volumeResolution().mounts();
     }
 
-    /** The private volumes resolved to the predecessor's under a rename — see {@link Target}. */
+    /** The private volumes resolved to the predecessor's under a rename — see {@link #resolveVolumes}. */
     List<String> pinnedVolumes() {
-      return target.pinnedVolumes() == null ? List.of() : target.pinnedVolumes();
+      return volumeResolution().pinned();
+    }
+
+    VolumeResolution volumeResolution() {
+      return resolvedVolumes == null ? VolumeResolution.NONE : resolvedVolumes;
     }
 
     /** The one network {@code docker run} can take; every other membership is a join. */
@@ -2420,7 +2532,7 @@ public class DeployService implements ReleaseAnnouncements {
    * The synchronous deployment — package-private so tests drive it without the worker.
    */
   void execute(String deploymentId, Target target, String version, String commitSha) {
-    Plan plan =
+    Plan started =
         QuarkusTransaction.requiringNew()
             .call(
                 () -> {
@@ -2440,25 +2552,42 @@ public class DeployService implements ReleaseAnnouncements {
                       target.healthCmd(),
                       deployment.runId,
                       deployment.causationId,
-                      Instant.now());
+                      Instant.now(),
+                      // Resolved below, outside the transaction: it may ask the runtime.
+                      null);
                 });
-    if (plan == null) {
+    if (started == null) {
       return;
     }
-    announceStarted(plan);
+    announceStarted(started);
 
     // RENAMING THE DEPLOYER IS REFUSED, before anything moves. A rename cutover retires the
     // predecessor's service, and this process cannot retire the one it answers on — nor be the
     // successor whose gate decides it. Asked only of a spec that declares `renamed_from`, so every
     // other deployment spends nothing here.
-    if (plan.renamedFrom() != null && driver.isOwnService(plan.wireAlias())) {
+    if (started.renamedFrom() != null && driver.isOwnService(started.wireAlias())) {
       finish(
           deploymentId,
           target,
           PdDeploymentStatus.FAILED,
-          DeploymentDriver.selfRenameRefusal(plan.applicationName(), plan.renamedFrom()));
+          DeploymentDriver.selfRenameRefusal(started.applicationName(), started.renamedFrom()));
       return;
     }
+    // VOLUMES ARE RESOLVED HERE, before anything moves (qits-1772). Under a declared rename a
+    // private volume mounts the predecessor's only while the application's own does not exist and
+    // the predecessor's does — a question for the runtime, so it is asked once per deployment and
+    // a runtime that cannot answer fails this row rather than guess onto the wrong data. Without a
+    // rename this asks the driver nothing.
+    VolumeResolution volumeResolution =
+        resolveVolumes(started.applicationName(), started.renamedFrom(), target.volumes(), driver);
+    if (volumeResolution.failure() != null) {
+      LOG.warnf(
+          "Could not resolve the volumes of %s: %s",
+          started.applicationName(), volumeResolution.failure());
+      finish(deploymentId, target, PdDeploymentStatus.FAILED, volumeResolution.failure());
+      return;
+    }
+    Plan plan = started.withVolumes(volumeResolution);
     // The declared predecessor, read once before anything moves: null for every spec without
     // `renamed_from`, and for one whose predecessor is not deployed in this tier — see `Rename`.
     Rename rename = renameOf(plan);
@@ -2598,7 +2727,8 @@ public class DeployService implements ReleaseAnnouncements {
     // The volume clause is qits-1772's. A pinned private volume is the SAME volume the predecessor
     // has open, and start-first would run the two side by side on it: two postgres processes on
     // one data directory, or two writers on any store that assumes it is alone. Brief downtime is
-    // the price, and it is paid only by a rename of an application that keeps private data.
+    // the price, and it is paid only by a rename whose volumes resolveVolumes actually pinned — an
+    // application already on its own volume (qits-edge, qits-stt) shares nothing and is not forced.
     boolean pinsPredecessorVolume = !plan.pinnedVolumes().isEmpty();
     boolean stopOld =
         rename != null
@@ -2974,20 +3104,19 @@ public class DeployService implements ReleaseAnnouncements {
       bindings.putIfAbsent(moved.name(), moved);
     }
 
-    // Since qits-1772 a private volume under a rename already resolves to the predecessor's own
-    // name, so it passes through below unchanged. Checking the predecessor's prefix first is what
-    // keeps a successor whose name is a prefix of the predecessor's (qits renamed from
-    // qits-x) from rewriting an already-pinned name a second time.
+    // The predecessor's own private volumes are <predecessor>-<name> whichever way the
+    // successor's resolved (qits-1772): pinned, the successor already mounts exactly that name;
+    // on its own volume, the predecessor still ran on its own. Decided off the DECLARED scope, never
+    // a resolved name's prefix — a shared volume, or a successor whose name prefixes the
+    // predecessor's (qits renamed from qits-x), would read wrong by prefix.
     List<DeploymentDriver.VolumeMount> volumes = new ArrayList<>();
-    String successorPrefix = plan.applicationName() + "-";
-    String predecessorPrefix = predecessor + "-";
-    for (DeploymentDriver.VolumeMount volume : plan.volumes()) {
+    for (ResolvedVolume volume : plan.volumeResolution().volumes()) {
+      DeploymentDriver.VolumeMount mount = volume.mount();
       String source =
-          !volume.source().startsWith(predecessorPrefix)
-                  && volume.source().startsWith(successorPrefix)
-              ? predecessor + "-" + volume.source().substring(successorPrefix.length())
-              : volume.source();
-      volumes.add(new DeploymentDriver.VolumeMount(source, volume.target(), volume.readOnly()));
+          volume.declared().scope() == DeploymentSpec.VolumeSpec.Scope.PRIVATE
+              ? predecessor + "-" + volume.declared().name()
+              : mount.source();
+      volumes.add(new DeploymentDriver.VolumeMount(source, mount.target(), mount.readOnly()));
     }
 
     String primary = PdNetworks.application(plan.environmentName(), predecessor);
@@ -3448,7 +3577,7 @@ public class DeployService implements ReleaseAnnouncements {
         plan.updateOrder(),
         plan.publishMode(),
         bindings,
-        // The storage the repository declared, names already resolved at registration. It rides
+        // The storage the repository declared, names resolved at the start of this deployment. It rides
         // beside the resource bindings because it is the same kind of fact — what this application
         // needs to exist before it can serve — and, unlike the extras, it is the application's own
         // statement rather than the platform's.
