@@ -4,8 +4,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import eu.wohlben.qits.deployments.deployments.control.SpecSource.DeploymentSpec;
 import eu.wohlben.qits.deployments.environments.control.PdNetworks;
+import eu.wohlben.qits.deployments.environments.control.ServiceCatalog.LinkedService;
+import eu.wohlben.qits.deployments.environments.entity.PdService;
 import eu.wohlben.qits.deployments.environments.error.BadRequestException;
+import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -122,6 +127,75 @@ class DeploymentIdentifiersTest {
     assertEquals("/mongrel/q/health/ready", DeployService.conventionHealthPath("mongrel"));
     // ...and so does one that is nothing BUT the prefix, rather than composing an empty segment.
     assertEquals("/qits-/q/health/ready", DeployService.conventionHealthPath("qits-"));
+  }
+
+  /** A spec stating only what each test cares about; every other field takes the parser's default. */
+  private static DeploymentSpec specWith(String healthPath, List<String> routes) {
+    return new DeploymentSpec(
+        false, null, healthPath, null, null, null, null, null, routes, 8080, null, false, null,
+        null, null, null, null, null);
+  }
+
+  /** The catalogue's stored row, with nothing linked — `resolveHealthPath` never reads the links. */
+  private static Optional<LinkedService> stored(String healthPath) {
+    PdService service = new PdService();
+    service.healthPath = healthPath;
+    return Optional.of(new LinkedService(service, List.of()));
+  }
+
+  @Test
+  void routeHealthPathIsTheFirstRouteWithTheProbeAppended() {
+    // qits-1773: the route a repository actually serves, not its deployed name.
+    assertEquals(Optional.of("/stt/q/health/ready"), DeployService.routeHealthPath(List.of("/stt")));
+    // Several routes: the first is the one that matters, exactly as navigation treats it.
+    assertEquals(
+        Optional.of("/artifacts/q/health/ready"),
+        DeployService.routeHealthPath(List.of("/artifacts", "/v2")));
+    // The root route composes no double slash...
+    assertEquals(Optional.of("/q/health/ready"), DeployService.routeHealthPath(List.of("/")));
+    // ...and nor would any other trailing slash, though the parser never hands one down today.
+    assertEquals(Optional.of("/stt/q/health/ready"), DeployService.routeHealthPath(List.of("/stt/")));
+    // No routes at all is a real, empty answer — the caller falls back to the name convention.
+    assertEquals(Optional.empty(), DeployService.routeHealthPath(List.of()));
+    assertEquals(Optional.empty(), DeployService.routeHealthPath(null));
+  }
+
+  @Test
+  void resolveHealthPathFollowsTheFirstRouteBeforeTheNameConvention() {
+    // qits-766's qits-stt -> qits-speech rename: the renamed application's name-derived path would
+    // have been /speech/..., while the container goes on serving /stt because that is what the
+    // repository declares in routes:.
+    assertEquals(
+        "/stt/q/health/ready",
+        DeployService.resolveHealthPath(
+            "qits-speech", specWith(null, List.of("/stt")), Optional.empty()));
+  }
+
+  @Test
+  void resolveHealthPathFallsBackToTheNameConventionWithNoRoute() {
+    // Unchanged behaviour for the common case: a spec declaring no routes: at all.
+    assertEquals(
+        "/observability/q/health/ready",
+        DeployService.resolveHealthPath(
+            "qits-observability", specWith(null, List.of()), Optional.empty()));
+  }
+
+  @Test
+  void resolveHealthPathPrefersTheSpecsOwnHealthPathOverTheRoute() {
+    assertEquals(
+        "/custom/ready",
+        DeployService.resolveHealthPath(
+            "qits-speech", specWith("/custom/ready", List.of("/stt")), Optional.empty()));
+  }
+
+  @Test
+  void resolveHealthPathPrefersTheStoredRowOverTheRouteDefault() {
+    // The stored value is an operator's fix and must survive a green build that carries only the
+    // route default, exactly as it already survived the name convention.
+    assertEquals(
+        "/stored/ready",
+        DeployService.resolveHealthPath(
+            "qits-speech", specWith(null, List.of("/stt")), stored("/stored/ready")));
   }
 
   @Test

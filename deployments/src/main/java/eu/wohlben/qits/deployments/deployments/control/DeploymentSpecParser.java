@@ -22,7 +22,7 @@ import java.util.regex.Pattern;
  * renamed_from: qits-platform-ci       # optional; the application name this one used to carry
  * deployment_target: environment       # RETIRED, accepted and ignored — see below
  * available_on_env: false              # default; true = public node (bundle + hub joins)
- * health_path: /q/health/ready         # default: /&lt;name without the qits- prefix&gt;/q/health/ready
+ * health_path: /q/health/ready         # default: &lt;first routes: entry&gt;/q/health/ready, else name-derived
  * health_cmd: pg_isready -U postgres   # instead of health_path: the probe runs in the container
  * resources: postgresql:db             # a database of its own, injected as QITS_RESOURCE_DB_*
  * volumes: private:data:/data          # a volume of its own, mounted at /data

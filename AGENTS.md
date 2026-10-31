@@ -1334,8 +1334,10 @@ It moved in **one commit**, which was safe for a reason worth keeping: the serve
 into the image and the spec is read at the released tag, so both halves of a self-deploy's gate come
 from the same commit — a rollback to an older tag is self-consistent for the same reason. The move
 carried a `health_path:` override in `.config/qits/deployments.yml` for exactly one release, because
-`resolveHealthPath` asks the spec, then the STORED `pd_service.health_path` row, then the convention,
-and that row still held the old path and beat the convention. **The key is gone now and must not come
+`resolveHealthPath` asked the spec, then the STORED `pd_service.health_path` row, then the convention
+(qits-1773 inserted a route-derived default between those last two, which agrees with the convention
+here since `routes: /deployments` derives the same string), and that row still held the old path and
+beat the convention. **The key is gone now and must not come
 back**: the row was re-registered with the served path (`GET /deployments/api/services` answers
 `"healthPath":"/deployments/q/health/ready"`, which is exactly what `conventionHealthPath` derives),
 so an override would only be a second spelling free to drift from the route. `OwnSpecTest` asserts

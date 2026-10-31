@@ -1915,13 +1915,24 @@ public class DeployService implements ReleaseAnnouncements {
 
   /**
    * Where a service's health path comes from, in this order: the repository's own {@code
-   * health_path}, then the value the catalogue already holds, then the convention derived from the
-   * name. The convention is <b>written to the row</b> like every other derived fact, so a fresh
-   * database gets working health gates with nothing to fill in by hand.
+   * health_path}, then the value the catalogue already holds, then the default derived from its
+   * first declared {@code routes:} entry, then — for a spec declaring no route — the convention
+   * derived from the application name. The resolved value is <b>written to the row</b> like every
+   * other derived fact, so a fresh database gets working health gates with nothing to fill in by
+   * hand.
    *
-   * <p>The stored value sits between the two on purpose. An operator who set a path is fixing
-   * something the convention got wrong, and a later green build must not undo the fix; a repository
-   * that states its own path is the more specific statement and does.
+   * <p>The stored value sits above the two derived defaults on purpose. An operator who set a path
+   * is fixing something a default got wrong, and a later green build must not undo the fix; a
+   * repository that states its own path is the more specific statement and does.
+   *
+   * <p><b>The route is what the image actually serves; the application name is a deployed identity
+   * that a rename can change underneath it.</b> qits-766's qits-stt → qits-speech rename is the
+   * measured case: the renamed application derived {@code /speech/q/health/ready} from its new
+   * name while the container itself went on answering {@code /stt} — the route a repository with
+   * {@code routes: /stt} had declared all along and the application-name convention has no way to
+   * read. {@link #routeHealthPath} is what reads it instead, and {@link #conventionHealthPath}
+   * stays what a spec with no route falls back to — most of them, and every one of them before this
+   * change.
    *
    * <p>What this replaces: registration once had no source for the path at all, so every row was
    * written null, every deployment fell back to {@code
@@ -1929,31 +1940,65 @@ public class DeployService implements ReleaseAnnouncements {
    * mounted under its own prefix — all of them but the gateway — failed a health gate against a URL
    * that 404s while the container was fine.
    */
-  private static String resolveHealthPath(
+  static String resolveHealthPath(
       String applicationName, DeploymentSpec spec, Optional<LinkedService> known) {
     if (spec.healthPath() != null) {
       return spec.healthPath();
     }
-    return known
-        .map(linked -> linked.service().healthPath)
-        .filter(path -> path != null && !path.isBlank())
-        .orElseGet(() -> conventionHealthPath(applicationName));
+    Optional<String> stored =
+        known
+            .map(linked -> linked.service().healthPath)
+            .filter(path -> path != null && !path.isBlank());
+    if (stored.isPresent()) {
+      return stored.get();
+    }
+    return routeHealthPath(spec.routes()).orElseGet(() -> conventionHealthPath(applicationName));
   }
 
   /**
-   * The platform's path convention: a service serves everything under its own name without the
-   * {@code qits-} prefix, so qits-observability answers on {@code /observability/q/health/ready}
-   * and this component — the application {@code qits-deployments} — on {@code
-   * /deployments/q/health/ready}. A name that does not carry the prefix keeps the whole name.
+   * The default health path for a spec that declares at least one {@code routes:} entry: the
+   * first one, with {@code /q/health/ready} appended. Navigation already treats the first route as
+   * the one that matters ({@code DeploymentSpecParser}'s "navigation belongs to the first route"),
+   * and the health gate follows the same rule — a repository naming several routes still serves one
+   * container, and the first is the one it chose to lead with.
+   *
+   * <p>A first route of exactly {@code /} appends without a double slash, and a trailing slash on
+   * any other route is stripped first for the same reason: the join is {@code <route>/q/health/ready},
+   * never {@code <route>//q/health/ready}.
+   *
+   * <p>Empty is a real answer — a spec declaring no route falls all the way back to {@link
+   * #conventionHealthPath}, which is every spec before qits-1773 and most of them since.
+   */
+  static Optional<String> routeHealthPath(List<String> routes) {
+    if (routes == null || routes.isEmpty()) {
+      return Optional.empty();
+    }
+    String route = routes.get(0);
+    String trimmed = route.endsWith("/") ? route.substring(0, route.length() - 1) : route;
+    return Optional.of(trimmed + "/q/health/ready");
+  }
+
+  /**
+   * The platform's path convention, and the fallback for a spec with no {@code routes:} entry: a
+   * service serves everything under its own name without the {@code qits-} prefix, so
+   * qits-observability answers on {@code /observability/q/health/ready} and this component — the
+   * application {@code qits-deployments} — on {@code /deployments/q/health/ready}. A name that does
+   * not carry the prefix keeps the whole name.
    *
    * <p>This component was the last exception to its own convention and is no longer one: it served
    * {@code /platform-deployments} while the plane that word named was already deleted. Both are the
-   * same string now, and all three sources {@link #resolveHealthPath} asks agree on it — so its own
-   * {@code .config/qits/deployments.yml} carries <b>no</b> {@code health_path:} key. That override
-   * was load-bearing for exactly one release, while the stored {@code pd_service.health_path} row
-   * still held the retired path and beat the convention; the row has since been re-registered with
-   * the served path and the key was removed. Do not re-add one to restate this method's answer: a
-   * spec that spells the path again is a second place for it to drift from the route.
+   * same string now, and every source {@link #resolveHealthPath} asks agree on it — so its own
+   * {@code .config/qits/deployments.yml} carries <b>no</b> {@code health_path:} key, and its declared
+   * {@code routes: /deployments} derives the identical path through {@link #routeHealthPath} as
+   * well. That override was load-bearing for exactly one release, while the stored {@code
+   * pd_service.health_path} row still held the retired path and beat the convention; the row has
+   * since been re-registered with the served path and the key was removed. Do not re-add one to
+   * restate this method's answer: a spec that spells the path again is a second place for it to
+   * drift from the route.
+   *
+   * <p><b>This is no longer the only derived default</b> — see {@link #routeHealthPath} for the one
+   * {@link #resolveHealthPath} asks first, because the route is what a container actually serves and
+   * the application name is a deployed identity a rename can change out from under it.
    */
   static String conventionHealthPath(String applicationName) {
     String segment =

@@ -9,6 +9,7 @@ import eu.wohlben.qits.deployments.deployments.control.SpecSource.DeploymentSpec
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -21,10 +22,11 @@ import org.junit.jupiter.api.Test;
  *
  * <p><b>What it pins is the self-deploy's health gate.</b> {@link DeployService#resolveHealthPath}
  * asks the spec, then the STORED {@code pd_service.health_path} row, then {@link
- * DeployService#conventionHealthPath} — and the three agree now that the route segment and the
+ * DeployService#routeHealthPath} off this file's own {@code routes: /deployments}, then {@link
+ * DeployService#conventionHealthPath} — and all of them agree now that the route segment and the
  * application name do. So this file states NO {@code health_path:}, and the assertion is that it
- * states none and that the convention derives the path the service actually serves. A key here would
- * be a second spelling of that string, free to drift from the route the image bakes in.
+ * states none and that the derived default is the path the service actually serves. A key here
+ * would be a second spelling of that string, free to drift from the route the image bakes in.
  *
  * <p>The key was present for exactly one release and was load-bearing then: the stored row held
  * {@code /platform-deployments/q/health/ready}, written when the route really was there, and a
@@ -63,21 +65,26 @@ class OwnSpecTest {
 
   @Test
   void noHealthPathIsSTATEDAndTheConventionDerivesTheServedOne() throws IOException {
-    // ABSENT: the three sources resolveHealthPath asks agree now, so an override would only restate
-    // the convention — and a restatement is a second place for the path to drift from the route.
+    // ABSENT: every source resolveHealthPath asks agrees now, so an override would only restate
+    // one of them — and a restatement is a second place for the path to drift from the route.
     assertNull(
         parsed().healthPath(),
         "health_path: must stay OUT of .config/qits/deployments.yml — the convention derives the"
             + " served path and the stored pd_service row names it too, so a key here is a second"
             + " spelling free to drift from the route this image bakes in");
 
-    // …and what the convention derives is the path this service actually serves, which is the half
-    // the absence relies on: with no override and no stored row, the convention IS the gate.
+    // …and what the route and the name-convention each derive is the path this service actually
+    // serves, which is the half the absence relies on: with no override and no stored row, either
+    // default IS the gate, and this file's `routes: /deployments` makes them the same string.
     assertEquals(
         "/deployments/q/health/ready",
         DeployService.conventionHealthPath(APPLICATION),
         "the health-path convention and the served non-application root are the same string; a"
             + " difference means one of the two moved without the other");
+    assertEquals(
+        Optional.of("/deployments/q/health/ready"),
+        DeployService.routeHealthPath(parsed().routes()),
+        "the first declared route and the served non-application root are the same string too");
   }
 
   @Test

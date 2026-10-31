@@ -76,7 +76,7 @@ application: qits-ci                 # optional; what this deploys AS, when it i
 deployment_target: environment       # RETIRED; still parsed for old tags, acted on by nobody
 available_on_env: false              # default; true = public node (bundle + hub joins)
 deploy_branches: environment/prod    # RETIRED; still parsed for old tags, acted on by nobody
-health_path: /q/health/ready         # default: /<name without the qits- prefix>/q/health/ready
+health_path: /q/health/ready         # default: <first route>/q/health/ready, else /<name without the qits- prefix>/q/health/ready
 health_cmd: pg_isready -U postgres   # instead of health_path; runs inside the container
 resources: postgresql:db             # a database of its own, injected as QITS_RESOURCE_DB_*
 update_order: start-first            # default | stop-first for anything that cannot overlap itself
@@ -339,8 +339,9 @@ at 200 — so the retired prefix served the client instead of failing, which is 
 change was about. The live segment is spelled in **four** places, all of them in this repository:
 `quarkus.rest.path`, `quarkus.http.non-application-root-path`,
 `quarkus.quinoa.ignored-path-prefixes` and `routes:` in the spec; the retired one survives in the
-second value of that one key. The health path is derived, not declared — the convention run on the
-application name `qits-deployments` gives `/deployments/q/health/ready`, which is the path served.
+second value of that one key. The health path is derived, not declared — the file's own
+`routes: /deployments` and the convention run on the application name `qits-deployments` both give
+`/deployments/q/health/ready`, which is the path served.
 
 **The pins are read off deployment rows alone.** qits-platform-artifacts deletes an image tag only
 when no pin names it, and deletes nothing when it cannot get an answer, so the keep-set must not
