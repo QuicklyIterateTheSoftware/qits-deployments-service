@@ -557,6 +557,27 @@ class DeploymentSpecParserTest {
   }
 
   @Test
+  void aRenamedApplicationsPrivateVolumeIsPinnedToItsPredecessorAndASharedOneIsNot() {
+    // qits-1772: a rename moves nothing on disk, so the successor mounts the volume the old name
+    // wrote — derived from renamed_from, not from its own name, which would be a fresh empty one.
+    VolumeSpec data = parse("volumes: private:data:/data\n").volumes().get(0);
+    VolumeSpec m2 = parse("volumes: shared:qits_shared_m2:/m2\n").volumes().get(0);
+
+    assertEquals("qits-ci-old-data", data.source("qits-ci", "qits-ci-old"));
+    assertTrue(data.pinnedToPredecessor("qits-ci", "qits-ci-old"));
+    // No rename — absent, blank, or naming the application itself — resolves as it always did.
+    for (String noRename : new String[] {null, "", "  ", "qits-ci"}) {
+      assertEquals("qits-ci-data", data.source("qits-ci", noRename), "renamedFrom=" + noRename);
+      assertFalse(data.pinnedToPredecessor("qits-ci", noRename), "renamedFrom=" + noRename);
+    }
+    assertEquals(data.source("qits-ci", null), data.source("qits-ci"), "one derivation");
+    // A shared volume is the platform's, so a rename has nothing to pin.
+    assertEquals("qits_shared_m2", m2.source("qits-ci", "qits-ci-old"));
+    assertEquals("qits_shared_m2", m2.source("qits-ci", null));
+    assertFalse(m2.pinnedToPredecessor("qits-ci", "qits-ci-old"));
+  }
+
+  @Test
   void aHostBindIsNotAVolumeScopeItIsTheBindsKey() {
     // A host path is not a volume: its name is neither derived nor drawn from a closed list, so it
     // has a key of its own (`binds:`) rather than a third scope here. The refusal names the two
