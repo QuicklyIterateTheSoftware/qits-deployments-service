@@ -2223,6 +2223,100 @@ deployed here — runs the path it always ran. Seven things about it, each easy 
 
 `PdRenameCutoverTest` holds all of it end to end; `SwarmDeploymentDriverTest` holds the argv.
 
+##### Renaming an application (runbook)
+
+**What you write, in ONE commit of the renamed repository:**
+
+- `application: <new>` **and** `renamed_from: <old>` in `.config/qits/deployments.yml`.
+- the docker artifact `name: qits/<new>` in `.config/qits/release.yml` — **and `contracts.application:`
+  too, if the file has one and it equalled the old application name.** qits-ci's QA check (qits-1400)
+  refuses a fold where the two disagree; `contracts.application` is also free to equal the repository's
+  own name instead (this file's does: `contracts.application: qits-deployments`), in which case a
+  rename of the *application* alone leaves it untouched.
+- `quarkus.application.name`. It is the OTel `service.name` fallback and, through
+  `eu.wohlben.qits.http.CallerHeader` (falling back behind `quarkus.otel.service.name` the same way
+  Quarkus' own exporter does), the value every internal client of this component stamps as
+  `X-Qits-Caller` on its outgoing calls — so a stale value is a wrong name in every trace this
+  component appears in, not a cosmetic miss.
+- `userflows:` — only if you WANT a fresh storage id; leaving it at the old spelling keeps the
+  bundle's history, which is why this file spells its own (`userflows: qits-deployments`) instead of
+  deriving it from the repository name.
+- `ProjectService.RESERVED_SLUGS` (qits-projects) — only if `routes:` is changing too, to a segment
+  that would newly collide with that reserved list.
+
+**What moves by itself, at the FIRST deploy of the new name:**
+
+- **postgres claims** — the conflicting `pd_resource` row's `application_name` column, transferred
+  before the credential read (`findOne`), so the predecessor keeps running on the password it already
+  holds.
+- **settings** — the `pd_setting` rows, copied on the successor's FIRST deployment only
+  (`Settings.copyForRename`), `updated_by` stamped `rename from <old>`. Preview what the copy will
+  produce against the live predecessor before you cut over:
+  `GET /deployments/api/settings/preview/<new>/<env>`.
+- **the old wire address** — `<env>-<old>` added to the successor as a derived network alias, and
+  only while the predecessor is still serving (`ACTIVE`) at cutover; behind a `SCALED_TO_ZERO` shell
+  or an already-retired predecessor it rides the successor's next create instead.
+- **the swap order** — `start-first` with no published port: the successor is created and gated
+  beside the predecessor, then the predecessor goes. `stop-first`, or any published port: the image is
+  pulled, the predecessor's service is removed, then the successor is created. A failed gate in that
+  stop-old order restores the predecessor from its last `ACTIVE` row (same image, name, address,
+  health path, resource rows, shape and private volumes mapped back to `<old>-…`) and fails the
+  successor's row naming it, rather than leaving nothing serving.
+- **retirement of the predecessor**, after the successor's gate passes: the empty `DeploymentActive`
+  goes out first so the edge drops its routes and nav entries, then its rows go `DECOMMISSIONED`
+  stamped `by rename to <new>`, its swarm service is removed, its `pd_service` row is deleted, its
+  `pd_setting` rows are deleted, and its idp client is deleted — unless a non-secret setting anywhere
+  in the tier still names it, in which case that step WARNs and waits. Every step is idempotent, and a
+  failed one is a WARN that `retryRetirements` finishes on the next observation pass; **it never fails
+  the successor**, which is already live and announced by the time retirement runs.
+
+**Refused:**
+
+- a spec that would leave the predecessor's own database behind — pin it in the successor's
+  `resources:` (qits-1397), or the deployment fails naming the database rather than starting green on
+  an empty one.
+- `renamed_from:` on the deployer's own spec — `DeploymentDriver.isOwnService` refuses it before
+  anything moves, because the cutover would retire the service it is answering on. This component's
+  own moves are the hand steps in *Retiring the plane's bare-named services* and *This repo is its own
+  deployer*, never this key.
+
+**Exempt, never moved by a rename:**
+
+- database and role NAMES — pin the old one in `resources:` if the data is to survive; nothing here
+  renames a database.
+- published maven/npm coordinates and `quarkus.package.output-name`.
+- java package roots.
+- the idp issuer constants (`ResourceProvisioning.IDP_APPLICATION`,
+  `HttpIdpClientProvisioner.IDP_APPLICATION`) — these move in a release AFTER the idp successor is
+  already serving, never before.
+- the repository name — a repository rename is `PATCH /projects/api/repositories/{id}`, a separate
+  operation in qits-projects. This runbook moves an APPLICATION; it never moves a repository.
+
+**Not moved, and worth knowing before you rename — private volumes.** A declared
+`volumes: private:<name>:<target>` derives the docker volume `<application>-<name>`, so renaming the
+application starts the successor on a brand-new, EMPTY volume (`<new>-<name>`) and leaves the
+predecessor's (`<old>-<name>`) behind — retirement does not delete it, and a later rename back finds
+it again, still holding whatever it had. `shared:` cannot stand in for it either, because it draws
+from a closed vocabulary (qits-containers' `qits.containers.shared-volumes`) that has no slot for an
+old name. That is free on a cache and real data loss on state — see qits-766's thread for the open
+decision. The applications declaring `private:` volumes today, read off each repository's
+`origin/main` (`application -> volume(s)`):
+
+| application | volume(s) |
+| --- | --- |
+| `qits-oci-postgresql` | `qits-oci-postgresql-data` |
+| `qits-edge` | `qits-edge-letsencrypt` |
+| `qits-projects` | `qits-projects-data` |
+| `qits-stt` | `qits-stt-data` |
+| `qits-workspaces` | `qits-workspaces-data`, plus the closed-vocabulary `qits_shared_dot_claude` |
+
+**Whether to keep `renamed_from:` declared once the predecessor is fully retired is not a close
+call — check `renameOf`.** It only reads a cutover out of the key when the predecessor's NEWEST row
+is still `ACTIVE` or `SCALED_TO_ZERO`; once retirement has stamped that row `DECOMMISSIONED`, the same
+key makes `renameOf` return null and every later deployment of the successor runs the ordinary,
+non-cutover path. So the key sits inert once retirement has finished — leaving it in costs nothing,
+and taking it out loses nothing it was still doing either way.
+
 **The release door was unaffected**, and that was checked rather than assumed at the time:
 qits-workspaces' `DeploymentSpecReader` **statted** this file and never opened it (a file means
 "it deploys"), so a new key was invisible to it. That door is retired — releasing is a release
