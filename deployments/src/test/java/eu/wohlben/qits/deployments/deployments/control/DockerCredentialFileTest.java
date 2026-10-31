@@ -147,6 +147,23 @@ class DockerCredentialFileTest {
   }
 
   @Test
+  void aBlankRegistryHostSkipsTheWriteWithAWarnRatherThanFailingBoot() {
+    Path dir = tmp.resolve("no-domain");
+
+    List<String> lines =
+        logsOf(
+            () ->
+                assertFalse(
+                    DockerCredentialFile.writeOwnCredential(
+                        Optional.of("dev-qits-deployments"), Optional.of(SECRET), dir, null)));
+
+    assertFalse(Files.exists(dir), "no file is written without a registry host to write for");
+    assertTrue(
+        lines.stream().anyMatch(l -> l.contains("dev-qits-deployments")),
+        "warn-only, the same way an unwritable directory is: " + lines);
+  }
+
+  @Test
   void dockerConfigIsSetOnlyWhenTheFileExists() throws IOException {
     Path dir = tmp.resolve("decide");
 

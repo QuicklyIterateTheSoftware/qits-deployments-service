@@ -89,7 +89,7 @@ public class PdSwarmDeployFlowTest {
     assertEquals("swarm-green-repo-swarm-green", deployments.get(0).get("containerName"));
 
     assertEquals(
-        List.of("registry.dev.localhost:8080/qits/repo-swarm-green:" + VERSION),
+        List.of("registry.qits.dev.localhost:8080/qits/repo-swarm-green:" + VERSION),
         fake.pulled(),
         "the missing-image classification is ours, not the orchestrator's");
     assertEquals(1, fake.applied().size());

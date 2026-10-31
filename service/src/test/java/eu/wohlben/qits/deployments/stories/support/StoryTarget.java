@@ -82,6 +82,6 @@ public final class StoryTarget {
 
   /** The image reference this component derives for one application at one released version. */
   public static String imageRef(String applicationName, String version) {
-    return "registry.dev.localhost:8080/qits/" + applicationName + ":" + version;
+    return "registry.qits.dev.localhost:8080/qits/" + applicationName + ":" + version;
   }
 }

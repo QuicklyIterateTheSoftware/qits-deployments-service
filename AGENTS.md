@@ -725,9 +725,10 @@ is env wiring**: the container runs as uid 1001 with no HOME, so a deployment po
 written here, and only from this component's OWN idp client** (qits-879): when the container is
 started with `QITS_RESOURCE_IDP_CLIENT_ID/_SECRET`, `DockerCredentialFile` writes
 `qits.deployments.docker-config-dir` (`/tmp/qits-docker`, 0700) `/config.json` (0600) — the
-bootstrap's `dockerConfigJson` shape, one entry for `qits.artifacts.registry-host` and one for its
-`mirror.` sibling — and `PdProcess` hands every docker child `DOCKER_CONFIG=<that dir>` while the
-file exists. Without the pair nothing is written and children keep the mounted value byte for byte.
+bootstrap's `dockerConfigJson` shape, one entry for the derived registry host (`RegistryHost`,
+`registry.qits.<domain>`) and one for its `mirror.` sibling — and `PdProcess` hands every docker
+child `DOCKER_CONFIG=<that dir>` while the file exists. Without the pair nothing is written and
+children keep the mounted value byte for byte.
 The `--with-registry-auth` argvs run through the same `PdProcess`, so the agents' pulls carry the
 same credential. It does not conflict with `--no-resolve-image` — one says do not turn the tag into a digest, the other hands
 the agents a credential for a later pull.

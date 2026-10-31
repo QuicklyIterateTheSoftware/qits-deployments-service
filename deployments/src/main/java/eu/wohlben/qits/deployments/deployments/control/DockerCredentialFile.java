@@ -5,6 +5,7 @@ import io.quarkus.runtime.StartupEvent;
 import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
+import jakarta.inject.Inject;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -38,14 +39,18 @@ import org.jboss.logging.Logger;
  * <p><b>Nothing happens without the pair.</b> With either variable unset — today's deployer, which
  * declares no idp:client of its own, and every developer's jar — no file is written, {@link
  * PdProcess#dockerConfig} finds none, and every docker child keeps the {@code DOCKER_CONFIG} the
- * container was started with. The volume file is never touched, read or deleted.
+ * container was started with. The volume file is never touched, read or deleted. A blank or
+ * absent platform domain takes the same warn-only path: {@link RegistryHost#resolve} answers
+ * empty, {@link #hosts} then derives nothing to write a credential for, and the write is skipped
+ * with a WARN rather than failing this component's own boot.
  *
  * <p><b>The format is the bootstrap's {@code dockerConfigJson}</b> (qits-bootstrap-cli {@code
  * SeedPhases}): one {@code auths} entry per host, each {@code {"auth": base64("<id>:<secret>")}} —
  * the bytes {@code docker login} would store. <b>The hosts</b> are the registry host every image
- * reference is qualified with ({@code qits.artifacts.registry-host}, the value {@code DeployService}
- * builds image refs from) and the mirror vhost, which is the same edge's sibling name — see {@link
- * #hosts}. The CLI matches an entry by host and nothing else, so a second line is no widening.
+ * reference is qualified with (derived by {@link RegistryHost}, the same derivation {@code
+ * DeployService} builds image refs from) and the mirror vhost, which is the same edge's sibling
+ * name — see {@link #hosts}. The CLI matches an entry by host and nothing else, so a second line
+ * is no widening.
  *
  * <p><b>The secret is never logged</b>, nor the base64 that carries it. The client id is not a
  * secret and is named, so an operator can tell whose credential the pulls present.
@@ -80,8 +85,7 @@ public class DockerCredentialFile {
   @ConfigProperty(name = "qits.deployments.docker-config-dir")
   String directory;
 
-  @ConfigProperty(name = "qits.artifacts.registry-host")
-  String registryHost;
+  @Inject RegistryHost registryHost;
 
   /**
    * Early — before the deploy worker's own startup sweep may shell out — though nothing depends on
@@ -93,7 +97,10 @@ public class DockerCredentialFile {
       return;
     }
     writeOwnCredential(
-        value(CLIENT_ID_VARIABLE), value(CLIENT_SECRET_VARIABLE), Path.of(directory), registryHost);
+        value(CLIENT_ID_VARIABLE),
+        value(CLIENT_SECRET_VARIABLE),
+        Path.of(directory),
+        registryHost.resolve().orElse(null));
   }
 
   /**
