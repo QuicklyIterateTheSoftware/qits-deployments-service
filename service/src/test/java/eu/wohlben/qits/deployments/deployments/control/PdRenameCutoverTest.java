@@ -45,6 +45,10 @@ public class PdRenameCutoverTest {
 
   private static final ResourceSpec IDP = new ResourceSpec("idp", null, ResourceSpec.Type.IDP_CLIENT);
 
+  /** {@code volumes: private:data:/data} — what an application holding its own data declares. */
+  private static final DeploymentSpec.VolumeSpec PRIVATE_DATA =
+      new DeploymentSpec.VolumeSpec(DeploymentSpec.VolumeSpec.Scope.PRIVATE, "data", "/data", false);
+
   @Inject DeployService deployService;
   @Inject FakeDeploymentDriver fake;
   @Inject FakeSpecSource specs;
@@ -188,6 +192,78 @@ public class PdRenameCutoverTest {
     assertEquals(1, settings.list(old, env).size());
     assertEquals(List.of(), idpProvisioner.deleteCalls());
     assertEquals(0, actives().stream().filter(e -> e.payload.contains(fresh)).count());
+  }
+
+  @Test
+  public void aStartFirstSuccessorWithPrivateDataMountsThePredecessorsVolumeAndStopsItFirst() {
+    // qits-1772: the successor's private volume is the predecessor's, not a fresh <new>-data —
+    // and because it is the SAME volume, start-first would run two writers on it, so the swap is
+    // forced stop-old even though nothing here asks for stop-first or publishes a port.
+    String env = "rn-vol";
+    String environmentId = createEnvironment(env);
+    String old = "rn-vol-old";
+    String fresh = "rn-vol-new";
+    deployPredecessor(environmentId, old, List.of(IDP));
+    fake.reset();
+
+    specs.script(fresh, spec(List.of(IDP), null, old, null, List.of(PRIVATE_DATA)));
+    List<String> logged =
+        logsOf(
+            () -> {
+              postRelease("run-vol", fresh);
+              awaitSettled(environmentId, 2);
+            });
+
+    assertEquals(PdDeploymentStatus.ACTIVE, newest(fresh, environmentId).status);
+    assertEquals(PdDeploymentStatus.DECOMMISSIONED, newest(old, environmentId).status);
+    DeploymentDriver.ServiceSpec applied = fake.applied().get(0);
+    assertEquals(fresh, applied.applicationName());
+    assertEquals(
+        List.of(new DeploymentDriver.VolumeMount(old + "-data", "/data", false)),
+        applied.volumes(),
+        "the predecessor's data, never a fresh " + fresh + "-data");
+    List<String> calls = fake.calls();
+    int pull = indexOfPrefix(calls, "pull:");
+    int remove = calls.indexOf("removeService:" + env + "-" + old);
+    int apply = calls.indexOf("apply:" + env + "-" + fresh);
+    assertTrue(pull >= 0 && pull < remove && remove < apply, calls.toString());
+    assertTrue(
+        logged.stream()
+            .anyMatch(
+                line -> line.contains("stop-old order forced") && line.contains(old + "-data")),
+        logged.toString());
+  }
+
+  @Test
+  public void aSuccessorWithPrivateDataThatFailsItsGateRestoresThePredecessorOnItsOwnVolume() {
+    // The forced stop-old swap's failure path: the predecessor comes back mounting <old>-data,
+    // which the successor's pinned spec already named — nothing is rewritten onto a third name.
+    String env = "rn-volfail";
+    String environmentId = createEnvironment(env);
+    String old = "rn-volfail-old";
+    String fresh = "rn-volfail-new";
+    deployPredecessor(environmentId, old, List.of(IDP));
+    String predecessorId = newest(old, environmentId).id;
+    fake.reset();
+    fake.scriptConvergence(DeploymentDriver.Convergence.failed("the task never went healthy"));
+
+    specs.script(fresh, spec(List.of(IDP), null, old, null, List.of(PRIVATE_DATA)));
+    postRelease("run-volfail", fresh);
+    awaitSettled(environmentId, 2);
+
+    assertEquals(PdDeploymentStatus.FAILED, newest(fresh, environmentId).status);
+    assertEquals(PdDeploymentStatus.ACTIVE, newest(old, environmentId).status, "untouched");
+    List<String> calls = fake.calls();
+    int stop = calls.indexOf("removeService:" + env + "-" + old);
+    int apply = calls.indexOf("apply:" + env + "-" + fresh);
+    int restore = calls.indexOf("apply:" + env + "-" + old);
+    assertTrue(stop >= 0 && stop < apply && apply < restore, calls.toString());
+    DeploymentDriver.ServiceSpec restored = fake.applied().get(1);
+    assertEquals(old, restored.applicationName());
+    assertEquals(predecessorId, restored.deploymentId());
+    assertEquals(
+        List.of(new DeploymentDriver.VolumeMount(old + "-data", "/data", false)),
+        restored.volumes());
   }
 
   @Test
@@ -392,13 +468,22 @@ public class PdRenameCutoverTest {
       DeploymentDriver.UpdateOrder order,
       String renamedFrom,
       DeclaredShape shape) {
+    return spec(resources, order, renamedFrom, shape, List.of());
+  }
+
+  private static DeploymentSpec spec(
+      List<ResourceSpec> resources,
+      DeploymentDriver.UpdateOrder order,
+      String renamedFrom,
+      DeclaredShape shape,
+      List<DeploymentSpec.VolumeSpec> volumes) {
     return new DeploymentSpec(
         false,
         null,
         null,
         null,
         resources,
-        List.of(),
+        volumes,
         order,
         null,
         List.of(),

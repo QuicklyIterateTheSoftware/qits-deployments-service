@@ -1224,6 +1224,15 @@ public class DeployService implements ReleaseAnnouncements {
    * routes ({@link #announceRetired}). Null is every file that exists today. It is carried
    * per-place rather than once per event for the reason every other spec value is — both uses are
    * made per target, and a {@link Plan} is plain values.
+   *
+   * <p>{@code pinnedVolumes} follows from it: the resolved names of the private volumes that mount
+   * the PREDECESSOR's storage because the file declares a rename (qits-1772, see {@code
+   * VolumeSpec.source(String, String)}). Empty for every application that was not renamed or keeps
+   * no private data. It is computed beside {@code volumes}, off the declared scopes, rather than
+   * re-derived later from the resolved names — a name's prefix cannot tell a pinned private volume
+   * from a shared one that happens to share it. The cutover reads it for one decision: two
+   * applications on one private volume is two writers, so a rename that pins one is always swapped
+   * stop-old.
    */
   record Target(
       String applicationName,
@@ -1243,6 +1252,7 @@ public class DeployService implements ReleaseAnnouncements {
       List<NavigationEntry> navigation,
       String apiDocs,
       String renamedFrom,
+      List<String> pinnedVolumes,
       Duration stopGracePeriod,
       DeclaredShape shape) {}
 
@@ -1851,6 +1861,7 @@ public class DeployService implements ReleaseAnnouncements {
     List<ResourceProvisioning.Resolved> resources =
         ResourceProvisioning.resolve(applicationName, spec.resources());
     List<DeploymentDriver.VolumeMount> volumes = volumeMounts(applicationName, spec);
+    List<String> pinnedVolumes = pinnedVolumes(applicationName, spec);
     catalog.upsert(
         new ServiceCatalog.Upsert(
             applicationName,
@@ -1884,6 +1895,7 @@ public class DeployService implements ReleaseAnnouncements {
               spec.navigationEntries(),
               spec.apiDocs(),
               spec.renamedFrom(),
+              pinnedVolumes,
               spec.stopGracePeriod(),
               // binds/publishes/aliases as WRITTEN: the driver resolves ${QITS_ENVIRONMENT} in an
               // alias against the place it deploys into, which is where a refusal can end a row.
@@ -1899,6 +1911,12 @@ public class DeployService implements ReleaseAnnouncements {
    * which application the file was read for. A private {@code volumes: private:data:/data} becomes
    * the volume {@code <application>-data}; a shared one was named in full and passes through.
    *
+   * <p>A file that declares {@code renamed_from:} resolves its private volumes against the
+   * predecessor instead — {@code <renamed_from>-data} — so the successor mounts the data the old
+   * name wrote rather than a fresh, empty volume (qits-1772). The derivation is {@code
+   * VolumeSpec.source(String, String)}'s, not this method's; see {@link #pinnedVolumes} for which
+   * entries that touched.
+   *
    * <p>It is also why a repository cannot reach another application's storage: the name it writes
    * is a segment, and the prefix is not its to choose. See {@code DeploymentSpec.VolumeSpec}.
    */
@@ -1908,9 +1926,27 @@ public class DeployService implements ReleaseAnnouncements {
     for (DeploymentSpec.VolumeSpec volume : spec.volumes()) {
       mounts.add(
           new DeploymentDriver.VolumeMount(
-              volume.source(applicationName), volume.target(), volume.readOnly()));
+              volume.source(applicationName, spec.renamedFrom()),
+              volume.target(),
+              volume.readOnly()));
     }
     return List.copyOf(mounts);
+  }
+
+  /**
+   * The resolved names of the volumes {@link #volumeMounts} pinned to the predecessor — the private
+   * ones, under a declared rename. Asked of the spec's scopes through {@code
+   * VolumeSpec.pinnedToPredecessor} rather than inferred from a {@code <renamed_from>-} prefix on
+   * the resolved names: a shared volume can carry that prefix without being anybody's private data.
+   */
+  private static List<String> pinnedVolumes(String applicationName, DeploymentSpec spec) {
+    List<String> pinned = new ArrayList<>();
+    for (DeploymentSpec.VolumeSpec volume : spec.volumes()) {
+      if (volume.pinnedToPredecessor(applicationName, spec.renamedFrom())) {
+        pinned.add(volume.source(applicationName, spec.renamedFrom()));
+      }
+    }
+    return List.copyOf(pinned);
   }
 
   /**
@@ -2087,6 +2123,8 @@ public class DeployService implements ReleaseAnnouncements {
                 // No predecessor either: nothing is provisioned off one of these targets, so there
                 // is no claim for a declared rename to move.
                 null,
+                // ...and so no volume pinned to one.
+                List.of(),
                 // ...and no grace period: nothing is stopped off one of them either.
                 null,
                 // ...and no declared shape: nothing is created off one of them at all.
@@ -2305,6 +2343,11 @@ public class DeployService implements ReleaseAnnouncements {
     /** What the repository declared in {@code volumes:}, with every name already resolved. */
     List<DeploymentDriver.VolumeMount> volumes() {
       return target.volumes();
+    }
+
+    /** The private volumes resolved to the predecessor's under a rename — see {@link Target}. */
+    List<String> pinnedVolumes() {
+      return target.pinnedVolumes() == null ? List.of() : target.pinnedVolumes();
     }
 
     /** The one network {@code docker run} can take; every other membership is a join. */
@@ -2547,14 +2590,33 @@ public class DeployService implements ReleaseAnnouncements {
             deploymentName,
             bindings,
             rename != null && rename.live());
-    // A SERVING predecessor the successor cannot start beside — its order is stop-first, or it
-    // binds a host port the predecessor holds — is stopped first. Decided here, once the spec is
-    // whole, because the published ports are the driver's union of the declaration and config.
+    // A SERVING predecessor the successor cannot start beside — its order is stop-first, it binds
+    // a host port the predecessor holds, or it mounts the predecessor's private volume — is stopped
+    // first. Decided here, once the spec is whole, because the published ports are the driver's
+    // union of the declaration and config.
+    //
+    // The volume clause is qits-1772's. A pinned private volume is the SAME volume the predecessor
+    // has open, and start-first would run the two side by side on it: two postgres processes on
+    // one data directory, or two writers on any store that assumes it is alone. Brief downtime is
+    // the price, and it is paid only by a rename of an application that keeps private data.
+    boolean pinsPredecessorVolume = !plan.pinnedVolumes().isEmpty();
     boolean stopOld =
         rename != null
             && rename.live()
             && (plan.updateOrder() == DeploymentDriver.UpdateOrder.STOP_FIRST
+                || pinsPredecessorVolume
                 || driver.publishesPorts(spec));
+    if (stopOld
+        && pinsPredecessorVolume
+        && plan.updateOrder() != DeploymentDriver.UpdateOrder.STOP_FIRST) {
+      LOG.infof(
+          "%s mounts %s pinned to its predecessor %s in %s: stop-old order forced so the two never"
+              + " run on the same volume",
+          plan.applicationName(),
+          String.join(", ", plan.pinnedVolumes()),
+          rename.predecessor(),
+          plan.environmentName());
+    }
     // What the runtime will call it, and therefore what the row records: asked BEFORE anything is
     // applied, so a crash in the middle leaves a STARTING row the startup sweep can still identify.
     String name = driver.nameOf(spec);
@@ -2912,11 +2974,17 @@ public class DeployService implements ReleaseAnnouncements {
       bindings.putIfAbsent(moved.name(), moved);
     }
 
+    // Since qits-1772 a private volume under a rename already resolves to the predecessor's own
+    // name, so it passes through below unchanged. Checking the predecessor's prefix first is what
+    // keeps a successor whose name is a prefix of the predecessor's (qits renamed from
+    // qits-x) from rewriting an already-pinned name a second time.
     List<DeploymentDriver.VolumeMount> volumes = new ArrayList<>();
     String successorPrefix = plan.applicationName() + "-";
+    String predecessorPrefix = predecessor + "-";
     for (DeploymentDriver.VolumeMount volume : plan.volumes()) {
       String source =
-          volume.source().startsWith(successorPrefix)
+          !volume.source().startsWith(predecessorPrefix)
+                  && volume.source().startsWith(successorPrefix)
               ? predecessor + "-" + volume.source().substring(successorPrefix.length())
               : volume.source();
       volumes.add(new DeploymentDriver.VolumeMount(source, volume.target(), volume.readOnly()));

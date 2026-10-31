@@ -2259,12 +2259,21 @@ deployed here — runs the path it always ran. Seven things about it, each easy 
 - **the old wire address** — `<env>-<old>` added to the successor as a derived network alias, and
   only while the predecessor is still serving (`ACTIVE`) at cutover; behind a `SCALED_TO_ZERO` shell
   or an already-retired predecessor it rides the successor's next create instead.
-- **the swap order** — `start-first` with no published port: the successor is created and gated
-  beside the predecessor, then the predecessor goes. `stop-first`, or any published port: the image is
-  pulled, the predecessor's service is removed, then the successor is created. A failed gate in that
-  stop-old order restores the predecessor from its last `ACTIVE` row (same image, name, address,
-  health path, resource rows, shape and private volumes mapped back to `<old>-…`) and fails the
-  successor's row naming it, rather than leaving nothing serving.
+- **private volumes** (qits-1772) — while `renamed_from:` is declared, a `volumes:
+  private:<name>:<target>` resolves to the PREDECESSOR's volume, `<renamed_from>-<name>`, not to
+  `<new>-<name>`. The successor mounts the data the old name wrote; nothing is copied and nothing is
+  refused. One derivation does it, `VolumeSpec.source(applicationName, renamedFrom)`, so the mount
+  argv and the live-drift comparison agree on it. See the two warnings below the table further down
+  before you rename an application that holds private data.
+- **the swap order** — `start-first` with no published port and no private volume: the successor is
+  created and gated beside the predecessor, then the predecessor goes. `stop-first`, any published
+  port, **or any private volume pinned to the predecessor** (the two would otherwise run side by side
+  on one volume — two postgres processes on one data directory): the image is pulled, the
+  predecessor's service is removed, then the successor is created. That costs a brief outage, and the
+  private-volume case logs one INFO naming the pinned volume(s) and saying stop-old order was forced.
+  A failed gate in that stop-old order restores the predecessor from its last `ACTIVE` row (same
+  image, name, address, health path, resource rows, shape and its own `<old>-…` private volumes) and
+  fails the successor's row naming it, rather than leaving nothing serving.
 - **retirement of the predecessor**, after the successor's gate passes: the empty `DeploymentActive`
   goes out first so the edge drops its routes and nav entries, then its rows go `DECOMMISSIONED`
   stamped `by rename to <new>`, its swarm service is removed, its `pd_service` row is deleted, its
@@ -2295,15 +2304,17 @@ deployed here — runs the path it always ran. Seven things about it, each easy 
 - the repository name — a repository rename is `PATCH /projects/api/repositories/{id}`, a separate
   operation in qits-projects. This runbook moves an APPLICATION; it never moves a repository.
 
-**Not moved, and worth knowing before you rename — private volumes.** A declared
-`volumes: private:<name>:<target>` derives the docker volume `<application>-<name>`, so renaming the
-application starts the successor on a brand-new, EMPTY volume (`<new>-<name>`) and leaves the
-predecessor's (`<old>-<name>`) behind — retirement does not delete it, and a later rename back finds
-it again, still holding whatever it had. `shared:` cannot stand in for it either, because it draws
-from a closed vocabulary (qits-containers' `qits.containers.shared-volumes`) that has no slot for an
-old name. That is free on a cache and real data loss on state — see qits-766's thread for the open
-decision. The applications declaring `private:` volumes today, read off each repository's
-`origin/main` (`application -> volume(s)`):
+**Moved by a pin, and worth knowing before you rename — private volumes (qits-1772).** A declared
+`volumes: private:<name>:<target>` derives the docker volume `<application>-<name>` — except while
+`renamed_from:` is declared, when it derives `<renamed_from>-<name>`. So a renamed application keeps
+mounting the volume its old name wrote, rather than starting green on a brand-new, EMPTY
+`<new>-<name>` and leaving the data behind, which is what it did before qits-1772: an empty postgres
+data directory initialises and passes its health gate, so nothing failed. Nothing is copied — the
+volume keeps the old name for good — and such a rename always takes the stop-old swap above, a brief
+outage, because the predecessor has the same volume open. `shared:` was never an alternative: it
+draws from a closed vocabulary (qits-containers' `qits.containers.shared-volumes`) that has no slot
+for an old name. Retirement does not delete the volume either way. The applications declaring
+`private:` volumes today, read off each repository's `origin/main` (`application -> volume(s)`):
 
 | application | volume(s) |
 | --- | --- |
@@ -2313,12 +2324,26 @@ decision. The applications declaring `private:` volumes today, read off each rep
 | `qits-stt` | `qits-stt-data` |
 | `qits-workspaces` | `qits-workspaces-data`, plus the closed-vocabulary `qits_shared_dot_claude` |
 
+Two warnings follow from the pin being a property of the key rather than of the volume:
+
+- **Removing `renamed_from:` later moves the application back onto an empty `<new>-<name>`.** The
+  pin is read off the file at every deployment, so the first release without the key derives the
+  successor's own name again and starts green on a fresh volume, with the data still sitting in
+  `<old>-<name>`. Keep the key for as long as the application holds private data.
+- **A second, chained rename of an application with private data resolves to the wrong volume.**
+  A→B→C declares `renamed_from: B` and pins `B-<name>`, but the data lives in `A-<name>`; renaming
+  back (B→A with `renamed_from: B`) pins `B-<name>` too, a volume that never held anything. The
+  derivation knows one predecessor, never a chain, so either case is a manual volume move: stop the
+  service, copy the data into the volume the new spec will derive, then release.
+
 **Whether to keep `renamed_from:` declared once the predecessor is fully retired is not a close
-call — check `renameOf`.** It only reads a cutover out of the key when the predecessor's NEWEST row
-is still `ACTIVE` or `SCALED_TO_ZERO`; once retirement has stamped that row `DECOMMISSIONED`, the same
-key makes `renameOf` return null and every later deployment of the successor runs the ordinary,
-non-cutover path. So the key sits inert once retirement has finished — leaving it in costs nothing,
-and taking it out loses nothing it was still doing either way.
+call — check `renameOf`, and then the volumes.** `renameOf` only reads a cutover out of the key when
+the predecessor's NEWEST row is still `ACTIVE` or `SCALED_TO_ZERO`; once retirement has stamped that
+row `DECOMMISSIONED`, the same key makes `renameOf` return null and every later deployment of the
+successor runs the ordinary, non-cutover path. So for the cutover the key sits inert once retirement
+has finished, and leaving it in costs nothing. **It is not inert for private volumes** (qits-1772):
+the pin to `<renamed_from>-<name>` is read off the key at every deployment, so for an application
+holding private data, taking the key out moves it onto an empty volume — keep it.
 
 **The release door was unaffected**, and that was checked rather than assumed at the time:
 qits-workspaces' `DeploymentSpecReader` **statted** this file and never opened it (a file means
