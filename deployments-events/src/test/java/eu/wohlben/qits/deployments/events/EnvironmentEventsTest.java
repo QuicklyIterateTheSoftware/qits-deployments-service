@@ -77,7 +77,7 @@ class EnvironmentEventsTest {
     JsonNode json = CanonicalJson.parse(CanonicalJson.envelope(envelope));
 
     assertEquals(
-        List.of("description", "environment", "name", "occurredAt", "parentId", "payload"),
+        List.of("description", "environment", "name", "occurredAt", "parentId", "payload", "publisher"),
         json.properties().stream().map(Map.Entry::getKey).toList());
     assertEquals("EnvironmentCreated", json.get("name").asText());
     assertEquals("2026-09-26T08:00:00Z", json.get("occurredAt").asText());
