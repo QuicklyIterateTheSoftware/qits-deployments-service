@@ -107,6 +107,9 @@ public class StoryProfile extends PdPackagedSurfaceIT.PackagedUnderTarget {
     // The orchestrator: a recording executable rather than a daemon this container cannot reach.
     overrides.put("qits.deployments.container-runtime", runtime);
 
+    // The domain every image reference and StoryTarget.imageRef() are derived from (RegistryHost).
+    overrides.put("qits.deployments.platform-domain", "dev.localhost:8080");
+
     // The one peer a deployment reads from.
     overrides.put("qits.deployments.git-host-url", peers);
 

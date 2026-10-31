@@ -295,7 +295,7 @@ public class PdSweepAdoptionPublishTest {
   }
 
   private static String image(String sha) {
-    return "registry.dev.localhost:8080/qits/qits-platform-deployments:" + sha;
+    return "registry.qits.dev.localhost:8080/qits/qits-platform-deployments:" + sha;
   }
 
   private String createEnvironment(String name) {

@@ -52,7 +52,7 @@ public class PdSweepAdoptionTest {
   }
 
   private static String image(String tag) {
-    return "registry.dev.localhost:8080/qits/qits-platform-deployments:" + tag;
+    return "registry.qits.dev.localhost:8080/qits/qits-platform-deployments:" + tag;
   }
 
   private String deployment(

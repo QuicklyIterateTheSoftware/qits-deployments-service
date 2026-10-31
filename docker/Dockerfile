@@ -36,17 +36,15 @@
 #     -e QUARKUS_DATASOURCE_PLATFORMDEPLOYMENTS_JDBC_URL=jdbc:h2:file:/data/platformdeployments/h2/platformdeployments \
 #     ...
 #
-# Two more have defaults that are wrong QUIETLY — nothing will tell you they are unset:
+# One more has a default that is wrong QUIETLY — nothing will tell you it is unset:
 #
-#   QITS_ARTIFACTS_REGISTRY_HOST
-#                           where the DOCKER DAEMON pulls images from. The platform-network default
-#                           (qits-platform-artifacts:8080) only resolves for a daemon whose
-#                           containers sit on that network, and the daemon must additionally trust
-#                           it (insecure-registries) while the platform speaks plain HTTP. Wrong,
-#                           every deployment records FAILED with a pull error.
 #   QITS_OBSERVABILITY_URL  where OTLP export goes; absent qits-observability, the exporter logs a
 #                           warning per export loudly enough to bury real lines
 #                           (OTEL_SDK_DISABLED=true is the escape hatch).
+#
+# QITS_DOMAIN has no default at all and the registry host is DERIVED from it
+# (`registry.qits.<domain>`, see RegistryHost) — the bootstrap makes --domain mandatory, and a
+# deployment started without it fails loudly naming the variable rather than pulling from nowhere.
 #
 # There is no token of any kind: machine callers present a qits-platform-idp bearer instead, and one
 # env var decides whether that is demanded:

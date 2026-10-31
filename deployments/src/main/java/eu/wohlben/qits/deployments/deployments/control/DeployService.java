@@ -210,8 +210,8 @@ public class DeployService implements ReleaseAnnouncements {
    */
   @Inject Instance<DeployAnnouncer> announcers;
 
-  @ConfigProperty(name = "qits.artifacts.registry-host")
-  String registryHost;
+  /** The OCI registry host images are pulled and pushed through — derived, never configured. */
+  @Inject RegistryHost registryHost;
 
   @ConfigProperty(name = "qits.artifacts.image-repository")
   String imageRepository;
@@ -2415,11 +2415,22 @@ public class DeployService implements ReleaseAnnouncements {
       return;
     }
 
+    // The registry host is DERIVED from the platform's one domain, never configured — a blank or
+    // absent QITS_DOMAIN must fail this deployment loudly rather than build `registry.qits./...`.
+    String resolvedRegistryHost;
+    try {
+      resolvedRegistryHost = registryHost.require();
+    } catch (RuntimeException e) {
+      finish(deploymentId, target, PdDeploymentStatus.FAILED, "[" + e.getMessage() + "]");
+      return;
+    }
+
     // The released version is the tag: `qits/<application>:<version>`, which is the coordinate the
     // release pipeline published under. Never the commit — an image tagged with a sha is what the
     // retired build trigger pulled.
     String imageRef =
-        ImageRefs.imageRef(registryHost, imageRepository, plan.applicationName(), plan.version());
+        ImageRefs.imageRef(
+            resolvedRegistryHost, imageRepository, plan.applicationName(), plan.version());
 
     // The registry having no image for a green build is an expected outcome (nothing may publish
     // this application yet) and gets its own state rather than a generic failure.
@@ -2868,7 +2879,7 @@ public class DeployService implements ReleaseAnnouncements {
         PdNetworks.alias(plan.environmentName(), predecessor),
         networks,
         ImageRefs.imageRef(
-            registryHost, imageRepository, predecessor, rename.predecessorVersion()),
+            registryHost.require(), imageRepository, predecessor, rename.predecessorVersion()),
         healthPath,
         plan.healthCmd(),
         availableOnEnv,

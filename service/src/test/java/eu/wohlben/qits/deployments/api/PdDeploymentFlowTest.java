@@ -192,7 +192,7 @@ public class PdDeploymentFlowTest {
 
     // The image reference is DERIVED — the convention is the contract under test.
     assertEquals(
-        List.of("registry.dev.localhost:8080/qits/repo-green:" + V_A), driver.pulled());
+        List.of("registry.qits.dev.localhost:8080/qits/repo-green:" + V_A), driver.pulled());
     DeploymentDriver.ServiceSpec spec = driver.applied().get(0);
     // The primary network is the application's OWN, not the environment's bundle: an ordinary
     // application is a spoke, and only its own services are on it.
@@ -237,7 +237,7 @@ public class PdDeploymentFlowTest {
         specs.revOf("repo-tag"),
         "a bare version would let a branch of the same name win");
     assertEquals(
-        List.of("registry.dev.localhost:8080/qits/repo-tag:" + V_B),
+        List.of("registry.qits.dev.localhost:8080/qits/repo-tag:" + V_B),
         driver.pulled(),
         "the image carries the released tag, never the commit");
   }
@@ -274,7 +274,7 @@ public class PdDeploymentFlowTest {
     assertEquals("IMAGE_MISSING", deployments.get(0).get("status"));
     String detail = (String) deployments.get(0).get("detail");
     assertTrue(
-        detail.contains("registry.dev.localhost:8080/qits/repo-noimage:" + V_A),
+        detail.contains("registry.qits.dev.localhost:8080/qits/repo-noimage:" + V_A),
         "the detail names the reference nothing published: " + detail);
     // Nothing was applied and nothing reaped — the previous state is untouched.
     assertEquals(List.of(), driver.applied());
@@ -298,7 +298,7 @@ public class PdDeploymentFlowTest {
     String detail = (String) deployments.get(0).get("detail");
     assertTrue(detail.contains("registry credential"), "the detail says what to fix: " + detail);
     assertTrue(
-        detail.contains("registry.dev.localhost:8080/qits/repo-denied:" + V_A),
+        detail.contains("registry.qits.dev.localhost:8080/qits/repo-denied:" + V_A),
         "...and which reference it was refused: " + detail);
     // Nothing was applied and nothing reaped — the previous state is untouched.
     assertEquals(List.of(), driver.applied());
