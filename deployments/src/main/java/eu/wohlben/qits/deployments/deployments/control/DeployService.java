@@ -2665,16 +2665,34 @@ public class DeployService implements ReleaseAnnouncements {
       String predecessorService,
       boolean firstDeploy) {}
 
-  /** What {@link #retireAfterCutover} works through for one predecessor, as plain values. */
+  /**
+   * What {@link #retire} works through for one retired application, as plain values.
+   *
+   * @param predecessor the application being retired
+   * @param successor the rename's successor — or null for an operator's retirement with none
+   *     ({@link #retireApplication}), which is the only thing that changes the stamp, the log lines
+   *     and whether the empty snapshot is part of the steps
+   * @param successorService the service the successor runs under, never removed; null without one
+   * @param retiredDeploymentId the row an operator's retirement was resolved to, for its "a later
+   *     deployment took the place" guard in {@link #retirementOwed}; null for a rename
+   * @param actor who asked for an operator's retirement; null for a rename, and "an operator" when
+   *     an operator's caller carried no name
+   */
   private record Retirement(
       String predecessor,
       String successor,
       String successorService,
       String environmentId,
-      String environmentName) {
+      String environmentName,
+      String retiredDeploymentId,
+      String actor) {
 
     String key() {
       return environmentId + " " + predecessor;
+    }
+
+    boolean renamed() {
+      return successor != null;
     }
   }
 
@@ -2916,7 +2934,9 @@ public class DeployService implements ReleaseAnnouncements {
             plan.applicationName(),
             successorService,
             plan.environmentId(),
-            plan.environmentName());
+            plan.environmentName(),
+            null,
+            null);
     if (rename == null && !retirementOwed(retirement)) {
       return;
     }
@@ -2940,6 +2960,57 @@ public class DeployService implements ReleaseAnnouncements {
   }
 
   /**
+   * An operator's retirement of an application that has <b>no successor</b> (qits-765, the {@code
+   * POST /applications/{applicationId}/retire} door) — the rename cutover's retirement with the
+   * successor left out, run on this worker so it can never interleave with a cutover of the same
+   * service. Package-private: {@link ApplicationRetirement} is the only caller, and it refuses the
+   * deployer's own service and a place the worker still owns before it queues this.
+   *
+   * <p>The steps are {@link #retire}'s, in its order, plus one the rename sends from its own
+   * cutover: the empty {@code DeploymentActive} that makes the edge withdraw the application's routes
+   * and navigation entries ({@link #announceRetired}). So: rows {@code DECOMMISSIONED} (stamped
+   * {@code [decommissioned by <actor> …]}), routes withdrawn, swarm service removed, catalogue row
+   * deleted, settings retired, idp client retired unless a setting still names it.
+   *
+   * <p><b>The databases are kept, on purpose.</b> A rename hands its predecessor's postgres claims to
+   * the successor; here there is nobody to hand them to, and the claim rows ({@code pd_resource},
+   * type postgres) are deliberately left where they are. That keeps each database claimed by the
+   * retired name — no other application can declare it and be handed somebody else's data — and
+   * nothing in this component ever drops a database, so the data outlives the application until a
+   * person decides otherwise. Only the idp client row goes, because a client is a credential and
+   * not data.
+   *
+   * <p><b>A failed step</b> is the rename's answer: a WARN, the retirement remembered in {@link
+   * #owedRetirements} and finished by {@link #retryRetirements} on the next observation — unless
+   * what stopped it was a deployment of that place in flight, which {@link #retirementOwed} does
+   * not count, so the operator's request is dropped rather than retried into a deployment somebody
+   * queued after it. Calling the door again is the other retry, and every step is idempotent.
+   */
+  void retireApplication(
+      String applicationName,
+      String environmentId,
+      String environmentName,
+      String deploymentId,
+      String actor) {
+    Retirement retirement =
+        new Retirement(
+            applicationName,
+            null,
+            null,
+            environmentId,
+            environmentName,
+            deploymentId,
+            actor == null || actor.isBlank() ? "an operator" : actor);
+    if (retire(retirement)) {
+      owedRetirements.remove(retirement.key());
+    } else if (retirementOwed(retirement)) {
+      owedRetirements.put(retirement.key(), retirement);
+    } else {
+      owedRetirements.remove(retirement.key());
+    }
+  }
+
+  /**
    * Whether anything of a renamed predecessor is still left in this tier — the cheap check, all of
    * it reads. A predecessor still deployed ({@code ACTIVE} or {@code SCALED_TO_ZERO}) is owed by
    * definition; one whose newest row is {@code DECOMMISSIONED} is owed while a {@code
@@ -2959,8 +3030,24 @@ public class DeployService implements ReleaseAnnouncements {
                     return false;
                   }
                   PdDeploymentStatus newest = place.get(0).status;
+                  // An operator's retirement is of the row it was resolved to. A newer deployment
+                  // that is not settled DECOMMISSIONED took the place after the request, and is
+                  // somebody's later intention rather than this retirement's leftover.
+                  if (retirement.retiredDeploymentId() != null
+                      && newest != PdDeploymentStatus.DECOMMISSIONED
+                      && !place.get(0).id.equals(retirement.retiredDeploymentId())) {
+                    return null;
+                  }
                   if (newest == PdDeploymentStatus.ACTIVE
                       || newest == PdDeploymentStatus.SCALED_TO_ZERO) {
+                    return true;
+                  }
+                  // ...and that row unsettled in any word the worker does not own (a FAILED or GONE
+                  // row the door was asked about) is owed too: the settle step itself failed.
+                  if (retirement.retiredDeploymentId() != null
+                      && newest != PdDeploymentStatus.DECOMMISSIONED
+                      && newest != PdDeploymentStatus.QUEUED
+                      && newest != PdDeploymentStatus.STARTING) {
                     return true;
                   }
                   if (newest != PdDeploymentStatus.DECOMMISSIONED) {
@@ -3020,24 +3107,52 @@ public class DeployService implements ReleaseAnnouncements {
         LOG.warnf(
             "Not retiring the idp client %s of %s in %s: the settings %s still name it, and"
                 + " deleting it would refuse their next token. Point them at their own client and"
-                + " the successor's next deployment retires it",
-            clientId, predecessor, environment, references);
+                + " %s",
+            clientId,
+            predecessor,
+            environment,
+            references,
+            retirement.renamed()
+                ? "the successor's next deployment retires it"
+                : "retire the application again to delete it");
         return;
       }
     }
     resourceProvisioning.retireIdpClient(predecessor, environment);
   }
 
-  /** One run of the retirement's steps; true when every one of them is done. */
+  /**
+   * One run of the retirement's steps; true when every one of them is done. Shared by the rename
+   * cutover and the operator's successor-less retirement ({@link #retireApplication}); the only step
+   * that differs is the empty snapshot, which a rename sends from its cutover (before the
+   * successor's own frame) and a successor-less retirement sends here, once its rows are settled and
+   * before its service goes — so the edge stops routing to it before there is nothing to route to.
+   * Re-sending it on a retried run is harmless: removing routes that are gone is a no-op.
+   *
+   * <p>No step touches the application's postgres claims or its databases, in either case: a
+   * rename has already moved them to the successor, and a successor-less retirement keeps them on
+   * purpose (see {@link #retireApplication}).
+   */
   private boolean retire(Retirement retirement) {
     String predecessor = retirement.predecessor();
     String step = "settling its deployment rows";
     try {
-      String service =
+      Settled settled =
           DbRetry.inNewTx(
-              "The rename retirement of " + predecessor,
+              "The retirement of " + predecessor,
               () -> settlePredecessorRows(retirement),
               CUTOVER_BUDGET);
+      if (!retirement.renamed() && settled != null) {
+        step = "withdrawing its routes";
+        announceRetired(
+            settled.deploymentId(),
+            predecessor,
+            retirement.environmentId(),
+            retirement.environmentName(),
+            Instant.now(),
+            null);
+      }
+      String service = settled == null ? null : settled.service();
       if (service != null && !service.equals(retirement.successorService())) {
         step = "removing its service " + service;
         driver.removeService(service);
@@ -3051,30 +3166,56 @@ public class DeployService implements ReleaseAnnouncements {
       step = "retiring its idp client";
       retireIdpClientUnlessReferenced(retirement);
     } catch (RuntimeException e) {
-      LOG.warnf(
-          "The retirement of %s (renamed to %s) in %s stopped at %s, and the next observation"
-              + " tries again — %s stays live: %s",
-          predecessor,
-          retirement.successor(),
-          retirement.environmentName(),
-          step,
-          retirement.successor(),
-          e.getMessage());
+      if (retirement.renamed()) {
+        LOG.warnf(
+            "The retirement of %s (renamed to %s) in %s stopped at %s, and the next observation"
+                + " tries again — %s stays live: %s",
+            predecessor,
+            retirement.successor(),
+            retirement.environmentName(),
+            step,
+            retirement.successor(),
+            e.getMessage());
+      } else {
+        LOG.warnf(
+            "The retirement of %s in %s, asked for by %s, stopped at %s; the next observation"
+                + " tries again unless a deployment of it is in flight: %s",
+            predecessor,
+            retirement.environmentName(),
+            retirement.actor(),
+            step,
+            e.getMessage());
+      }
       return false;
     }
-    LOG.infof(
-        "Retired %s in %s: it is %s now", predecessor, retirement.environmentName(),
-        retirement.successor());
+    if (retirement.renamed()) {
+      LOG.infof(
+          "Retired %s in %s: it is %s now", predecessor, retirement.environmentName(),
+          retirement.successor());
+    } else {
+      LOG.infof(
+          "Retired %s in %s, asked for by %s: nothing deploys under this name any more, and its"
+              + " databases are kept",
+          predecessor, retirement.environmentName(), retirement.actor());
+    }
     return true;
   }
+
+  /**
+   * What step one leaves the rest of a retirement: the service the runtime holds the application
+   * under, and the newest row's id — the deployment a successor-less retirement's empty snapshot
+   * names for traceability.
+   */
+  private record Settled(String service, String deploymentId) {}
 
   /**
    * Step one, in one transaction: the predecessor's newest row and every {@code SPEC_UNREADABLE}
    * row become {@code DECOMMISSIONED}. Answers the service name the runtime holds it under, or null
    * when it never ran here. A row the worker still owns ({@code QUEUED}/{@code STARTING}) is refused
-   * — it cannot happen on this single worker, and settling one would be overwritten a second later.
+   * — on a rename it cannot happen on this single worker; on an operator's retirement it is a
+   * deployment queued after the request, and settling one would be overwritten a second later.
    */
-  private String settlePredecessorRows(Retirement retirement) {
+  private Settled settlePredecessorRows(Retirement retirement) {
     List<PdDeployment> place =
         deployments.listForPlaceNewestFirst(
             retirement.predecessor(), retirement.environmentId());
@@ -3088,16 +3229,26 @@ public class DeployService implements ReleaseAnnouncements {
           "the newest deployment of " + retirement.predecessor() + " is " + newest.status);
     }
     String stamp =
-        "[decommissioned by rename to "
-            + retirement.successor()
-            + " at "
-            + Instant.now()
-            + ": "
-            + retirement.predecessor()
-            + " is "
-            + retirement.successor()
-            + " now — nothing deploys under this name any more, and the rows below are what it"
-            + " did while it existed]";
+        retirement.renamed()
+            ? "[decommissioned by rename to "
+                + retirement.successor()
+                + " at "
+                + Instant.now()
+                + ": "
+                + retirement.predecessor()
+                + " is "
+                + retirement.successor()
+                + " now — nothing deploys under this name any more, and the rows below are what"
+                + " it did while it existed]"
+            : "[decommissioned by "
+                + retirement.actor()
+                + " at "
+                + Instant.now()
+                + ": "
+                + retirement.predecessor()
+                + " is retired with no successor — its service, routes, catalogue row, settings"
+                + " and idp client are removed, its databases are kept, and the rows below are"
+                + " what it did while it existed]";
     for (PdDeployment row : place) {
       boolean settle =
           (row == newest && row.status != PdDeploymentStatus.DECOMMISSIONED)
@@ -3111,9 +3262,11 @@ public class DeployService implements ReleaseAnnouncements {
       }
     }
     deployments.flush();
-    return newest.containerName == null || newest.containerName.isBlank()
-        ? PdNetworks.alias(retirement.environmentName(), retirement.predecessor())
-        : newest.containerName;
+    String service =
+        newest.containerName == null || newest.containerName.isBlank()
+            ? PdNetworks.alias(retirement.environmentName(), retirement.predecessor())
+            : newest.containerName;
+    return new Settled(service, newest.id);
   }
 
   // `retireConvertedTierServices` lived here, and it went with the plane conversion that owed it.
@@ -3405,15 +3558,36 @@ public class DeployService implements ReleaseAnnouncements {
    * cutover sends the retirement anyway.
    */
   private void announceRetired(Plan plan, Instant finishedAt) {
-    announce(
+    announceRetired(
         plan.deploymentId(),
+        plan.renamedFrom(),
+        plan.environmentId(),
+        plan.environmentName(),
+        finishedAt,
+        plan.cause());
+  }
+
+  /**
+   * The empty snapshot itself, for any retired application — the rename's predecessor above, and
+   * an operator's successor-less retirement ({@link #retire}), which names the retired
+   * application's own newest row and no cause: nothing on the bus asked for it, a person did.
+   */
+  private void announceRetired(
+      String deploymentId,
+      String applicationName,
+      String environmentId,
+      String environmentName,
+      Instant finishedAt,
+      UUID cause) {
+    announce(
+        deploymentId,
         announcer ->
             announcer.onActive(
                 new DeploymentActive(
-                    plan.deploymentId(),
-                    plan.renamedFrom(),
-                    plan.environmentId(),
-                    plan.environmentName(),
+                    deploymentId,
+                    applicationName,
+                    environmentId,
+                    environmentName,
                     null,
                     null,
                     null,
@@ -3423,7 +3597,7 @@ public class DeployService implements ReleaseAnnouncements {
                     null,
                     List.of(),
                     List.of()),
-                plan.cause()));
+                cause));
   }
 
   private void announceFailed(

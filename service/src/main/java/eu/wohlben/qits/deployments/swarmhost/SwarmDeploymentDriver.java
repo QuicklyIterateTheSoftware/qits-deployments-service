@@ -1648,7 +1648,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * deployment config still carries a {@code mounts[0]} for {@code /data} would otherwise get two
    * {@code --mount} flags for one directory and a {@code service create} that fails outright. With
    * the dedupe, the declaration lands and is provably inert for as long as config supplies the same
-   * value — which is the estate's two-step rule (configuration-yml.md §7.5) applied to this family:
+   * value — which is the estate's two-step rule applied to this family:
    * ship the declaration, watch it change nothing, then retire the config entry.
    */
   private Set<String> volumeFlags(List<String> argv, ServiceSpec spec) {

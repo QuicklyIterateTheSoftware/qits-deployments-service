@@ -23,7 +23,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 
 /**
  * Every application this component deploys, in one flat list — the environments' and the platform's
- * together — and the three levers an operator has over one of them.
+ * together — and the four levers an operator has over one of them.
  *
  * <p>It is flat because a platform service carries no LINK into an environment: reading through the
  * environments would leave qits-platform-idp and this component out of it, which are the two a
@@ -35,20 +35,22 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  *
  * <p><b>The listing is read-only and the catalogue still is</b>: rows here are derived from each
  * repository's own {@code .config/qits/deployments.yml} on every green build, and nothing on this
- * surface creates, renames or removes one. What the three POSTs below write is not the catalogue —
+ * surface creates or renames one. What the first three POSTs below write is not the catalogue —
  * the first two act on the <b>running service</b> an application's newest deployment left behind,
  * and the third writes a word on the <b>deployment row</b> of an application that has none. See
  * {@link ApplicationScaling} and {@link ApplicationRetirement}, which argue the two shapes; the
  * short version is that a restart used to cost a same-sha push and fifteen minutes of rebuild, and
- * that a retired name used to keep a red row for ever.
+ * that a retired name used to keep a red row for ever. <b>The fourth, {@code retire}, is the one
+ * that removes</b> — the whole of an application with no successor, catalogue row included, the
+ * rename cutover's retirement with nobody taking the place (qits-765).
  *
- * <p><b>The first two are 202, and that is the component's own idiom rather than a hedge.</b> Every
- * docker call here happens on the single deploy worker, so an operator's action queues behind
- * whatever is deploying — the same place a build-succeeded event goes, for the same reason. The
- * deployment listing is where the result is read. <b>The third is 200</b>: it issues no docker call
- * at all, so there is nothing for it to queue behind and nothing to promise.
+ * <p><b>Scale, restart and retire are 202, and that is the component's own idiom rather than a
+ * hedge.</b> Every docker call here happens on the single deploy worker, so an operator's action
+ * queues behind whatever is deploying — the same place a build-succeeded event goes, for the same
+ * reason. The deployment listing is where the result is read. <b>Decommission is 200</b>: it issues
+ * no docker call at all, so there is nothing for it to queue behind and nothing to promise.
  *
- * <p><b>All three take {@code qits:admin}, the reader's role, and that is a decision.</b> This
+ * <p><b>All four take {@code qits:admin}, the reader's role, and that is a decision.</b> This
  * is a person's operational action, driven from this component's own web client through the
  * platform edge's forwarded {@code X-Qits-Roles} header — the same caller every read on this surface
  * has. The machine role {@code qits:system} is deliberately NOT granted: the two sets do
@@ -113,6 +115,20 @@ public class PdApplicationController {
       String currentDeploymentId,
       String previousStatus,
       List<String> decommissionedIds) {}
+
+  /**
+   * What a retirement with no successor resolved and queued — never an outcome, because nothing has
+   * been issued when this is written. {@code serviceName} is the swarm service it removes, {@code
+   * deploymentId} the newest row it settles, and {@code previousStatus} the word that row carried
+   * when the request was resolved.
+   */
+  public record RetireResponse(
+      String applicationId,
+      String applicationName,
+      String environmentId,
+      String serviceName,
+      String deploymentId,
+      String previousStatus) {}
 
   /** Held through a short database outage rather than answering 500 — see {@link PdReadPatience}. */
   @GET
@@ -212,6 +228,44 @@ public class PdApplicationController {
         retired.currentDeploymentId(),
         retired.previousStatus(),
         retired.decommissionedIds());
+  }
+
+  /**
+   * Retire an application that has no successor, completely: the fourth lever (qits-765).
+   *
+   * <p>Everything a rename cutover does to its predecessor, with nobody taking its place — the
+   * newest row and every {@code SPEC_UNREADABLE} one become {@code DECOMMISSIONED} (stamped with who
+   * asked), an empty {@code DeploymentActive} makes the edge withdraw its routes and navigation
+   * entries, its swarm service is removed, its catalogue row and links, its settings and its idp
+   * client (unless a setting still names it) are deleted. <b>Its databases are kept</b>: the
+   * postgres claim rows stay, so the data stays claimed by the retired name and nothing drops it.
+   *
+   * <p><b>A separate door from {@code decommission}, deliberately.</b> That one's contract is "writes
+   * a word, deletes nothing, calls no orchestrator, 200" and it refuses a deployed application; this
+   * one removes a running service, so it is 202 and queues behind the deploy worker like scale and
+   * restart. Every step is idempotent and a failed one is retried on the next observation, so
+   * calling it again on an application already retired finishes whatever was left.
+   */
+  @POST
+  @Path("/{applicationId}/retire")
+  @Operation(operationId = "retireApplication", summary = "Retire an application with no successor — service, routes, catalogue row, settings and idp client removed, databases kept")
+  @APIResponse(responseCode = "202", description = "Queued on the deploy worker; the rows it will settle and the service it will remove are named")
+  @APIResponse(responseCode = "400", description = "Not an application id")
+  @APIResponse(responseCode = "404", description = "Nothing has ever been deployed for this application, or its tier is gone")
+  @APIResponse(responseCode = "409", description = "The deploy worker still has work for it, or it is this deployer's own service")
+  public Response retire(
+      @PathParam("applicationId") String applicationId, @Context SecurityContext security) {
+    ApplicationRetirement.Queued queued = retirement.retire(applicationId, actor(security));
+    return Response.accepted()
+        .entity(
+            new RetireResponse(
+                queued.applicationId(),
+                queued.applicationName(),
+                queued.environmentId(),
+                queued.serviceName(),
+                queued.deploymentId(),
+                queued.previousStatus()))
+        .build();
   }
 
   private static Response accepted(ApplicationScaling.Accepted queued) {

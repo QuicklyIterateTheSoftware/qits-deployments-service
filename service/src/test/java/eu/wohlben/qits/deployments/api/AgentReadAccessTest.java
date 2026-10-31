@@ -126,6 +126,7 @@ class AgentReadAccessTest {
         .statusCode(403);
     asAgent().when().post(BASE + "/applications/agt-refused/restart").then().statusCode(403);
     asAgent().when().post(BASE + "/applications/agt-refused/decommission").then().statusCode(403);
+    asAgent().when().post(BASE + "/applications/agt-refused/retire").then().statusCode(403);
   }
 
   private static RequestSpecification asAdminAgent() {
@@ -162,6 +163,11 @@ class AgentReadAccessTest {
     asAdminAgent()
         .when()
         .post(BASE + "/applications/" + noSuchApplication + "/decommission")
+        .then()
+        .statusCode(404);
+    asAdminAgent()
+        .when()
+        .post(BASE + "/applications/" + noSuchApplication + "/retire")
         .then()
         .statusCode(404);
 
@@ -234,6 +240,11 @@ class AgentReadAccessTest {
     asDesk()
         .when()
         .post(BASE + "/applications/" + noSuchApplication + "/decommission")
+        .then()
+        .statusCode(404);
+    asDesk()
+        .when()
+        .post(BASE + "/applications/" + noSuchApplication + "/retire")
         .then()
         .statusCode(404);
   }

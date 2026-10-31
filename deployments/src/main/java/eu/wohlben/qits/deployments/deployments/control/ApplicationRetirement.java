@@ -7,10 +7,13 @@ import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentStatus;
 import eu.wohlben.qits.deployments.deployments.persistence.PdDeploymentRepository;
 import eu.wohlben.qits.deployments.environments.control.ApplicationKeys;
+import eu.wohlben.qits.deployments.environments.control.EnvironmentService;
 import eu.wohlben.qits.deployments.environments.control.PdIdentifiers;
+import eu.wohlben.qits.deployments.environments.control.PdNetworks;
 import eu.wohlben.qits.deployments.environments.error.BadRequestException;
 import eu.wohlben.qits.deployments.environments.error.ConflictException;
 import eu.wohlben.qits.deployments.environments.error.NotFoundException;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;
@@ -87,6 +90,17 @@ import org.jboss.logging.Logger;
  * act on it — a separate door with a separate argument, already shipped. Folding it in here would
  * mean this door quietly turned a retired application into one the listing labels "no longer
  * tracked", which is a worse row than the one it was asked to fix, not a better one.
+ *
+ * <p><b>The fourth lever, {@link #retire}, is the opposite case and a separate door on purpose</b>
+ * (qits-765: {@code POST /applications/{applicationId}/retire}). Decommission is for a name that is
+ * already dead — it writes a word, issues no orchestrator call and answers 200, and every one of
+ * those is part of its documented contract. Retire is for an application that is still deployed and
+ * has no successor to take its place (qits-configuration, retired with nothing replacing it): it
+ * does the whole of what a rename cutover does to its predecessor — rows {@code DECOMMISSIONED},
+ * routes and navigation withdrawn, swarm service removed, catalogue row, settings and idp client
+ * deleted — and keeps the databases. Folding that into decommission would have turned a door that
+ * "deletes nothing" into one that removes a running service, behind the same path somebody's
+ * script already calls.
  */
 @ApplicationScoped
 public class ApplicationRetirement {
@@ -108,6 +122,9 @@ public class ApplicationRetirement {
       Set.of(PdDeploymentStatus.QUEUED, PdDeploymentStatus.STARTING);
 
   @Inject PdDeploymentRepository deployments;
+  @Inject DeploymentDriver driver;
+  @Inject EnvironmentService environments;
+  @Inject DeployService worker;
 
   /**
    * What the door answers with — an outcome rather than a promise, since the write has happened by
@@ -228,6 +245,128 @@ public class ApplicationRetirement {
         current.id,
         previous,
         List.copyOf(settled));
+  }
+
+  /**
+   * What the retire door answers with: what it resolved and what it queued — never an outcome,
+   * because nothing has been issued when this is written. The deployment listing is where the
+   * result is read (the row says {@code DECOMMISSIONED} with the stamp), and the catalogue listing
+   * stops naming the application.
+   *
+   * @param serviceName the swarm service the retirement removes, off the newest row
+   * @param deploymentId the newest row, the one the retirement settles
+   * @param previousStatus the word that row carried when the request was resolved
+   */
+  public record Queued(
+      String applicationId,
+      String applicationName,
+      String environmentId,
+      String serviceName,
+      String deploymentId,
+      String previousStatus) {}
+
+  /**
+   * Retire an application that has <b>no successor</b>: everything a rename cutover does to its
+   * predecessor, with nobody taking its place (qits-765). Validated here, on the request thread, so
+   * a bad id, an unknown application, a place the worker still owns or the deployer's own service is
+   * an answer rather than a log line under a 202; performed on the deploy worker by {@link
+   * DeployService#retireApplication}, which runs the rename retirement's own steps — the newest row
+   * and every {@code SPEC_UNREADABLE} one {@code DECOMMISSIONED} (stamped {@code [decommissioned by
+   * <actor> …]}), the empty {@code DeploymentActive} that makes the edge withdraw the routes and
+   * navigation entries, the swarm service removed, the {@code pd_service} row and its links deleted,
+   * the {@code pd_setting} rows deleted, the idp client retired unless a setting still names it.
+   *
+   * <p><b>The data is kept on purpose.</b> The application's postgres claim rows ({@code
+   * pd_resource}) are left exactly as they are and nothing is dropped: with no successor to hand
+   * them to, the rows are what keeps each database claimed by the retired name, so no other
+   * application can declare it and be handed somebody else's data, and nothing in this component
+   * ever issues a {@code DROP}. Deleting the data is a person's decision, made somewhere else.
+   *
+   * <p>Any settled newest row is accepted — {@code ACTIVE} and {@code SCALED_TO_ZERO}, the two
+   * decommission refuses, and equally a {@code FAILED}, {@code GONE} or already {@code
+   * DECOMMISSIONED} one whose service, catalogue row or settings were left behind — because every
+   * step is idempotent, and calling the door again is how a retirement a restart forgot is
+   * finished.
+   *
+   * @param applicationId the derived key, {@code <environmentId>:<name>}
+   * @param actor who asked, for the row's stamp; null reads as "an operator"
+   * @throws ConflictException while a deployment of the place is {@code QUEUED}/{@code STARTING},
+   *     or when the place is this deployer's own service — retiring it would remove the service the
+   *     door answers on, with nothing left to finish the steps after that one
+   */
+  public Queued retire(String applicationId, String actor) {
+    ApplicationKeys.Key key =
+        ApplicationKeys.parse(applicationId)
+            .orElseThrow(
+                () ->
+                    new BadRequestException(
+                        "'"
+                            + applicationId
+                            + "' is not an application id: it reads <environmentId>:<name>"));
+    PdIdentifiers.requireName(key.applicationName(), "application name");
+    PdDeployment current =
+        QuarkusTransaction.joiningExisting()
+            .call(
+                () -> {
+                  List<PdDeployment> place =
+                      deployments.listForPlaceNewestFirst(
+                          key.applicationName(), key.environmentId());
+                  if (place.isEmpty()) {
+                    return null;
+                  }
+                  PdDeployment row = place.get(0);
+                  PdDeployment copy = new PdDeployment();
+                  copy.id = row.id;
+                  copy.applicationName = row.applicationName;
+                  copy.environmentId = row.environmentId;
+                  copy.containerName = row.containerName;
+                  copy.status = row.status;
+                  return copy;
+                });
+    if (current == null) {
+      throw new NotFoundException(
+          "nothing has ever been deployed for " + applicationId + ", so there is nothing to retire");
+    }
+    if (IN_FLIGHT.contains(current.status)) {
+      throw new ConflictException(
+          "the newest deployment of "
+              + applicationId
+              + " is "
+              + current.status
+              + ", so the deploy worker still has work for this application: retire it once that"
+              + " deployment has settled");
+    }
+    String environmentName = environments.require(current.environmentId).name;
+    String service =
+        current.containerName == null || current.containerName.isBlank()
+            ? PdNetworks.alias(environmentName, current.applicationName)
+            : current.containerName;
+    if (driver.isOwnService(service)) {
+      throw new ConflictException(
+          applicationId
+              + " is this deployer's own service ("
+              + service
+              + "): retiring it would remove the service this door answers on, with the rest of"
+              + " the retirement still to run");
+    }
+    String applicationName = current.applicationName;
+    String environmentId = current.environmentId;
+    String deploymentId = current.id;
+    worker.enqueueOperation(
+        "Retiring " + applicationId,
+        () ->
+            worker.retireApplication(
+                applicationName, environmentId, environmentName, deploymentId, actor));
+    LOG.infof(
+        "Queued the retirement of %s (service %s, newest deployment %s was %s) for %s",
+        applicationId, service, deploymentId, current.status, who(actor));
+    return new Queued(
+        applicationId,
+        applicationName,
+        environmentId,
+        service,
+        deploymentId,
+        current.status.name());
   }
 
   private static String who(String actor) {

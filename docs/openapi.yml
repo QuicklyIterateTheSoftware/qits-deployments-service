@@ -525,6 +525,41 @@ paths:
         - qits:admin-agent
         - qits:desk-admin
         - qits:desk
+  /deployments/api/applications/{applicationId}/retire:
+    post:
+      summary: "Retire an application with no successor — service, routes, catalogue\
+        \ row, settings and idp client removed, databases kept"
+      operationId: retireApplication
+      parameters:
+      - name: applicationId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "202":
+          description: Queued on the deploy worker; the rows it will settle and the
+            service it will remove are named
+        "400":
+          description: Not an application id
+        "404":
+          description: "Nothing has ever been deployed for this application, or its\
+            \ tier is gone"
+        "409":
+          description: "The deploy worker still has work for it, or it is this deployer's\
+            \ own service"
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Application Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:admin-agent
+        - qits:desk-admin
+        - qits:desk
   /deployments/api/applications/{applicationId}/scale:
     post:
       summary: "Scale an application's workload — 0 stops it, 1 runs it"
@@ -1190,4 +1225,4 @@ paths:
         - qits:system
 info:
   title: qits-platform-deployments API
-  version: 2026.1030.213354
+  version: 2026.1031.45509

@@ -36,6 +36,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       PdApplicationController.ScaleRequest.class,
       PdApplicationController.OperationResponse.class,
       PdApplicationController.RetirementResponse.class,
+      PdApplicationController.RetireResponse.class,
       PdDeploymentController.ListDeploymentsResponse.class,
       PdDeploymentRequestController.ListDeploymentRequestsResponse.class,
       PdDeploymentRequestController.DeploymentRequestResponse.class,

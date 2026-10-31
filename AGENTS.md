@@ -492,6 +492,76 @@ no more be able to declare an application retired than to stop one. `qits:admin-
 too (qits-628 follow-up), for the same reason it is on the other two. `qits:desk-admin` is admitted
 wherever `qits:admin-agent` is (qits-1621). `MachineGuardEnforcedTest` arms it in both directions.
 
+## Retire: the fourth lever, for an application with no successor (qits-765)
+
+    POST /deployments/api/applications/{applicationId}/retire   → 202
+    {"applicationId","applicationName","environmentId","serviceName","deploymentId","previousStatus"}
+
+**Removing a live application that nothing replaces used to have no door.** qits-configuration was
+the case: retired with no successor, while every door did a fragment — `scale 0` stops the task and
+leaves the row `SCALED_TO_ZERO`, which `decommission` then refuses for ever (409); `DELETE
+/services/{name}` drops the catalogue row and nothing else; nobody withdraws the edge's routes or
+nav entries, deletes the settings or retires the idp client. Only the rename cutover's retirement
+did the whole job, and it needed a successor. So this door IS that retirement with the successor
+left out — `DeployService.retireApplication` builds a successor-less `Retirement` and runs the same
+`retire(...)` steps, not a copy of them. It replaces the hand-run sequence (`docker service rm`, a
+catalogue delete, settings deleted one key at a time, an idp client nobody retired, and routes the
+edge kept serving because nothing ever sent the empty snapshot).
+
+**A separate door, not an extension of `decommission`, and that was the choice to make.** Every line
+of decommission's section above is its documented contract — it writes a word and deletes nothing,
+calls no orchestrator, answers 200, refuses a deployed application and does not touch `pd_service`.
+Extending it would have broken all five behind a path scripts already call. Decommission stays the
+door for a name that is already dead; retire is the door for one that is still deployed.
+
+What a call does, in order, on the deploy worker (`DeployService.enqueueOperation`, like scale and
+restart — it removes a service a deployment might be cutting over, so it queues; hence 202):
+
+1. **rows → `DECOMMISSIONED`**: the newest row and every `SPEC_UNREADABLE` one, stamped `[decommissioned
+   by <principal> at …: <app> is retired with no successor — …]` (one stamp format: `[decommissioned
+   by ` is on `ApplicationScaling.STAMP_PREFIXES`, so a second call does not grow the column);
+2. **the empty `DeploymentActive`** (`announceRetired`, versionless, no endpoints, no navigation), so
+   qits-edge withdraws the routes and nav entries — sent before the service goes, and harmlessly again
+   on a retried run;
+3. **the swarm service removed** (`driver.removeService`, the name off the newest row, or the derived
+   alias when it named none);
+4. **the `pd_service` row and its links deleted** (`ServiceCatalog.delete`);
+5. **the `pd_setting` rows deleted** (`Settings.retire`);
+6. **the idp client retired** (`retireIdpClientUnlessReferenced`) — unless a non-secret setting in
+   the tier still names it, the rename's guard word for word; then a WARN says to retire again once
+   it is fixed.
+
+**The databases are KEPT, and that is deliberate.** A rename transfers its predecessor's postgres
+claims to the successor; here there is nobody to transfer them to, so the `pd_resource` postgres rows
+stay exactly as they are and no `DROP` happens (none exists in this component). The rows are what
+keep `qits_<app>` claimed by the retired name — no other application can declare it and be handed
+somebody else's data. Deleting the data is a person's decision, made elsewhere. Only the idp-client
+row goes: a client is a credential, not data.
+
+Refusals, all decided on the request thread so they are answers rather than log lines under a 202:
+
+- **400** a malformed id, **404** a place nothing ever deployed (or whose tier is gone);
+- **409 while the newest row is `QUEUED`/`STARTING`** — the worker's own words;
+- **409 for the deployer's own service** (`DeploymentDriver.isOwnService` on the row's service name),
+  the rename's self-refusal: removing the service the door answers on would strand every step after it.
+
+Any other newest row is accepted — `ACTIVE` and `SCALED_TO_ZERO` (decommission's two 409s), and
+equally `FAILED`, `GONE` or an already `DECOMMISSIONED` one with leftovers — because every step is
+idempotent. **Partial failure is the rename's answer**: a failed step is a WARN, the retirement goes
+into `owedRetirements` and `retryRetirements` finishes it after the next observation pass. Two
+guards in `retirementOwed` keep that from reaching past the operator's intent: a deployment of the
+place in flight when the step ran is not counted (the request is dropped — call the door again), and
+a newer deployment row than the one the request resolved, not yet `DECOMMISSIONED`, means somebody
+deployed it again and the retirement is over. A restart loses the memory; calling the door again
+finishes whatever is left.
+
+**Role**: the class-level set — `qits:admin`, `qits:admin-agent`, `qits:desk-admin`, `qits:desk` —
+exactly as the other three levers; no `qits:system`, no plain `qits:agent`. `MachineGuardEnforcedTest`
+and `AgentReadAccessTest` arm it; `DeskAdminParityTest` covers it by construction.
+`PdApplicationRetireTest` holds the flow end to end (an `ACTIVE` app and a `SCALED_TO_ZERO` shell
+retired with the database claim kept, the self and in-flight refusals, a failed step finished by the
+next observation, and decommission's 409 unchanged beside it).
+
 ## One orchestrator, one seam
 
 **Docker swarm, and nothing else.** The by-hand docker replace — find the alias holder, stop it, run
@@ -519,7 +589,7 @@ never for how.
 removed verbs failed is the one to keep applying: none of these three is a step somebody sequences
 to perform a deployment. Each states an outcome a person asked for, and nothing calls two of them in
 a row. **A fourth, `removeService(name)`, is the rename cutover's** (qits-1399, see `renamed_from:`
-below) — it was the plane conversion's first, and went callerless with the plane; what the verb states — "this one
+below) and the retire door's, which runs the same retirement with no successor (qits-765) — it was the plane conversion's first, and went callerless with the plane; what the verb states — "this one
 service, named by a row, has been left behind and should not exist" — is exactly the sentence the
 plane's own deletion leaves nine times over on the estate, and that is an operator's hand step
 because nothing here can name those services (see *Retiring the plane's bare-named services*). It
@@ -1177,8 +1247,10 @@ whose only identity was the index. Four things decide how it behaves:
   application declaring `/data` while `ComposeTemplate` still supplies `mounts[0]` for `/data` would
   otherwise get two `--mount` flags for one directory and a `service create` that fails outright.
   With it, the declaration lands and is provably inert while bootstrap supplies the same value —
-  `configuration-yml.md` §7.5's two-step rule applied to this family. It is silent by design: during
-  the migration the two say the same thing.
+  the estate's two-step rule applied to this family: ship the declaration, watch it change nothing,
+  then retire the config entry (where each kind of value lives now is qits-docs-service's
+  `docs/guides/deployment-settings.md`). It is silent by design: during the migration the two say the
+  same thing.
 - **A declared volume MISSING from the live service forces a `service rm` and a create**, because
   `buildUpdateArgv` states no mounts and swarm has no add-a-mount — so without it a declaration could
   never reach a running service while every deployment went green. **The rule is one-directional and
@@ -1308,7 +1380,7 @@ or an agent. Without the grant its only way in would be to forward somebody's se
 service impersonating a user to read a listing it is itself entitled to. What the non-overlap
 forbids is a TOKEN holding both roles, and that is untouched: no machine bearer carries
 `qits:admin`, the rest of the read surface is still a person's, and the operator's levers on
-`PdApplicationController` — scale, restart and decommission — stay
+`PdApplicationController` — scale, restart, decommission and retire — stay
 `qits:admin`/`qits:admin-agent`/`qits:desk-admin`-only, because nothing on the platform should be
 able to stop or retire an application as a side effect of
 holding a service token. Granting one read says who may ask it; it says nothing about what is
@@ -1776,6 +1848,11 @@ remove the service the deployment just created. So the predecessors are an opera
 
     docker service rm <app>          # e.g. docker service rm qits-ci
 
+**Do NOT reach for the retire door here** (`POST /applications/{id}/retire`, qits-765): it removes
+the service the application's NEWEST row names, which for these nine is the qualified successor
+that is serving, and it would delete the catalogue row and settings that successor runs on. The door
+is for an application with no successor at all; a bare-named predecessor stays this hand step.
+
 **The ORDER matters for anything that publishes a port — IN EITHER MODE — or holds a single-writer
 store.** Host-mode publishing binds the port from inside the task, so the successor's task sits
 `Pending` on a port the predecessor is still holding. **Ingress mode is NOT the exception it looks
@@ -2021,7 +2098,8 @@ Five things about it, each easy to undo by accident:
   service, alias, database, rows and routes; the new one gets fresh ones and deploys beside it. The
   rename runbook moves repositories, never applications. Nothing here helped for a while, and three
   abandoned names carried a red `FAILED` row apiece for a fortnight because of it — there is a door
-  now, `POST /applications/{applicationId}/decommission`, and its section is above.
+  now, `POST /applications/{applicationId}/decommission`, and its section is above. An old name
+  that is still DEPLOYED is `POST /applications/{applicationId}/retire` instead (qits-765).
 
 #### `renamed_from:` — the one thing an application rename may move (2026-09-26)
 
@@ -2039,7 +2117,9 @@ predecessor's retirement itself (the cutover, below) instead of leaving it to an
 is right and it stays** — the alternative is provisioning a second application an empty database and
 starting it green — and retiring the predecessor first is not available either (`decommission` is a
 409 while it is deployed, `scale 0` leaves it `SCALED_TO_ZERO` which still counts as deployed, and
-`DELETE /services/{name}` is 403 for a workspace credential).
+`DELETE /services/{name}` is 403 for a workspace credential). The later retire door (qits-765) would
+remove it, but it drops the settings and keeps the database claim under the old name, so it is no
+substitute for a rename either — it is for an application nothing replaces.
 
 `renamed_from: <application>` in `.config/qits/deployments.yml` is the missing sentence — the
 seventeenth key, snake_case like the majority, validated with `PdIdentifiers.requireName` because it

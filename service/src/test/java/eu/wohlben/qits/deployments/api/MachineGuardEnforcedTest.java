@@ -64,6 +64,7 @@ class MachineGuardEnforcedTest {
   private static final String SCALE = APPLICATION + "/scale";
   private static final String RESTART = APPLICATION + "/restart";
   private static final String DECOMMISSION = APPLICATION + "/decommission";
+  private static final String RETIRE = APPLICATION + "/retire";
 
   private static final String ENVIRONMENT_BODY = "{\"name\":\"guarded-env\"}";
   private static final String SERVICE_BODY =
@@ -482,6 +483,15 @@ class MachineGuardEnforcedTest {
     given().when().post(DECOMMISSION).then().statusCode(401);
     machine().when().post(DECOMMISSION).then().statusCode(403);
     admin().when().post(DECOMMISSION).then().statusCode(404);
+  }
+
+  @Test
+  void theRetireDoorIsAPersonsToo() {
+    // It removes a running service and its catalogue row (qits-765), so a service bearer must no
+    // more be able to retire an application than to stop one. Same grant, both directions.
+    given().when().post(RETIRE).then().statusCode(401);
+    machine().when().post(RETIRE).then().statusCode(403);
+    admin().when().post(RETIRE).then().statusCode(404);
   }
 
   /** A caller with a fresh token minted for this service, carrying the machine roles the idp grants. */
