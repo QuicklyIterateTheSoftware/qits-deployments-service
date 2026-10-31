@@ -61,10 +61,10 @@ application: qits-deployments
 # instance is already connected with. Without those rows it would rotate its own passwords out from
 # under its own connection pools.
 # THERE IS NO health_path: KEY HERE, AND THAT IS DELIBERATE RATHER THAN AN OVERSIGHT.
-# resolveHealthPath asks three sources in order: this file, then the STORED pd_service.health_path
-# row, then the convention — and all three name /deployments/q/health/ready now, so an override
-# would only restate what the convention derives from the APPLICATION name
-# (DeployService.conventionHealthPath("qits-deployments") is exactly that string).
+# resolveHealthPath asks four sources in order: this file, then the STORED pd_service.health_path
+# row, then the first `routes:` entry below (qits-1773), then the convention on the APPLICATION
+# name — and all of them name /deployments/q/health/ready now, so an override would only restate
+# what `routes: /deployments` and DeployService.conventionHealthPath("qits-deployments") derive.
 #
 # It was here for one release and it was load-bearing then: the stored row held
 # /platform-deployments/q/health/ready, written when the route really was there, and a stored row
