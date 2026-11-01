@@ -1,0 +1,32 @@
+-- A DEPLOYMENT A RESTART INTERRUPTED SAYS SO IN A COLUMN, NOT ONLY IN ITS DETAIL (qits-1803).
+--
+-- `DeployService.sweepInFlight` settles every row a previous process left QUEUED, and every STARTING
+-- row nothing is running under, as FAILED — nothing ever decided those deployments, the worker queue
+-- simply did not survive the JVM. The release they belonged to is usually still OWED
+-- (`pd_owed_release`: the process died inside deploy(), so nothing settled the obligation), and
+-- `OwedReleaseSweep` is what re-drives it. Its idempotence guard asked one question — "was this
+-- (application, version) already requested?" — and the request row is written at the START of
+-- deploy(), so the answer was always yes: the obligation was settled ALREADY_REQUESTED, the release
+-- never deployed, and the release request's gate waited on a DeploymentActive that nothing would
+-- ever announce. The deployer's own self-update is the commonest way in: HANDED_OFF, the worker takes
+-- the next queued release, and swarm replaces the process mid-way through it.
+--
+-- So the guard needs to tell "requested and DECIDED" from "requested and then interrupted", and it
+-- asks this column. A FAILED row with `interrupted` set is a deployment no outcome was ever reached
+-- for; every other row — ACTIVE, DECOMMISSIONED, SUPERSEDED, an ordinary FAILED — is a decision.
+--
+-- A COLUMN AND NOT A STATUS. A new enum value would be a new word on every read door, in the pacts
+-- and in the client; the status stays FAILED, which is still the truth about what a person sees (it
+-- did not deploy), and this is the one extra fact the re-drive needs.
+--
+-- A COLUMN AND NOT A MATCH ON `detail`. The detail is prose for a person, and the sentence it carries
+-- has already changed once (the retired `qits-platform-deployments` became `qits-deployments` in the
+-- same change that added this). A guard that parsed it would break on the next rewording, silently.
+--
+-- NOT NULL DEFAULT FALSE, AND NO BACKFILL. Every existing row reads false, which is "decided", which
+-- is exactly what the guard answered for it before this column existed — so no obligation that was
+-- already settled behaves differently, and no historical row is reinterpreted. A backfill from the
+-- detail text is the match this column exists to avoid, and there is nothing to gain from it: an
+-- obligation the old guard settled ALREADY_REQUESTED is settled, and a settled row is never read
+-- again.
+alter table pd_deployment add column interrupted boolean not null default false;

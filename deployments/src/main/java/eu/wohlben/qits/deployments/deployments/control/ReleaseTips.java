@@ -115,6 +115,44 @@ public class ReleaseTips {
   }
 
   /**
+   * Claim this version back as the tip of its application after a restart interrupted it: true if
+   * it is still the newest one seen <em>or is that very version</em>, false if something newer was
+   * accepted since.
+   *
+   * <p><b>Why {@link #claim} cannot answer this, and why it must stay as it is for the door that
+   * uses it.</b> The floor {@link #claim} measures against is read from the request rows, and a
+   * release a restart interrupted (qits-1803) already WROTE its request — the worker's {@code
+   * deploy()} does that first. So the floor is this version itself, {@link Versions#isNewerThan}
+   * of a version against itself is false, and {@link #claim} would call the one release still owed
+   * stale. On the live door that strictness is the point: the same version offered twice there is a
+   * duplicate. Here it is not — {@link OwedReleaseSweep} asks only after the request rows have shown
+   * that every attempt at this version was cut off by a restart, which is what makes "equal" a
+   * resumption rather than a repeat.
+   *
+   * <p><b>What it still refuses is the rollback</b>, which is the one thing a re-drive must never
+   * cause: a version that a newer request has overtaken is below the floor, and stays there whatever
+   * became of its own attempt. Synchronized with {@link #claim}, for the same read-then-write reason,
+   * and it raises the in-memory floor the same way so a stale catch-up behind it is still collapsed.
+   *
+   * @param applicationName what this release deploys under
+   * @param version the released CalVer stamp the interrupted deployment was performing
+   */
+  public synchronized boolean reclaim(String applicationName, String version) {
+    if (version == null) {
+      return false;
+    }
+    String floor = announced.get(applicationName);
+    if (floor == null) {
+      floor = newestRequested(applicationName);
+    }
+    if (Versions.compare(version, floor) < 0) {
+      return false;
+    }
+    announced.put(applicationName, version);
+    return true;
+  }
+
+  /**
    * The newest version this application was asked for, or null if it never was.
    *
    * <p><b>In a transaction of its own.</b> The caller is inside the library's claim transaction,

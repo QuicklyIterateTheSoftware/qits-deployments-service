@@ -1537,7 +1537,7 @@ loss rather than a delay.
 
 `ReleaseAcceptance` + `OwedReleaseSweep` + `pd_owed_release` (V10) are the second ledger. The bus
 door calls **`ReleaseAnnouncements.announceDurably`**, which validates, writes the obligation, and
-only then queues; the worker settles it when `deploy()` has returned. Six things about it, each easy
+only then queues; the worker settles it when `deploy()` has returned. Seven things about it, each easy
 to undo by accident:
 
 - **It cannot commit with the bus's claim and does not try.** `consumed_event` is in the
@@ -1560,6 +1560,21 @@ to undo by accident:
   deployed, which is the one thing a re-drive must never be able to cause; everything else is an
   ordinary `announceDurably` — same identifier validation, same spec read at the released tag, same
   `Door.RELEASE_EVENT` refusal of a release that declares no file.
+- **"Already requested" means requested AND DECIDED, and a restart is not a decision** (qits-1803).
+  The worker writes the request at the start of `deploy()`, so a process replaced mid-deployment —
+  this component's own self-update is the commonest way: `HANDED_OFF`, the worker takes the next
+  queued release, swarm replaces the process — leaves a request whose deployment the successor's
+  `sweepInFlight()` settles `FAILED`. The boolean guard called that met; the release never deployed
+  and its release request's gate hung. So `sweepInFlight()` also sets **`pd_deployment.interrupted`**
+  (V16) on the two arms that mean "nothing decided this" (a `QUEUED` row, a `STARTING` row nothing is
+  running under), and the sweep re-drives a version whose every request points at such a row
+  (`PdDeploymentRequestRepository.countDecidedFor` is zero). The tip check for it is
+  **`ReleaseTips.reclaim`**, not `claim`: the interrupted release's own request IS the floor, so
+  `claim` would call it stale — `reclaim` passes the equal version and still refuses one a newer
+  request has overtaken. `claim` is unchanged for the live door, where an equal version is a
+  duplicate. **The marker is a column, never a match on the detail text** (prose, reworded in the
+  same change), **and never a status word** (a new word reaches every read door and pact). A
+  re-drive that is interrupted again just adds a row and an attempt; `MAX_ATTEMPTS` still bounds it.
 - **`announceDurably` is a second method rather than the default, because `Door.MANUAL` does not want
   it.** That door is an operator naming a version on purpose, including a rollback, and a ledger that
   re-announced one after a restart would be re-answering a question a person already answered — and
@@ -2694,6 +2709,14 @@ it drops** — see *The platform plane is DELETED* for the whole argument. Three
   linked and the columns still go. That is every database the suite migrates, which is why
   `PdSchemaTest` pins it rather than assuming it — a fresh install must not end up with a link to
   nowhere.
+
+**`V16__deployment_interrupted.sql` is a flag beside a status, and the shape is the point**
+(qits-1803): `interrupted boolean not null default false` on `pd_deployment`, set only by
+`sweepInFlight()` beside its interrupted `FAILED`. Not a status value, so no read door, pact or client
+learns a word; not a match on `detail`, which is prose. **No backfill**: false is "decided", which is
+what the guard answered for every old row anyway, and an obligation already settled is never read
+again. The re-drive guard also requires the row to still be `FAILED`, so a row something later moved
+answers by its status.
 
 **Nulls are distinct to `=`, and the queries still test for one.** A deployment's `environment_id` was
 null until V8 and is the designated tier now, so the null-testing arms of

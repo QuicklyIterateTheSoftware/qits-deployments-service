@@ -570,6 +570,33 @@ public class PdSchemaTest {
     }
   }
 
+  @Test
+  public void v16MarksNoRowInterruptedUnlessTheSweepSaysSo() throws Exception {
+    // V16, qits-1803. The flag the owed sweep re-drives on has to read FALSE for every row nobody
+    // marked — every writer but sweepInFlight states nothing about it, and every row older than the
+    // column is a decided one. A default that read null, or true, would re-drive releases that were
+    // decided long ago; a nullable column would make "nobody said" a third answer the guard would
+    // have to invent a meaning for.
+    try (Connection connection = migrated();
+        Statement sql = connection.createStatement()) {
+      deployment(sql, "d-decided", "qits-ci", "'env-1'", SHA_A, "FAILED");
+      assertEquals(
+          List.of("false"),
+          rows(sql, "select interrupted::text from pd_deployment where id = 'd-decided'"),
+          "a row that names no flag is not interrupted");
+
+      sql.execute("update pd_deployment set interrupted = true where id = 'd-decided'");
+      assertEquals(
+          List.of("true"),
+          rows(sql, "select interrupted::text from pd_deployment where id = 'd-decided'"));
+
+      assertThrows(
+          SQLException.class,
+          () -> sql.execute("update pd_deployment set interrupted = null where id = 'd-decided'"),
+          "and there is no third answer");
+    }
+  }
+
   private static void request(
       Statement sql, String id, String applicationName, String version, String priority)
       throws SQLException {

@@ -1,6 +1,7 @@
 package eu.wohlben.qits.deployments.deployments.persistence;
 
 import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentRequest;
+import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentStatus;
 import io.quarkus.hibernate.orm.panache.PanacheRepositoryBase;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
@@ -81,17 +82,6 @@ public class PdDeploymentRequestRepository
   }
 
   /**
-   * The newest version this application was ever asked for, whatever the gate said and whatever
-   * became of it.
-   *
-   * <p><b>It is the cross-restart floor of the monotonic collapse</b> ({@code ReleaseTips}), and it
-   * is asked of the REQUESTS rather than of the deployments on purpose: a request is written the
-   * moment a release is accepted, before the spec read and before anything is queued, so it records
-   * "this version was seen here" even for a release that then failed to deploy. A floor read off
-   * deployment rows alone would let a stale catch-up replay a version whose newer sibling never got
-   * as far as a container.
-   */
-  /**
    * Whether this exact version of this application has already been asked for anywhere.
    *
    * <p><b>The idempotence guard of the acceptance ledger's re-drive</b> ({@code OwedReleaseSweep}):
@@ -108,6 +98,58 @@ public class PdDeploymentRequestRepository
     return count("applicationName = ?1 and version = ?2", applicationName, version) > 0;
   }
 
+  /**
+   * How many of this exact version's requests reached a DECISION — the half of {@link #existsFor}
+   * that a restart can make wrong (qits-1803).
+   *
+   * <p>A request is written at the start of the worker's {@code deploy()}, so a process replaced
+   * between that write and the cutover leaves a request whose deployment the next boot's sweep
+   * settles {@code FAILED} with {@code interrupted} set: nothing ever decided it. {@link
+   * #existsFor} alone reads that as "met", and the release is never deployed. So a request counts
+   * here unless it points at a deployment carrying that flag:
+   *
+   * <ul>
+   *   <li><b>a deployment that is not interrupted</b> — {@code ACTIVE}, {@code DECOMMISSIONED},
+   *       {@code SUPERSEDED}, an ordinary {@code FAILED} — is an outcome somebody can read;
+   *   <li><b>no deployment at all</b> ({@code deployment_id} null) is a refusal — the gate's, or a
+   *       release that declares no spec — and a refusal is a decision too;
+   *   <li><b>a deployment that has since gone</b> counts, conservatively: nothing says it was
+   *       interrupted, and re-driving on an absence is how a version deploys twice;
+   *   <li><b>an interrupted row that is no longer {@code FAILED}</b> counts too. The flag is set
+   *       beside that word and nothing clears it, so a row something later moved — an operator's
+   *       scale on the newest row of a place writes a status — answers by its status, which is
+   *       the newer statement.
+   * </ul>
+   *
+   * <p>Zero with {@link #existsFor} true is therefore exactly "asked for, and every attempt was cut
+   * off by a restart" — the one shape the owed sweep may re-drive. Environment-blind for {@link
+   * #existsFor}'s reason: the question is about the release.
+   */
+  public long countDecidedFor(String applicationName, String version) {
+    return getEntityManager()
+        .createQuery(
+            "select count(r) from PdDeploymentRequest r"
+                + " where r.applicationName = :applicationName and r.version = :version"
+                + " and not exists (select d.id from PdDeployment d"
+                + "   where d.id = r.deploymentId and d.interrupted = true and d.status = :failed)",
+            Long.class)
+        .setParameter("applicationName", applicationName)
+        .setParameter("version", version)
+        .setParameter("failed", PdDeploymentStatus.FAILED)
+        .getSingleResult();
+  }
+
+  /**
+   * The newest version this application was ever asked for, whatever the gate said and whatever
+   * became of it.
+   *
+   * <p><b>It is the cross-restart floor of the monotonic collapse</b> ({@code ReleaseTips}), and it
+   * is asked of the REQUESTS rather than of the deployments on purpose: a request is written the
+   * moment a release is accepted, before the spec read and before anything is queued, so it records
+   * "this version was seen here" even for a release that then failed to deploy. A floor read off
+   * deployment rows alone would let a stale catch-up replay a version whose newer sibling never got
+   * as far as a container.
+   */
   public Optional<String> newestVersionOf(String applicationName) {
     return find("applicationName = ?1 order by seq desc", applicationName)
         .firstResultOptional()

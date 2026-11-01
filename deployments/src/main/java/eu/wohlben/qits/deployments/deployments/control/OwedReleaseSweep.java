@@ -37,12 +37,18 @@ import org.jboss.logging.Logger;
  * <ul>
  *   <li><b>Has this exact version already been requested?</b> Then the obligation was met by the
  *       process that died holding it — the request row was written, the container may even be live —
- *       and re-driving would mint a duplicate. Settled {@code ALREADY_REQUESTED}.
+ *       and re-driving would mint a duplicate. Settled {@code ALREADY_REQUESTED}. <b>Unless every
+ *       one of those requests ended in a deployment a restart interrupted</b> (qits-1803): the
+ *       previous process wrote the request and died before deciding anything, so the release is
+ *       still owed and goes on to the next question rather than being settled. See {@link
+ *       #requested}.
  *   <li><b>Is it still the tip?</b> {@link ReleaseTips} answers, exactly as it does on the live
  *       path, against a floor read from the request rows because a freshly booted process remembers
  *       nothing. A release that a newer one has overtaken is settled {@code SUPERSEDED} rather than
  *       deployed: replaying it would be a rollback nobody asked for, which is the one thing a
- *       re-drive must never be able to cause.
+ *       re-drive must never be able to cause. An interrupted release is asked through {@link
+ *       ReleaseTips#reclaim} instead, because its own request IS the floor — equal passes there,
+ *       newer still refuses.
  *   <li><b>Anything else</b> goes through {@link ReleaseAnnouncements#announceDurably}, which is the
  *       identical call the bus door makes — the identifier validation, the spec read at the released
  *       tag, derived registration, the request row, the queue, the health-gated cutover. Nothing
@@ -184,7 +190,8 @@ public class OwedReleaseSweep {
           "taken up " + row.attempts() + " times without a deployment");
       return false;
     }
-    if (alreadyRequested(application, version)) {
+    Requested requested = requested(application, version);
+    if (requested == Requested.DECIDED) {
       LOG.infof(
           "%s@%s was already requested, so the obligation the previous process left is discharged"
               + " rather than announced again",
@@ -192,13 +199,23 @@ public class OwedReleaseSweep {
       acceptance.settle(row.id(), ReleaseAcceptance.Outcome.ALREADY_REQUESTED, null);
       return false;
     }
-    if (!tips.claim(application, version)) {
+    boolean tip =
+        requested == Requested.INTERRUPTED
+            ? tips.reclaim(application, version)
+            : tips.claim(application, version);
+    if (!tip) {
       LOG.infof(
           "%s@%s is not the newest release of %s any more; the obligation is settled rather than"
               + " deployed over the newer one",
           application, version, application);
       acceptance.settle(row.id(), ReleaseAcceptance.Outcome.SUPERSEDED, null);
       return false;
+    }
+    if (requested == Requested.INTERRUPTED) {
+      LOG.infof(
+          "%s@%s was requested and every attempt at it was interrupted by a restart; re-driving it"
+              + " as the newest release of %s",
+          application, version, application);
     }
     try {
       announcements.announceDurably(
@@ -225,19 +242,56 @@ public class OwedReleaseSweep {
   }
 
   /**
-   * Whether this exact {@code (application, version)} already has a request row.
+   * What the request rows say about this exact {@code (application, version)} — the idempotence
+   * guard, and since qits-1803 a three-way answer rather than a boolean.
    *
-   * <p>The idempotence guard, and it is asked of the REQUESTS for {@link ReleaseTips}' reason: a
-   * request is written the moment a release is accepted for a place, before the gate, before the
-   * pull and before any terminal word — so it records "this was already done here" even for a
-   * deployment that then failed. Asking the deployments instead would re-drive a release whose
-   * container never came up, which is a second deployment of something a human is already looking
-   * at.
+   * <p><b>Asked of the REQUESTS for {@link ReleaseTips}' reason</b>: a request is written the moment
+   * a release is accepted for a place, before the gate, before the pull and before any terminal
+   * word — so it records "this was already done here" even for a deployment that then failed.
+   * Asking the deployments alone would re-drive a release whose container never came up, which is a
+   * second deployment of something a human is already looking at.
+   *
+   * <p><b>But "requested" stopped being enough on its own</b>, because the worker writes the request
+   * at the START of {@code deploy()}. A process replaced after that write — this component's own
+   * self-update is the commonest way, its worker having moved on to the next queued release — leaves
+   * a request whose deployment the successor's {@code sweepInFlight()} settles {@code FAILED} and
+   * marks {@code interrupted}. Nothing decided it, nothing settled the obligation, and the old
+   * boolean called it met: the release was never deployed and its release request's gate hung on a
+   * {@code DeploymentActive} nothing would announce. So the rows are read for what they decided:
+   *
+   * <ul>
+   *   <li>{@link Requested#NONE} — never asked for; the ordinary re-drive, through {@link
+   *       ReleaseTips#claim}.
+   *   <li>{@link Requested#DECIDED} — at least one request reached an outcome (a deployment that is
+   *       not interrupted, or a refusal with no deployment at all). Settled {@code
+   *       ALREADY_REQUESTED} exactly as before: a real {@code FAILED} is a person's to look at, not a
+   *       sweep's to retry.
+   *   <li>{@link Requested#INTERRUPTED} — asked for, and every attempt cut off by a restart. Owed
+   *       still, and re-driven through {@link ReleaseTips#reclaim}, which lets this very version
+   *       through and still refuses it under a newer one.
+   * </ul>
+   *
+   * <p>A re-drive that is itself interrupted lands here again with one more interrupted row and one
+   * more attempt on the obligation, so {@link ReleaseAcceptance#MAX_ATTEMPTS} still bounds it.
    */
-  private boolean alreadyRequested(String applicationName, String version) {
+  private Requested requested(String applicationName, String version) {
     return DbRetry.inNewTx(
         "The request lookup of " + applicationName + "@" + version,
-        () -> requests.existsFor(applicationName, version),
+        () -> {
+          if (!requests.existsFor(applicationName, version)) {
+            return Requested.NONE;
+          }
+          return requests.countDecidedFor(applicationName, version) > 0
+              ? Requested.DECIDED
+              : Requested.INTERRUPTED;
+        },
         DeployService.CUTOVER_BUDGET);
+  }
+
+  /** What {@link #requested} found; see there. */
+  private enum Requested {
+    NONE,
+    DECIDED,
+    INTERRUPTED
   }
 }

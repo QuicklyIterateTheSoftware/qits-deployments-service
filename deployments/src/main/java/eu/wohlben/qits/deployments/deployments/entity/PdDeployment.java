@@ -143,6 +143,24 @@ public class PdDeployment extends PanacheEntityBase implements CausedRow {
   @Column(columnDefinition = "text")
   public String detail;
 
+  /**
+   * <b>True on a row a restart interrupted, and on no other</b> — set by {@code
+   * DeployService.sweepInFlight} beside its {@code FAILED}, when the previous process left the row
+   * {@code QUEUED}, or {@code STARTING} with nothing running under its name (V16).
+   *
+   * <p>It exists for one reader, {@code OwedReleaseSweep}: a release whose every deployment carries
+   * it reached no outcome at all, so the obligation it was owed under is still owed, and re-driving
+   * it is a first attempt rather than a duplicate. Every other row — an ordinary {@code FAILED}
+   * included — is a decision, and a decided release is not re-driven.
+   *
+   * <p>A flag beside the status rather than a status of its own, so no read door, pact or client
+   * learns a new word: the row did fail to deploy, and that is still what it says. And a column
+   * rather than a match on {@link #detail}, which is prose for a person and has been reworded
+   * before.
+   */
+  @Column(nullable = false)
+  public boolean interrupted;
+
   @Column(name = "created_at", nullable = false)
   public Instant createdAt;
 

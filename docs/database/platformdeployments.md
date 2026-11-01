@@ -18,6 +18,7 @@ erDiagram
     text detail
     string environment_id
     instant finished_at
+    boolean interrupted "not null"
     text navigation_entries
     string navigation_label "length 64"
     int navigation_position

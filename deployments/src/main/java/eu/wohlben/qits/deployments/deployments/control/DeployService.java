@@ -132,8 +132,13 @@ public class DeployService implements ReleaseAnnouncements {
   /** The longer prefix a platform-tier repository carries; stripped before {@link #NAME_PREFIX}. */
   private static final String PLATFORM_NAME_PREFIX = "qits-platform-";
 
-  /** What an in-flight row says when nothing is running under its name — see {@link #sweepInFlight()}. */
-  private static final String INTERRUPTED = "[interrupted by a qits-platform-deployments restart]";
+  /**
+   * What an in-flight row says when nothing is running under its name — see {@link
+   * #sweepInFlight()}. Prose for a person and nothing else: what a machine reads is {@link
+   * PdDeployment#interrupted}, set beside it, so this sentence may be reworded (it was, when the
+   * retired {@code qits-platform-deployments} left it) without moving any decision.
+   */
+  private static final String INTERRUPTED = "[interrupted by a qits-deployments restart]";
 
   /**
    * How long a self-inflicted blip may last before it is a failure worth recording — longer than
@@ -478,6 +483,14 @@ public class DeployService implements ReleaseAnnouncements {
    * a row whose place a newer sha is already serving is {@code SUPERSEDED}, and nothing is owed
    * about it. The sweep is the only writer of that word.
    *
+   * <p><b>The two {@code FAILED} rows are marked {@link PdDeployment#interrupted}, and the release
+   * behind them is re-driven because of it</b> (qits-1803). Nothing DECIDED those deployments — the
+   * queue that would have run or finished them died with the JVM — so the release they were for is
+   * still owed, and {@link OwedReleaseSweep} reads the flag to tell that apart from a release that
+   * was requested and then really failed. Without it the request row written at the start of {@link
+   * #deploy} answered "already requested" on its own, and a release interrupted by this
+   * component's own self-update was never deployed at all.
+   *
    * <p><b>An adopted row is not a claim that the gate passed</b>, and it does not need to be: on
    * what carries the row's image is what is serving under the row's name, and a
    * container that is in fact dying is demoted by {@link DeploymentObserver} on the next two
@@ -582,7 +595,22 @@ public class DeployService implements ReleaseAnnouncements {
    * rather than a boolean because the sweep has three answers now — adopt, superseded, failed — and
    * a boolean could only spell two of them.
    */
-  private record Verdict(PdDeploymentStatus status, String detail) {
+  private record Verdict(PdDeploymentStatus status, String detail, boolean interrupted) {
+
+    /** The two answers that are a decision about the deployment, which is every one but one. */
+    Verdict(PdDeploymentStatus status, String detail) {
+      this(status, detail, false);
+    }
+
+    /**
+     * The one answer that is NOT a decision: nothing ever ran, or nothing is running now, and the
+     * queue that would have finished the job did not survive the JVM. {@code FAILED} on the read
+     * doors, and {@link PdDeployment#interrupted} for {@code OwedReleaseSweep}, which re-drives a
+     * release whose every deployment says this rather than settling it as already requested.
+     */
+    static Verdict interruptedByRestart() {
+      return new Verdict(PdDeploymentStatus.FAILED, INTERRUPTED, true);
+    }
 
     /** Adoption is the one verdict with bookkeeping of its own: the prior actives of the place. */
     boolean adopt() {
@@ -619,11 +647,11 @@ public class DeployService implements ReleaseAnnouncements {
   /** The decision table above, asked of the runtime. */
   private Verdict verdictOn(InFlight row) {
     if (row.status() != PdDeploymentStatus.STARTING || row.containerName() == null) {
-      return new Verdict(PdDeploymentStatus.FAILED, INTERRUPTED);
+      return Verdict.interruptedByRestart();
     }
     DeploymentDriver.RunningImage running = driver.runningImage(row.containerName()).orElse(null);
     if (running == null) {
-      return new Verdict(PdDeploymentStatus.FAILED, INTERRUPTED);
+      return Verdict.interruptedByRestart();
     }
     // The VERSION, through the row's own coalesce: a row written before V7 is tagged with a sha
     // and still has to adopt. Getting this wrong makes a self-updated instance come back SUPERSEDED
@@ -665,6 +693,7 @@ public class DeployService implements ReleaseAnnouncements {
     }
     deployment.status = verdict.status();
     deployment.detail = verdict.detail();
+    deployment.interrupted = verdict.interrupted();
     deployment.finishedAt = Instant.now();
     return deployment.finishedAt;
   }

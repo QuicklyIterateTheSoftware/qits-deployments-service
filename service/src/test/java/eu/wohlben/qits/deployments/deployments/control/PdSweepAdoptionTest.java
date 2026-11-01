@@ -1,6 +1,7 @@
 package eu.wohlben.qits.deployments.deployments.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
@@ -90,6 +91,11 @@ public class PdSweepAdoptionTest {
         .call(() -> deployments.findById(deploymentId).detail);
   }
 
+  private boolean interruptedOf(String deploymentId) {
+    return QuarkusTransaction.requiringNew()
+        .call(() -> deployments.findById(deploymentId).interrupted);
+  }
+
   @Test
   public void aStartingRowWhoseServiceRunsItsShaIsAdoptedAndItsPredecessorDecommissioned() {
     String environmentId = "env-sweep-adopt";
@@ -104,6 +110,7 @@ public class PdSweepAdoptionTest {
     assertEquals("ACTIVE", statusOf(handedOff));
     assertEquals("DECOMMISSIONED", statusOf(predecessor));
     assertTrue(detailOf(handedOff).contains("adopted at startup"), detailOf(handedOff));
+    assertFalse(interruptedOf(handedOff), "an adoption is a decision, not an interruption");
   }
 
   @Test
@@ -176,6 +183,10 @@ public class PdSweepAdoptionTest {
     String detail = detailOf(superseded);
     assertTrue(detail.contains("superseded"), detail);
     assertTrue(detail.contains(OTHER_SHA), detail);
+    assertFalse(
+        interruptedOf(superseded),
+        "something newer serves the place, which is a decision — the owed sweep must not re-drive"
+            + " a release over it");
   }
 
   @Test
@@ -191,7 +202,11 @@ public class PdSweepAdoptionTest {
         "FAILED",
         statusOf(interrupted),
         "nothing is known to serve the place, so this is the narrowed FAILED and not SUPERSEDED");
-    assertTrue(detailOf(interrupted).contains("interrupted"), detailOf(interrupted));
+    assertEquals("[interrupted by a qits-deployments restart]", detailOf(interrupted));
+    // THE MARKER, which is what the owed sweep reads — never the sentence above, which is prose and
+    // has been reworded once already. Without it the release this row was performing is settled
+    // ALREADY_REQUESTED by its own request row and never deployed (qits-1803).
+    assertTrue(interruptedOf(interrupted), "nothing decided this deployment; the row says so");
   }
 
   @Test
@@ -204,6 +219,8 @@ public class PdSweepAdoptionTest {
     deployService.sweepInFlight();
 
     assertEquals("FAILED", statusOf(queued));
+    assertEquals("[interrupted by a qits-deployments restart]", detailOf(queued));
+    assertTrue(interruptedOf(queued), "a queue that died with the JVM decided nothing");
     assertTrue(
         driver.calls().stream().noneMatch(call -> call.equals("runningImage:null")),
         "a row with no name is not asked about: " + driver.calls());
