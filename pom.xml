@@ -61,7 +61,7 @@
              and it stays one line: the release train's follow-bump step
              (.config/qits/ci-event-upstream-eventstream.yml) rewrites exactly this element with a
              `sed`, so a second spelling of the version anywhere would be left behind. -->
-        <qits.eventstream.version>2026.1031.131702</qits.eventstream.version>
+        <qits.eventstream.version>2026.1103.140652</qits.eventstream.version>
         <qits.auth-core.version>2026.1031.63225</qits.auth-core.version>
         <!-- The platform's shared ArchUnit rules, published by qits-integrations-quarkus beside
              qits-auth-core. Test scope wherever entities live — see service/pom.xml. -->
@@ -73,7 +73,7 @@
              outbound java.net.http.HttpClient this repo builds to another qits service, the same
              way quarkus-opentelemetry already does for the REST client. Published by
              qits-integrations-quarkus, same publisher as qits-auth-core and qits-db-core above. -->
-        <qits.http-core.version>2026.1013.64811</qits.http-core.version>
+        <qits.http-core.version>2026.1103.132907</qits.http-core.version>
         <!-- The user-story framework (test scope): this repo's story catalogue is written as
              @UserStory methods, so a `mvn verify -DskipITs=false` also regenerates
              service/target/userstories/ — the story logs and their network diagrams, which are
