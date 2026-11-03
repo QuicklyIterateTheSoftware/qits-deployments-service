@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.deployments.api.SuiteBearers;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentStatus;
 import eu.wohlben.qits.deployments.deployments.persistence.PdDeploymentRepository;
@@ -149,6 +150,7 @@ public class PdApplicationRetirementTest {
     int before = rowCount("retire-renamed");
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .post(APPLICATIONS + TIER + ":retire-renamed/decommission")
         .then()
@@ -182,9 +184,12 @@ public class PdApplicationRetirementTest {
   public void theReadSurfaceSaysDecommissionedRatherThanTheStaleFailure() {
     String id = tieredRow("retire-on-the-surface", PdDeploymentStatus.FAILED, "boom");
 
-    given().when().post(APPLICATIONS + TIER + ":retire-on-the-surface/decommission").then().statusCode(200);
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when().post(APPLICATIONS + TIER + ":retire-on-the-surface/decommission").then().statusCode(200);
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/deployments?environmentId=" + TIER)
         .then()
@@ -203,6 +208,7 @@ public class PdApplicationRetirementTest {
     String newest = tieredRow("retire-stranded", PdDeploymentStatus.FAILED, "boom");
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .post(APPLICATIONS + TIER + ":retire-stranded/decommission")
         .then()
@@ -220,8 +226,11 @@ public class PdApplicationRetirementTest {
     String failure = "[deployment spec unreadable: line 42]";
     String id = tieredRow("retire-twice", PdDeploymentStatus.FAILED, failure);
 
-    given().when().post(APPLICATIONS + TIER + ":retire-twice/decommission").then().statusCode(200);
     given()
+        .header("Authorization", SuiteBearers.operator())
+        .when().post(APPLICATIONS + TIER + ":retire-twice/decommission").then().statusCode(200);
+    given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .post(APPLICATIONS + TIER + ":retire-twice/decommission")
         .then()
@@ -257,6 +266,7 @@ public class PdApplicationRetirementTest {
             "retire-planed", "env-retire-designated", PdDeploymentStatus.FAILED, null, "boom");
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .post(APPLICATIONS + "env-retire-designated:retire-planed/decommission")
         .then()
@@ -276,6 +286,7 @@ public class PdApplicationRetirementTest {
     deployment("retire-cached", "env-retire-cached", PdDeploymentStatus.FAILED, null, "boom");
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .post(APPLICATIONS + "platform:retire-cached/decommission")
         .then()
@@ -289,6 +300,7 @@ public class PdApplicationRetirementTest {
             "retire-tiered", "env-retire-tiered", PdDeploymentStatus.FAILED, null, null);
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .post(
             APPLICATIONS
@@ -312,6 +324,7 @@ public class PdApplicationRetirementTest {
     tieredRow("retire-serving", PdDeploymentStatus.ACTIVE, null);
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .post(APPLICATIONS + TIER + ":retire-serving/decommission")
         .then()
@@ -333,6 +346,7 @@ public class PdApplicationRetirementTest {
     tieredRow("retire-stopped", PdDeploymentStatus.SCALED_TO_ZERO, null);
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .post(APPLICATIONS + TIER + ":retire-stopped/decommission")
         .then()
@@ -348,6 +362,7 @@ public class PdApplicationRetirementTest {
     String id = tieredRow("retire-in-flight", PdDeploymentStatus.QUEUED, null);
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .post(APPLICATIONS + TIER + ":retire-in-flight/decommission")
         .then()
@@ -362,6 +377,7 @@ public class PdApplicationRetirementTest {
   @Test
   public void aMalformedApplicationIdIsRefusedBeforeAnythingIsRead() {
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .post(APPLICATIONS + "not-an-application-id/decommission")
         .then()
@@ -372,6 +388,7 @@ public class PdApplicationRetirementTest {
   @Test
   public void anApplicationNothingEverDeployedHasNothingToRetire() {
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .post(APPLICATIONS + TIER + ":retire-never-deployed-anywhere/decommission")
         .then()

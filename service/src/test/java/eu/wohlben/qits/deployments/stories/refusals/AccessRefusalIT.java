@@ -38,8 +38,7 @@ import org.junit.jupiter.api.TestMethodOrder;
  * {@code qits:system} is a machine's and arrives only in an idp-minted bearer; it opens the
  * build intake, every topology write, the rollback pins and the deployment-request listing
  * qits-projects draws a release's deploy phase from. {@code qits:admin} is a
- * person's and arrives only as the {@code X-Qits-Roles} header the platform edge asserts for an
- * authenticated admin session; it opens every read.
+ * person's and arrives in a signed-in person's bearer; it opens every read.
  *
  * <p>A machine token never carries the admin role and a browser session never carries the system
  * one — so each credential is refused by the other's doors, and it is refused with <b>403 rather

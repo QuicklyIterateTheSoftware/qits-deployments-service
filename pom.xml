@@ -43,7 +43,7 @@
          value. It is deliberately NOT a `-SNAPSHOT`: the image build resolves this reactor from
          source, so a snapshot coordinate would only invite a resolver to look for one in a
          repository that will never hold it. -->
-    <version>2026.1103.124004</version>
+    <version>2026.1103.143454</version>
     <packaging>pom</packaging>
     <name>qits-platform-deployments</name>
 
@@ -61,7 +61,7 @@
              and it stays one line: the release train's follow-bump step
              (.config/qits/ci-event-upstream-eventstream.yml) rewrites exactly this element with a
              `sed`, so a second spelling of the version anywhere would be left behind. -->
-        <qits.eventstream.version>2026.1031.131702</qits.eventstream.version>
+        <qits.eventstream.version>2026.1103.140652</qits.eventstream.version>
         <qits.auth-core.version>2026.1031.63225</qits.auth-core.version>
         <!-- The platform's shared ArchUnit rules, published by qits-integrations-quarkus beside
              qits-auth-core. Test scope wherever entities live — see service/pom.xml. -->

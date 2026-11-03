@@ -2,6 +2,7 @@ package eu.wohlben.qits.deployments.contracts;
 
 import static io.restassured.RestAssured.given;
 
+import eu.wohlben.qits.deployments.api.SuiteBearers;
 import eu.wohlben.qits.deployments.deployments.control.FakeDeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.FakeSpecSource;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource;
@@ -128,7 +129,9 @@ public class ProviderStates {
       removable.clear();
     }
     for (String id : ids) {
-      given().when().delete("/deployments/api/environments/" + id);
+      given()
+          .header("Authorization", SuiteBearers.platform())
+          .when().delete("/deployments/api/environments/" + id);
     }
   }
 
@@ -276,6 +279,7 @@ public class ProviderStates {
 
   private static void release(String application, String version) {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("runId", "run-contract", "repoId", application, "version", version))
         .when()
@@ -286,6 +290,7 @@ public class ProviderStates {
 
   private static String createEnvironment(String name, boolean designated) {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", name, "designated", designated))
         .when()
@@ -298,6 +303,7 @@ public class ProviderStates {
 
   private static List<String> statuses(String environmentId) {
     return given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/deployments?environmentId=" + environmentId)
         .then()

@@ -56,9 +56,9 @@ final class MachineTokens {
   }
 
   /**
-   * A token carrying only {@code qits:admin} in {@code groups} — not a real shape (the person track
-   * never carries a bearer at all), but the one way to prove the machine surface refuses it even
-   * when it is correctly signed and addressed: the two role sets do not overlap.
+   * A token carrying only {@code qits:admin} in {@code groups} — a signed-in person's shape once
+   * forward-auth is gone (qits-1338, epic qits-543), and the way to prove the machine surface
+   * refuses it even when it is correctly signed and addressed: the two role sets do not overlap.
    */
   static String adminGroupsToken(String clientId, String... audiences) {
     return token(clientId, Set.of("qits:admin"), audiences);

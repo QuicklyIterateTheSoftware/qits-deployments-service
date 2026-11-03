@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import eu.wohlben.qits.deployments.api.SuiteBearers;
 import eu.wohlben.qits.eventstream.CausationHeader;
 import eu.wohlben.qits.eventstream.entity.OutboxEvent;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentDriver;
@@ -363,6 +364,7 @@ public class PdDeployPublishTest {
 
   private String createEnvironment(String name) {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         // The entry tier: a release lands in the designated platform environment.
         .body(Map.of("name", name, "platform", true))
@@ -377,6 +379,7 @@ public class PdDeployPublishTest {
   private void postRelease(String runId, String repoId, String cause) {
     var request =
         given()
+            .header("Authorization", SuiteBearers.platform())
             .contentType(ContentType.JSON)
             .body(Map.of("runId", runId, "repoId", repoId, "version", VERSION));
     if (cause != null) {
@@ -399,6 +402,7 @@ public class PdDeployPublishTest {
     while (System.currentTimeMillis() < deadline) {
       List<Map<String, Object>> rows =
           given()
+              .header("Authorization", SuiteBearers.operator())
               .when()
               .get("/deployments/api/deployments?environmentId=" + environmentId)
               .then()

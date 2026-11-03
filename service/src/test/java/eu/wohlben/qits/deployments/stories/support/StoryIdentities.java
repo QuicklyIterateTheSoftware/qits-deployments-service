@@ -15,10 +15,10 @@ import io.restassured.specification.RequestSpecification;
  *       claim and quarkus-oidc reads it as roles with no configuration at all. It opens the build
  *       intake, every topology write, the rollback pins and the deployment-request listing
  *       qits-projects draws a release's deploy phase from.
- *   <li><b>{@code qits:admin} is a PERSON's</b>, and it arrives only as the {@code
- *       X-Qits-User} / {@code X-Qits-Roles} pair the platform edge asserts for an authenticated
- *       admin session. It opens every read of this surface — the applications, the services, the
- *       tiers and the deployment listing.
+ *   <li><b>{@code qits:admin} is a PERSON's</b>, and it arrives in a signed-in person's bearer
+ *       from the same idp (forward-auth's {@code X-Qits-User} / {@code X-Qits-Roles} pair leaves
+ *       qits-auth-core with qits-1338, epic qits-543). It opens every read of this surface — the
+ *       applications, the services, the tiers and the deployment listing.
  * </ul>
  *
  * <p>A machine token never carries the admin role and a browser session never carries the system
@@ -50,14 +50,8 @@ public final class StoryIdentities {
   /** The machine role: the intake, the topology writes and the pins. */
   public static final String MACHINE_ROLE = "qits:system";
 
-  /** The person's role, which reaches this service only as a forwarded header. */
+  /** The person's role, which reaches this service in a signed-in person's bearer. */
   public static final String HUMAN_ROLE = "qits:admin";
-
-  /** The header the edge names the logged-in person in. */
-  public static final String USER_HEADER = "X-Qits-User";
-
-  /** The header the edge asserts that person's roles in, comma-separated. */
-  public static final String ROLES_HEADER = "X-Qits-Roles";
 
   /** The machine this catalogue is mostly told from: qits-ci, whose green build starts everything. */
   public static final String CI = "qits-ci";
@@ -91,10 +85,10 @@ public final class StoryIdentities {
   }
 
   /**
-   * The credential that authenticates perfectly and covers nothing: the person's role, minted into
-   * a token. It reaches this service as a header from an admin session and never in a bearer, so
-   * one minted anyway is 403 rather than 401 — the difference between "who are you" and "you may
-   * not", which is how a missing grant is told from a missing token.
+   * A signed-in person's token: the person's role, minted by the idp. At a machine door it
+   * authenticates perfectly and covers nothing, so it is 403 rather than 401 — the difference
+   * between "who are you" and "you may not", which is how a missing grant is told from a missing
+   * token.
    */
   public static String adminRoleToken(String subject) {
     return MockIdp.attach().token().subject(subject).audience(AUDIENCE).groups(HUMAN_ROLE).mint();
@@ -120,14 +114,24 @@ public final class StoryIdentities {
     return request.header("Authorization", "Bearer " + token);
   }
 
-  /** {@code given()} with the pair the edge asserts for a logged-in admin session. */
+  /** {@code given()} with a signed-in admin's bearer. */
   public static RequestSpecification person(RequestSpecification request, String user) {
     return person(request, user, HUMAN_ROLE);
   }
 
-  /** …and the same pair for a session holding some other role, which is how a 403 is asked for. */
+  /**
+   * …and a signed-in person holding some other role (comma-separated), which is how a 403 is asked
+   * for.
+   */
   public static RequestSpecification person(
       RequestSpecification request, String user, String roles) {
-    return request.header(USER_HEADER, user).header(ROLES_HEADER, roles);
+    String[] groups =
+        java.util.Arrays.stream(roles.split(","))
+            .map(String::trim)
+            .filter(role -> !role.isEmpty())
+            .toArray(String[]::new);
+    return bearer(
+        request,
+        MockIdp.attach().token().subject(user).audience(AUDIENCE).groups(groups).mint());
   }
 }

@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import eu.wohlben.qits.deployments.api.SuiteBearers;
 import eu.wohlben.qits.eventstream.entity.OutboxEvent;
 import io.quarkus.hibernate.orm.PersistenceUnit;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -262,6 +263,7 @@ public class PdSwarmDeployFlowTest {
 
   private String createEnvironment(String name) {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         // The entry tier: a release lands in the designated platform environment.
         .body(Map.of("name", name, "platform", true))
@@ -275,6 +277,7 @@ public class PdSwarmDeployFlowTest {
 
   private void postRelease(String runId, String repoId) {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("runId", runId, "repoId", repoId, "version", VERSION))
         .when()
@@ -285,6 +288,7 @@ public class PdSwarmDeployFlowTest {
 
   private List<Map<String, Object>> deployments(String environmentId) {
     return given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/deployments?environmentId=" + environmentId)
         .then()

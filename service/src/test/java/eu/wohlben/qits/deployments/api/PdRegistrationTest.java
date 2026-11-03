@@ -216,6 +216,7 @@ public class PdRegistrationTest {
     // the listing's own rule applies — a tier that does not exist is a 404 rather than an empty list,
     // so a client still sending it learns that rather than reading "nothing is deployed".
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/deployments?environmentId=platform")
         .then()
@@ -280,6 +281,7 @@ public class PdRegistrationTest {
     // later green build that says nothing about the path must leave it alone.
     String environmentId = createEnvironment("reg-health-keep");
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             Map.of(
@@ -443,6 +445,7 @@ public class PdRegistrationTest {
     // does, the failure is recorded where the service is already registered — never guessed at.
     String environmentId = createEnvironment("reg-fallback");
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             Map.of(
@@ -481,6 +484,7 @@ public class PdRegistrationTest {
    */
   private String createEnvironment(String name) {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", name, "platform", true))
         .when()
@@ -493,6 +497,7 @@ public class PdRegistrationTest {
 
   private void postRelease(String repoId, String version) {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("runId", "run-reg", "repoId", repoId, "version", version))
         .when()
@@ -504,6 +509,7 @@ public class PdRegistrationTest {
   /** The storage id, plus the repository's public address — which is what names the application. */
   private void postRelease(String repoId, String projectId, String repoName, String version) {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             Map.of(
@@ -521,6 +527,7 @@ public class PdRegistrationTest {
   /** One service off the catalogue read, or null — the surface a caller checks registration on. */
   private Map<String, Object> service(String name) {
     return given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/services")
         .then()
@@ -547,6 +554,7 @@ public class PdRegistrationTest {
     while (System.currentTimeMillis() < deadline) {
       List<Map<String, Object>> deployments =
           given()
+              .header("Authorization", SuiteBearers.operator())
               .when()
               .get("/deployments/api/deployments?environmentId=" + environmentId)
               .then()
@@ -568,6 +576,7 @@ public class PdRegistrationTest {
   /** One tier's rows, asked for the way a client asks. */
   private List<Map<String, Object>> tierDeployments(String environmentId) {
     return given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/deployments?environmentId=" + environmentId)
         .then()

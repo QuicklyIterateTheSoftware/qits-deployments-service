@@ -47,6 +47,7 @@ public class PdDeploymentNoDomainTest {
 
   private String createEnvironment(String name) {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", name, "platform", true))
         .when()
@@ -59,6 +60,7 @@ public class PdDeploymentNoDomainTest {
 
   private void postRelease(String repoId, String version) {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("runId", "run-1", "repoId", repoId, "version", version))
         .when()
@@ -72,6 +74,7 @@ public class PdDeploymentNoDomainTest {
     while (System.currentTimeMillis() < deadline) {
       List<Map<String, Object>> deployments =
           given()
+              .header("Authorization", SuiteBearers.operator())
               .when()
               .get("/deployments/api/deployments?environmentId=" + environmentId)
               .then()

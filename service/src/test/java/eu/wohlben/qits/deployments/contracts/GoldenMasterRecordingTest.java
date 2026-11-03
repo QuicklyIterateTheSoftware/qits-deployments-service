@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.NullNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import eu.wohlben.qits.deployments.api.SuiteBearers;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.response.Response;
 import jakarta.inject.Inject;
@@ -33,7 +34,8 @@ import org.junit.jupiter.api.Test;
  * root, the source of the published golden-master artifact consumers write their pacts against.
  *
  * <p>For each (state, operation) pair in {@link #INTERACTIONS} it runs the state ({@link
- * ProviderStates}), calls the endpoint through REST-assured as the {@code %test} dev user, keeps
+ * ProviderStates}), calls the endpoint through REST-assured as the caller that door is for ({@code
+ * SuiteBearers.forRequest}), keeps
  * only the list entries the state created, freezes ids, instants and unique tokens ({@link
  * Freezer}) and renders {@code golden-masters/<state-slug>/<operationId>.json}; then it renders
  * {@code golden-masters/index.json} describing all of them.
@@ -357,7 +359,16 @@ class GoldenMasterRecordingTest {
   private Recorded record(Interaction interaction) throws IOException {
     ProviderStates.Setup setup = states.setUp(interaction.state());
     try {
-      return call(interaction, setup, Map.of());
+      // A recorded call names its caller rather than leaning on a forward-auth dev user (epic
+      // qits-543, qits-1362); the header is sent, not recorded, so the golden master stays the
+      // consumer's shape.
+      return call(
+          interaction,
+          setup,
+          Map.of(
+              "Authorization",
+              SuiteBearers.forRequest(
+                  interaction.method(), interaction.path())));
     } finally {
       states.cleanUp();
     }

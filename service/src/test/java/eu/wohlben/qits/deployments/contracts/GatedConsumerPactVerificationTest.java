@@ -22,7 +22,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 /**
  * <b>Verifies the consumer interactions only a gated application can answer</b> — the states in
  * {@link ProviderStates#GATED}, against this application under {@link
- * MachineGuardEnforcedProfile}, where the machine gate is on and the dev user is off. {@link
+ * MachineGuardEnforcedProfile}, where the machine gate is on. {@link
  * ConsumerPactVerificationTest} verifies every other state.
  *
  * <p>qits-bootstrap-cli's pinned pact names the gated state (its seed-health probe of the

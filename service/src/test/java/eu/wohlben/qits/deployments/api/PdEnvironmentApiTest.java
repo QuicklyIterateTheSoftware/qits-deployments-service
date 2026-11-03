@@ -60,6 +60,7 @@ public class PdEnvironmentApiTest {
   @Test
   public void creationFillsTheConventionsAndEnsuresTheNetwork() {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", "env-conventions"))
         .when()
@@ -88,6 +89,7 @@ public class PdEnvironmentApiTest {
     // previous surface still spells it, and the tier it would have named is decided by `platform`
     // now — so the field has to deserialize into nothing rather than fail a creation.
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", "env-explicit", "branch", "environment/dev", "network", "qits-net"))
         .when()
@@ -104,6 +106,7 @@ public class PdEnvironmentApiTest {
     // catalogue holds one identity for a service (its name), and rows are derived from each
     // repository's own deployments.yml — so nothing is registered from it.
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             Map.of(
@@ -117,6 +120,7 @@ public class PdEnvironmentApiTest {
         .body("environment.applications", hasSize(0));
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(SERVICES)
         .then()
@@ -127,8 +131,11 @@ public class PdEnvironmentApiTest {
   @Test
   public void aDuplicateNameIsAConflict() {
     Map<String, Object> payload = Map.of("name", "env-duplicate");
-    given().contentType(ContentType.JSON).body(payload).when().post(ENVIRONMENTS).then().statusCode(201);
     given()
+        .header("Authorization", SuiteBearers.platform())
+        .contentType(ContentType.JSON).body(payload).when().post(ENVIRONMENTS).then().statusCode(201);
+    given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(payload)
         .when()
@@ -143,6 +150,7 @@ public class PdEnvironmentApiTest {
     // The name becomes a docker network name, an alias and an image path segment, and this surface
     // is attacker-reachable while the gate is off — so a 400 is owed here rather than at the argv.
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", "Evil Name"))
         .when()
@@ -152,6 +160,7 @@ public class PdEnvironmentApiTest {
         .body("message", notNullValue());
 
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", "env-hostile-net", "network", "--privileged"))
         .when()
@@ -183,6 +192,7 @@ public class PdEnvironmentApiTest {
     upsertUnlinkedService("envsuite-svc-read-unlinked");
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS + "/" + environmentId)
         .then()
@@ -196,6 +206,7 @@ public class PdEnvironmentApiTest {
     // ...and the id is the derived one a client joins a deployment row against. There is no plane
     // in it any more: both sides say `<environmentId>:<name>` and the `platform:` stand-in is gone.
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS + "/" + environmentId)
         .then()
@@ -203,6 +214,7 @@ public class PdEnvironmentApiTest {
 
     List<Map<String, Object>> flat =
         given()
+            .header("Authorization", SuiteBearers.operator())
             .when()
             .get("/deployments/api/applications")
             .then()
@@ -225,6 +237,7 @@ public class PdEnvironmentApiTest {
     // client that renders an empty list as the first would be wrong on every listing row.
     create("env-listed");
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS)
         .then()
@@ -235,7 +248,9 @@ public class PdEnvironmentApiTest {
 
   @Test
   public void anUnknownEnvironmentIsNotFound() {
-    given().when().get(ENVIRONMENTS + "/no-such-id").then().statusCode(404);
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when().get(ENVIRONMENTS + "/no-such-id").then().statusCode(404);
   }
 
   @Test
@@ -256,6 +271,7 @@ public class PdEnvironmentApiTest {
     upsertUnlinkedService("envsuite-svc-links-nowhere");
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS + "/" + mine + "/links")
         .then()
@@ -284,6 +300,7 @@ public class PdEnvironmentApiTest {
     upsertUnlinkedService("envsuite-svc-preexisting-unlinked");
     String fresh = create("env-fresh");
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS + "/" + fresh + "/links")
         .then()
@@ -293,7 +310,9 @@ public class PdEnvironmentApiTest {
 
   @Test
   public void theLinkQueryOfAnUnknownEnvironmentIsNotFound() {
-    given().when().get(ENVIRONMENTS + "/no-such-id/links").then().statusCode(404);
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when().get(ENVIRONMENTS + "/no-such-id/links").then().statusCode(404);
   }
 
   // --- patch ------------------------------------------------------------------------------------
@@ -304,6 +323,7 @@ public class PdEnvironmentApiTest {
     driver.reset();
 
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", "env-patched"))
         .when()
@@ -326,6 +346,7 @@ public class PdEnvironmentApiTest {
 
     // An empty patch leaves everything alone — and an old sender's `branch` is exactly that now.
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("branch", "environment/dev"))
         .when()
@@ -336,6 +357,7 @@ public class PdEnvironmentApiTest {
         .body("environment.branch", nullValue());
 
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", "Evil Name"))
         .when()
@@ -344,6 +366,7 @@ public class PdEnvironmentApiTest {
         .statusCode(400);
 
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", "env-patch-partial"))
         .when()
@@ -358,6 +381,7 @@ public class PdEnvironmentApiTest {
     String environmentId = create("env-patch-other");
 
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", "env-patch-taken"))
         .when()
@@ -366,6 +390,7 @@ public class PdEnvironmentApiTest {
         .statusCode(409);
 
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", "env-patch-other"))
         .when()
@@ -380,8 +405,12 @@ public class PdEnvironmentApiTest {
   public void teardownRemovesContainersAndNetworkAndThenTheTier() {
     String environmentId = create("env-teardown");
 
-    given().when().delete(ENVIRONMENTS + "/" + environmentId).then().statusCode(204);
-    given().when().get(ENVIRONMENTS + "/" + environmentId).then().statusCode(404);
+    given()
+        .header("Authorization", SuiteBearers.platform())
+        .when().delete(ENVIRONMENTS + "/" + environmentId).then().statusCode(204);
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when().get(ENVIRONMENTS + "/" + environmentId).then().statusCode(404);
 
     assertTrue(
         driver.removedEnvironments().contains(environmentId),
@@ -406,9 +435,13 @@ public class PdEnvironmentApiTest {
     driver.scriptDuringContainerReap(
         () ->
             statusDuringReap.set(
-                given().when().get(ENVIRONMENTS + "/" + environmentId).thenReturn().statusCode()));
+                given()
+                    .header("Authorization", SuiteBearers.operator())
+                    .when().get(ENVIRONMENTS + "/" + environmentId).thenReturn().statusCode()));
 
-    given().when().delete(ENVIRONMENTS + "/" + environmentId).then().statusCode(204);
+    given()
+        .header("Authorization", SuiteBearers.platform())
+        .when().delete(ENVIRONMENTS + "/" + environmentId).then().statusCode(204);
 
     assertEquals(
         200,
@@ -420,7 +453,9 @@ public class PdEnvironmentApiTest {
     assertTrue(
         driver.removedNetworks().contains("qits-env-env-order"),
         "and the network removed: " + driver.removedNetworks());
-    given().when().get(ENVIRONMENTS + "/" + environmentId).then().statusCode(404);
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when().get(ENVIRONMENTS + "/" + environmentId).then().statusCode(404);
   }
 
   @Test
@@ -433,7 +468,9 @@ public class PdEnvironmentApiTest {
             DeploymentDriver.NetworkKind.APPLICATION,
             "app-x"));
 
-    given().when().delete(ENVIRONMENTS + "/" + environmentId).then().statusCode(204);
+    given()
+        .header("Authorization", SuiteBearers.platform())
+        .when().delete(ENVIRONMENTS + "/" + environmentId).then().statusCode(204);
 
     // A platform service survives the tier it merely served, so it is what holds the networks open
     // — docker refuses to remove a network with an endpoint on it. Releasing whatever the plane
@@ -467,7 +504,9 @@ public class PdEnvironmentApiTest {
             DeploymentDriver.NetworkKind.APPLICATION,
             "app-y"));
 
-    given().when().delete(ENVIRONMENTS + "/" + environmentId).then().statusCode(204);
+    given()
+        .header("Authorization", SuiteBearers.platform())
+        .when().delete(ENVIRONMENTS + "/" + environmentId).then().statusCode(204);
 
     assertTrue(
         driver.detached().stream().noneMatch("qits-net"::equals),
@@ -487,10 +526,13 @@ public class PdEnvironmentApiTest {
     String dropped = create("env-delete-dropped");
     upsertService("envsuite-svc-survives-env-delete", kept, dropped);
 
-    given().when().delete(ENVIRONMENTS + "/" + dropped).then().statusCode(204);
+    given()
+        .header("Authorization", SuiteBearers.platform())
+        .when().delete(ENVIRONMENTS + "/" + dropped).then().statusCode(204);
 
     // A tier going away is not a service going away: the row and its other link survive.
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(SERVICES)
         .then()
@@ -502,13 +544,18 @@ public class PdEnvironmentApiTest {
 
   @Test
   public void deletingAMissingEnvironmentIs404() {
-    given().when().delete(ENVIRONMENTS + "/no-such-environment").then().statusCode(404);
+    given()
+        .header("Authorization", SuiteBearers.platform())
+        .when().delete(ENVIRONMENTS + "/no-such-environment").then().statusCode(404);
   }
 
   @Test
   public void deploymentsListingRequiresAnExistingEnvironment() {
-    given().when().get("/deployments/api/deployments").then().statusCode(400);
     given()
+        .header("Authorization", SuiteBearers.operator())
+        .when().get("/deployments/api/deployments").then().statusCode(400);
+    given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/deployments?environmentId=no-such")
         .then()
@@ -529,6 +576,7 @@ public class PdEnvironmentApiTest {
     // listing is where they are — which is the answer an operator asking "what is running in dev"
     // was after all along, and is why the two filters overlapped.
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/deployments?environmentId=platform")
         .then()
@@ -536,7 +584,9 @@ public class PdEnvironmentApiTest {
 
     // Dropping the filter is still a 400, and that is untouched: a listing has to be scoped, and
     // the retired value was never an escape from having a scope.
-    given().when().get("/deployments/api/deployments").then().statusCode(400);
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when().get("/deployments/api/deployments").then().statusCode(400);
   }
 
   // --- the platform environment -----------------------------------------------------------------
@@ -545,6 +595,7 @@ public class PdEnvironmentApiTest {
   public void anEnvironmentIsNotThePlatformOneUnlessItSaysSo() {
     create("env-plain");
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS)
         .then()
@@ -560,12 +611,14 @@ public class PdEnvironmentApiTest {
     String second = create(Map.of("name", "env-plane-b", "platform", true));
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS + "/" + first)
         .then()
         .statusCode(200)
         .body("environment.platform", equalTo(false));
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS + "/" + second)
         .then()
@@ -583,6 +636,7 @@ public class PdEnvironmentApiTest {
     String to = create("env-move-to");
 
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("platform", true))
         .when()
@@ -593,6 +647,7 @@ public class PdEnvironmentApiTest {
         .body("environment.name", equalTo("env-move-to"));
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS)
         .then()
@@ -607,6 +662,7 @@ public class PdEnvironmentApiTest {
     // ask for one.
     String only = create(Map.of("name", "env-nodrop", "platform", true));
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("platform", false))
         .when()
@@ -622,16 +678,21 @@ public class PdEnvironmentApiTest {
     // throughout.
     String platform = create(Map.of("name", "env-undeletable", "platform", true));
     given()
+        .header("Authorization", SuiteBearers.platform())
         .when()
         .delete(ENVIRONMENTS + "/" + platform)
         .then()
         .statusCode(409);
 
-    given().when().get(ENVIRONMENTS + "/" + platform).then().statusCode(200);
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when().get(ENVIRONMENTS + "/" + platform).then().statusCode(200);
 
     // …and once the designation has moved, the same delete goes through.
     create(Map.of("name", "env-undeletable-successor", "platform", true));
-    given().when().delete(ENVIRONMENTS + "/" + platform).then().statusCode(204);
+    given()
+        .header("Authorization", SuiteBearers.platform())
+        .when().delete(ENVIRONMENTS + "/" + platform).then().statusCode(204);
   }
 
   /** The first call whose tag starts with this prefix, or -1 — the ORDER assertions read it. */
@@ -652,6 +713,7 @@ public class PdEnvironmentApiTest {
 
   private String create(Map<String, Object> payload) {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(payload)
         .when()
@@ -670,6 +732,7 @@ public class PdEnvironmentApiTest {
    */
   private void upsertService(String name, String... environmentIds) {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("availableOnEnv", false, "environmentIds", List.of(environmentIds)))
         .when()
@@ -687,6 +750,7 @@ public class PdEnvironmentApiTest {
    */
   private void upsertUnlinkedService(String name) {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("branch", "main", "availableOnEnv", false, "environmentIds", List.of()))
         .when()

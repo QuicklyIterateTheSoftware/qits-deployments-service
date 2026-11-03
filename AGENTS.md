@@ -1414,8 +1414,29 @@ arrive as `QITS_AUTH_MACHINE_REQUIRED=true` from qits-configuration, which is go
 follows the same gate (`quarkus.oidc.tenant-enabled=${qits.auth.machine.required:false}`) — gate
 off, there is no OIDC tenant, nothing fetches a JWKS, and a clone-alone build needs no issuer. There
 is no third state. `@RolesAllowed` does **not** follow that gate: it is on in every posture, and
-what keeps a credential-free `./mvnw test` green is `qits-auth-core`'s `%test` dev user, which is
-granted every platform role the library ships, `qits:admin` and `qits:system` among them.
+what keeps a credential-free `./mvnw test` green is that **every test names its caller** — see the
+next paragraph. (It used to be `qits-auth-core`'s `%test` dev user, granted every platform role.)
+
+**No test uses forward-auth (epic qits-543, qits-1362).** `X-Qits-User` / `X-Qits-Roles` and the
+`%test` dev user leave qits-auth-core with qits-1338, and the suite already runs without them: the
+test config blanks the dev user and renames the forward headers (`%test.qits.auth.forward.*` in
+`service/src/test/resources/application.properties`, which go with qits-1338), so a header-less
+request is anonymous. A `@QuarkusTest` request carries a bearer from `api/SuiteBearers` — the
+suite's own authentication mechanism, asked before the shipped ones, because the disabled OIDC
+tenant answers any bearer 401: `SuiteBearers.platform()` (`qits:system`) for the topology writes,
+the intake, the pins and the claims, `SuiteBearers.operator()` (`qits:admin`) for the reads and the
+operator's levers, and `SuiteBearers.bearer(subject, roles...)` for a door test's exact caller. A
+contract interaction that carries no bearer is sent the one its door is for
+(`SuiteBearers.forRequest`). `MachineGuardEnforcedTest`'s person is a `MachineTokens` token with
+`qits:admin` in `groups`, and the packaged ITs send `MockIdp` bearers: `PdPackagedSurfaceIT` runs
+under `PackagedWithIdp` (tenant on against `MockIdp`, gate off), and `StoryIdentities.person` mints
+a person's token.
+
+**Dev mode needs a bearer.** The `%dev` dev user goes with qits-1338, and `%dev` keeps the OIDC
+tenant off, so `quarkus:dev` answers 401 on every route until the tenant is pointed at an idp
+(`-Dqits.auth.machine.required=true -Dquarkus.oidc.auth-server-url=...`); then call it with a
+person's token, for example `curl -H "Authorization: Bearer $(qits-token qits-platform)" ...`, or
+through the `qits` CLI.
 
 **Three doors, and knowing which shut is how a grant is debugged.** A token for another service is
 refused 401 by `quarkus.oidc.token.audience` before any identity exists; a token addressed here but

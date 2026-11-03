@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.deployments.api.SuiteBearers;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentStatus;
 import eu.wohlben.qits.deployments.deployments.persistence.PdDeploymentRepository;
@@ -333,6 +334,7 @@ public class PdDeploymentObservationTest {
     // that restarts its way into health), and the pass is enqueued while it runs: every observation
     // has to land AFTER the deployment's last driver call, not between two of them.
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", "obs-serial", "platform", true))
         .when()
@@ -349,6 +351,7 @@ public class PdDeploymentObservationTest {
     driver.scriptConvergeDelay(java.time.Duration.ofMillis(400));
 
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             Map.of(
