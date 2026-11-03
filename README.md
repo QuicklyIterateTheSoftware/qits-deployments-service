@@ -348,6 +348,55 @@ when no pin names it, and deletes nothing when it cannot get an answer, so the k
 depend on anything the topology says today. Per application name, across every tier: the sha it is
 serving, and the sha a rollback would put back.
 
+## Addressing: every peer through the edge, one exception, one break-glass
+
+**A peer is `https://<label>.qits.<domain>`** (epic qits-428), where `<label>` is the peer's
+published host (its `host:` in `.config/qits/deployments.yml`, else its application name without
+`qits-`) and `<domain>` is `QITS_DOMAIN` — the value this component also hands every container. The
+platform project `qits` carries no environment label, so the tier never enters an address. The
+defaults are expressions over `QITS_DOMAIN`, never configured values; without it a production boot
+refuses (`%dev`/`%test` keep local wire aliases):
+
+| call | address |
+| --- | --- |
+| the spec read (`qits.deployments.git-host-url`) | `https://githost.qits.<domain>` |
+| idp provisioning (`HttpIdpClientProvisioner`) | `https://idp.qits.<domain>/idp/api/service-clients` |
+| its own bearer (`quarkus.oidc-client.qits`) and its JWKS (`quarkus.oidc.auth-server-url`) | `https://idp.qits.<domain>/idp` |
+| the images it deploys | `registry.qits.<domain>/qits/<app>:<version>` |
+
+What stays on qits-net: the platform's postgres (JDBC), and — for now — telemetry
+(`qits.observability.url`) and the event stream (`qits.events.url`, the qits-eventstream library's
+default), both of which move in later steps.
+
+**What every container is told about the idp** is `QITS_RESOURCE_IDP_URL=https://idp.qits.<domain>/idp`
+— with ONE exception: **qits-edge** is told the internal `http://<env>-qits-idp:8080/idp`. The edge
+is what every public address goes through, so its own idp dials stay on qits-net, and it reads that
+variable for its own oidc client. A deployment that would need the public address on a platform with
+no dotted domain is refused, naming `QITS_DOMAIN`.
+
+**The break-glass (`edge/EdgeBreakGlass`).** This component is what redeploys the edge, the idp and
+qits-events, so it cannot depend on the edge being up to do it. qits-http-core already rides out an
+edge switchover (up to 30 s of retries on a connection that never opened, or — for an idempotent
+call — a 502/503/504 with `Retry-After`); a call that STILL fails after that window — a connection-class failure, or a 502/503/504
+from the edge — gets exactly **one** more try on the peer's internal address,
+`http://<env>-qits-<app>:8080` plus the same path, and a WARN:
+
+    edge unavailable; using internal address for qits-githost (…)
+
+It is one component the clients share, not a per-call fallback, and exactly three calls carry it:
+the git host spec read, the idp provisioning, and the bearer's token mint (which falls back on a
+transport failure only — see `IdpGitHostBearer` for why an edge's 503 on the token endpoint is not
+recognisable). A call already aimed at an internal address is never tried twice.
+
+**Image pulls with no edge.** Since qits-757 every deployment pulls
+`registry.qits.<domain>/qits/<app>:<version>` — through the edge. Redeploying the edge itself works
+because qits-edge updates `start-first` (the deployer's default; its `deployments.yml` sets
+`publish_mode: ingress` precisely so the overlap is possible): the old edge keeps serving while the
+node pulls the new edge's image through it. When **no** edge serves at all — a cold boot, or an edge
+whose image is gone — nothing can be pulled through it, so the image must already be on the host:
+the bootstrap seeds it, and `qits-registry-break-glass.sh` in the wrapper repository is the manual
+path. The break-glass above covers this component's HTTP calls, not the docker daemon's pulls.
+
 ## Trust boundaries
 
 - **The docker socket is the boundary.** Mounting it hands this container control of the host's

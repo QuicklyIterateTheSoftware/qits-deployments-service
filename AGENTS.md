@@ -1323,6 +1323,16 @@ refuses unknown keys, and a spec is read at the released tag.
 
 ## Addressing and auth
 
+**Outbound, every peer is its edge host** (epic qits-428): `https://<label>.qits.${QITS_DOMAIN}`,
+the spec read, the idp provisioning, the bearer's mint and the JWKS alike; `QITS_RESOURCE_IDP_URL`
+handed to containers is `https://idp.qits.<domain>/idp` except for qits-edge, which keeps the
+internal alias (E1, `ResourceProvisioning.idpUrl`). Because this component redeploys the edge,
+`edge/EdgeBreakGlass` gives those three calls ONE more try on `http://<env>-qits-<app>:8080` once
+qits-http-core's retry window is spent (E3). README's *Addressing* section has the table, what stays
+on qits-net, and the image-pull caveat. **A new peer call that a redeploy of the edge, the idp or
+qits-events depends on goes through `EdgeBreakGlass` in the commit that adds it**;
+`ClientCallGuardTest` excludes the courier by class, so its row is still the caller's.
+
 `quarkus.rest.path=/deployments/api` lives in the service module's `application.properties` and the
 suite inherits it — a resource's `@Path` is relative to it and must never repeat the segment; tests
 address the absolute path, which is what makes them catch a prefix regression.
