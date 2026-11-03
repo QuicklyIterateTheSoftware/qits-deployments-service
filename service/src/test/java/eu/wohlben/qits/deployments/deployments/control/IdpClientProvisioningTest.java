@@ -361,7 +361,7 @@ public class IdpClientProvisioningTest {
   }
 
   @Test
-  void theClientIdAndTheIdpAddressAreBOTHTierQualifiedNow() {
+  void theClientIdIsTierQualifiedAndTheIdpAddressIsTheEdgeHost() {
     // What replaced `thePlatformPlaneDerivesTheBareClientId`. That test held that a platform-plane
     // application's idp client id is the BARE application name and that the injected URL is
     // `http://qits-platform-idp:8080/idp` — both of them the plane's un-tiered spelling, both derived
@@ -381,7 +381,9 @@ public class IdpClientProvisioningTest {
     assertEquals(
         List.of("idp-tier-idp-plat"), idpProvisioner.createCalls(), "the tier is the qualifier");
     assertEquals("idp-tier-idp-plat", bindings.get(0).value("CLIENT_ID"));
-    assertEquals("http://idp-tier-qits-idp:8080/idp", bindings.get(0).value("URL"));
+    // The address the container is told is the idp's EDGE host (epic qits-428), derived from the
+    // suite's platform domain — the tier is in the client id, never in the address any more.
+    assertEquals("https://idp.qits.dev.localhost:8080/idp", bindings.get(0).value("URL"));
   }
 
   // --- retirement ----------------------------------------------------------------------------

@@ -79,10 +79,17 @@ public class ResourceProvisioning {
 
   static final String IDP_RESOURCE_TYPE = "idp-client";
 
-  /** The application the idp deploys under, and the port every service reaches it on. */
+  /** The application the idp deploys under, and the port it listens on inside qits-net. */
   static final String IDP_APPLICATION = "qits-idp";
 
   static final int IDP_PORT = 8080;
+
+  /**
+   * The one application told the idp's INTERNAL address (epic qits-428, exception E1): the edge's
+   * own idp dials stay on qits-net — it is the thing every public address goes through, so it cannot
+   * reach the idp through itself — and it reads {@code QITS_RESOURCE_IDP_URL} for its oidc client.
+   */
+  static final String EDGE_APPLICATION = "qits-edge";
 
   /** 128 bits, hex — argv-safe, URL-safe, and it needs no quoting in a SQL string literal. */
   private static final int PASSWORD_BYTES = 16;
@@ -113,6 +120,13 @@ public class ResourceProvisioning {
    */
   @ConfigProperty(name = "qits.deployments.postgres.admin-password")
   Optional<String> adminPassword;
+
+  /**
+   * The platform's one domain ({@code QITS_DOMAIN}) — the idp address every provisioned container is
+   * told is its public edge host on it, {@link #idpUrl(String, String, Optional)}.
+   */
+  @ConfigProperty(name = "qits.deployments.platform-domain")
+  Optional<String> platformDomain = Optional.empty();
 
   /**
    * One resource with its database resolved — what a {@code Target} carries. The spec's null
@@ -397,7 +411,10 @@ public class ResourceProvisioning {
       if (IDP_RESOURCE_TYPE.equals(row.resourceType)) {
         bindings.add(
             DeploymentDriver.ResourceBinding.idp(
-                row.resourceName, idpUrl(environmentName), row.clientId, row.password));
+                row.resourceName,
+                idpUrl(applicationName, environmentName, platformDomain),
+                row.clientId,
+                row.password));
       } else if (RESOURCE_TYPE.equals(row.resourceType) && row.databaseName != null) {
         bindings.add(
             DeploymentDriver.ResourceBinding.postgres(
@@ -632,6 +649,9 @@ public class ResourceProvisioning {
     String clientId =
         PdIdentifiers.requireName(
             PdNetworks.alias(environmentName, applicationName), "idp client id");
+    // Before anything is provisioned: an address that cannot be derived refuses the deployment
+    // rather than minting a client whose container would be told nowhere to reach the idp.
+    String idpUrl = idpUrl(applicationName, environmentName, platformDomain);
 
     // The registry read, and the cross-application check, in one bracket — the postgres arm's own
     // shape. Structurally this should never fire (the client id is derived one-to-one from
@@ -691,7 +711,7 @@ public class ResourceProvisioning {
         "Resource %s of %s (%s) is the idp client %s",
         IDP_RESOURCE_NAME, applicationName, environmentName, clientId);
     return DeploymentDriver.ResourceBinding.idp(
-        IDP_RESOURCE_NAME, idpUrl(environmentName), clientId, secret);
+        IDP_RESOURCE_NAME, idpUrl, clientId, secret);
   }
 
   /**
@@ -870,17 +890,41 @@ public class ResourceProvisioning {
   }
 
   /**
-   * {@code http://<tier>-qits-idp:8080/idp} — derived, like the postgres host, never configured.
+   * The {@code QITS_RESOURCE_IDP_URL} a container is told: {@code https://idp.qits.<domain>/idp}, the
+   * idp's public edge host — derived, never configured.
    *
-   * <p><b>It gained the tier when the plane was deleted, and that is a cutover rather than a
-   * cosmetic change.</b> It read {@code http://qits-platform-idp:8080/idp} while the plane's services
-   * answered on their bare names; the idp is an ordinary service in the one tier now, so the
-   * address a provisioned container is handed has to carry the tier or it resolves to nothing the
-   * moment the bare-named predecessor is retired. (It was also renamed from {@code qits-platform-idp}
-   * to {@code qits-idp} once the tier distinction in the name itself was gone.)
+   * <p><b>It went through the edge in epic qits-428</b>, with every other service-to-service call.
+   * It was {@code http://<tier>-qits-idp:8080/idp}, the idp's wire alias on qits-net, and before that
+   * the plane-era {@code http://qits-platform-idp:8080/idp}. The platform project {@code qits}
+   * carries no environment label, so the tier no longer enters the address at all.
+   *
+   * <p><b>One exception, and it is the edge (E1).</b> {@code qits-edge} keeps the internal {@code
+   * http://<tier>-qits-idp:8080/idp}: its idp dials stay on qits-net — the edge cannot reach the idp
+   * through itself — and it reads this same variable for its own oidc client.
+   *
+   * <p><b>No dotted domain, no address, and the deployment is refused</b> naming {@code QITS_DOMAIN}.
+   * A domain-less platform cannot exist any more — every public address is composed from it — so
+   * this is a misconfiguration to name rather than a posture to fall back from; and a domain with no
+   * dot ({@code localhost}) is a clone, not an installation anything could be reached on.
    */
-  private static String idpUrl(String environmentName) {
-    return "http://" + PdNetworks.alias(environmentName, IDP_APPLICATION) + ":" + IDP_PORT + "/idp";
+  static String idpUrl(String applicationName, String environmentName, Optional<String> domain) {
+    if (EDGE_APPLICATION.equals(applicationName)) {
+      return "http://"
+          + PdNetworks.alias(environmentName, IDP_APPLICATION)
+          + ":"
+          + IDP_PORT
+          + "/idp";
+    }
+    String stated = domain.map(String::strip).orElse("");
+    if (stated.isEmpty() || !stated.contains(".")) {
+      throw new ResourceException(
+          "QITS_DOMAIN (qits.deployments.platform-domain) is "
+              + (stated.isEmpty() ? "not set" : "'" + stated + "', which has no dot")
+              + ", so there is no idp address to give "
+              + applicationName
+              + " — every platform address is https://<host>.qits.<domain>");
+    }
+    return "https://idp.qits." + stated + "/idp";
   }
 
   /**
