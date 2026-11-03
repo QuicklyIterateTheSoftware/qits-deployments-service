@@ -72,8 +72,10 @@
         <!-- qits-http-core: QitsHttpClients.wrap puts a CLIENT span and X-Qits-Caller on every
              outbound java.net.http.HttpClient this repo builds to another qits service, the same
              way quarkus-opentelemetry already does for the REST client. Published by
-             qits-integrations-quarkus, same publisher as qits-auth-core and qits-db-core above. -->
-        <qits.http-core.version>2026.1013.64811</qits.http-core.version>
+             qits-integrations-quarkus, same publisher as qits-auth-core and qits-db-core above.
+             From 2026.1103.132907 the wrap also rides out an edge switchover (RetryPolicy, 30 s),
+             which edge/EdgeBreakGlass's one internal-address try sits behind (epic qits-428). -->
+        <qits.http-core.version>2026.1103.132907</qits.http-core.version>
         <!-- The user-story framework (test scope): this repo's story catalogue is written as
              @UserStory methods, so a `mvn verify -DskipITs=false` also regenerates
              service/target/userstories/ — the story logs and their network diagrams, which are

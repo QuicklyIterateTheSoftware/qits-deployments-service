@@ -4,6 +4,7 @@ import eu.wohlben.qits.deployments.deployments.control.DeploymentSpecParser;
 import eu.wohlben.qits.deployments.deployments.control.RepositoryRef;
 import eu.wohlben.qits.deployments.deployments.control.SpecException;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource;
+import eu.wohlben.qits.deployments.edge.EdgeBreakGlass;
 import eu.wohlben.qits.http.QitsHttpClients;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -90,6 +91,18 @@ public class GitHostSpecSource implements SpecSource {
    * opens: see {@link #get}.
    */
   @Inject GitHostBearer bearer;
+
+  /** The application the git host deploys under — the break-glass's key for its internal address. */
+  static final String GIT_HOST_APPLICATION = "qits-githost";
+
+  /**
+   * The edge's break-glass (epic qits-428, E3): a read the edge still cannot serve after
+   * qits-http-core's retry window gets one more try on {@code http://<env>-qits-githost:8080}. The
+   * spec read is what every redeploy of the edge itself starts with, so it is the first call that
+   * must survive the edge being down. Null in a hand-built instance (the unit suites), which then
+   * reads through the edge alone.
+   */
+  @Inject EdgeBreakGlass breakGlass;
 
   /**
    * One client for the life of the process, the sibling's arrangement (qits-ci's {@code
@@ -249,7 +262,10 @@ public class GitHostSpecSource implements SpecSource {
               .header("Authorization", "Bearer " + token)
               .GET()
               .build();
-      return client().send(request, HttpResponse.BodyHandlers.ofString());
+      return breakGlass == null
+          ? client().send(request, HttpResponse.BodyHandlers.ofString())
+          : breakGlass.send(
+              GIT_HOST_APPLICATION, client(), request, HttpResponse.BodyHandlers.ofString());
     } catch (InterruptedException e) {
       // NOT retryable, and the interrupt is why: this thread has been asked to stop, so the one
       // thing that must not happen is scheduling the same read again on the way out.

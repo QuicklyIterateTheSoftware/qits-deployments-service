@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.deployments.edge.EdgeBreakGlass;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -38,6 +39,12 @@ import org.junit.jupiter.api.Test;
  * which owns that code); the OTLP telemetry export to qits-observability (an exporter, not a REST
  * client); and the docker engine and swarm the deployer drives (not a qits service). This service
  * probes no peer's health and dials no websocket.
+ *
+ * <p>{@link EdgeBreakGlass} is excluded by class, and it is not a call of its own: it is the courier
+ * the git host and idp clients send their requests through, repeating one of THEIR requests on the
+ * peer's internal address when the edge cannot serve it (epic qits-428, E3). The request is the
+ * caller's, so the row is the caller's — a row naming the courier would bind a request it never
+ * builds.
  */
 class ClientCallGuardTest {
 
@@ -53,6 +60,9 @@ class ClientCallGuardTest {
   void everyClientMethodHasARowAndEveryRowAClientMethod() throws IOException {
     Set<String> inCode = new TreeSet<>();
     for (Class<?> client : clientClasses()) {
+      if (client == EdgeBreakGlass.class) {
+        continue;
+      }
       for (Method method : client.getDeclaredMethods()) {
         if (!Modifier.isPublic(method.getModifiers())
             || Modifier.isStatic(method.getModifiers())
@@ -89,7 +99,7 @@ class ClientCallGuardTest {
       shipped.load(in);
     }
     String server = shipped.getProperty("quarkus.oidc.auth-server-url", "");
-    assertTrue(server.contains("qits-idp"), "the tenant reads qits-idp: " + server);
+    assertTrue(server.contains("idp.qits."), "the tenant reads qits-idp at its edge host: " + server);
     Set<String> framework =
         Contracts.IDP.checks().stream()
             .filter(check -> check.client() == null)

@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.deployments.deployments.control.IdpClientProvisioner;
 import eu.wohlben.qits.deployments.deployments.control.ResourceException;
-import eu.wohlben.qits.deployments.environments.control.PdNetworks;
+import eu.wohlben.qits.deployments.edge.EdgeBreakGlass;
 import eu.wohlben.qits.http.QitsHttpClients;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -26,22 +26,22 @@ import org.jboss.logging.Logger;
  * secret — {@code ConfigHostDeclarationSeed}'s shape, over the JDK's own {@link HttpClient}, for the
  * same reason: no REST client generated against a peer's contract, no second HTTP library.
  *
- * <p><b>The address is derived, like the postgres host</b> — the application name plus the container
- * port. There is one idp per platform, so there is nothing to configure, and no caller of this class
- * supplies it.
+ * <p><b>The address is derived, never configured</b> — {@code https://idp.qits.<domain>}, the idp's
+ * public edge host (epic qits-428: every service-to-service call goes through the edge). There is
+ * one idp per platform, and the platform project {@code qits} carries no environment label, so the
+ * domain is the whole of the address and no caller of this class supplies it.
  *
- * <p><b>The address carries the tier, and the SEAM still does not.</b> Every derived address in this
- * component carries it now that the platform plane is deleted ({@code PdNetworks.alias}), including
- * the {@code QITS_RESOURCE_IDP_URL} injected into the containers this component starts ({@code
- * ResourceProvisioning.idpUrl}). This one was the last exception: it read a bare
- * {@code qits-platform-idp} and so resolved only while that plane-era swarm service was still up,
- * which made retiring that service break every {@code idp:client} provisioning. It now derives
- * {@code <env>-qits-idp} from this component's OWN environment (see {@link
- * #resolveBaseUrl}). The debt that remains is narrower and unchanged in kind: {@link
- * IdpClientProvisioner} is a courier of three requests carrying no tier, so this uses the
- * environment this component runs in rather than the one the application being provisioned for runs
- * in. Identical on a single-environment estate; the day a second tier exists, the three verbs have
- * to take it.
+ * <p><b>The edge is not the only door, because this component redeploys the edge.</b> Every call
+ * goes through {@link EdgeBreakGlass}: one that still fails after qits-http-core's retry window
+ * (a connection-class failure or a 502/503/504) gets one more try on {@code
+ * http://<env>-qits-idp:8080}, the idp's wire alias on qits-net, with a WARN. The two POSTs survive
+ * a second delivery: a create that already landed answers 409, which {@code ResourceProvisioning}
+ * answers with a rotate, and a rotate twice leaves the secret of the second, which is the one
+ * returned.
+ *
+ * <p><b>The SEAM still carries no tier.</b> The break-glass's internal address uses the environment
+ * THIS component runs in, not the one the application being provisioned for runs in. Identical on a
+ * single-environment estate; the day a second tier exists, the three verbs have to take it.
  *
  * <p><b>The credential is this component's own, never the target application's.</b> qits-idp's
  * service-client API takes Basic auth from a caller that must itself be a service client holding
@@ -71,53 +71,62 @@ public class HttpIdpClientProvisioner implements IdpClientProvisioner {
   static final int SECRET_MAX_CHARS = 128;
 
   /**
-   * The environment this component is deployed into, which is the tier whose idp it provisions
-   * against. Injected into every container by this very component
-   * ({@code BootResourceRegistration.ENVIRONMENT_VARIABLE}), so it is always present on the estate
-   * and falls back to {@code dev} for a clone-alone run.
+   * The platform's one domain — {@code qits.deployments.platform-domain}, the bare {@code
+   * QITS_DOMAIN} this component also hands every container. The idp is dialled on its public edge
+   * host, {@code https://idp.qits.<domain>} (epic qits-428): the platform project {@code qits}
+   * carries no environment label, so the tier never enters the address.
    */
-  @ConfigProperty(name = "QITS_ENVIRONMENT", defaultValue = "dev")
-  String environment;
+  @ConfigProperty(name = "qits.deployments.platform-domain")
+  Optional<String> platformDomain = Optional.empty();
 
   /**
-   * The service-client API's base — derived by default, the postgres host's own arrangement. A
-   * plain field rather than a method so {@code IdpStub} can point one instance at a real socket,
-   * the {@code ExtrasStub.source(...)} shape: there is no config key for this, on purpose (see the
-   * class javadoc), so a test override is the only override there is.
+   * The service-client API's base — derived by default, never configured. A plain field rather than
+   * a method so {@code IdpStub} can point one instance at a real socket: there is no config key for
+   * this, on purpose (see the class javadoc), so a test override is the only override there is.
    *
-   * <p>Null until {@link #resolveBaseUrl} runs at startup, because the tier it carries comes from
+   * <p>Null until {@link #resolveBaseUrl} runs at startup, because the domain it carries comes from
    * an injected field and a field initialiser would run before injection. A test that sets it keeps
    * what it set: the resolve only fills a null.
    */
   String baseUrl;
 
   /**
-   * THE TIER IS DERIVED HERE, and this is what retires the last bare address in this component.
+   * THE EDGE HOST, derived from the domain (epic qits-428). It read {@code
+   * http://<env>-qits-idp:8080} — the wire alias on qits-net — until every service-to-service call
+   * moved to the public edge; that alias is now only the break-glass's second door ({@link
+   * EdgeBreakGlass}), tried once when the edge cannot serve the call at all.
    *
-   * <p>It used to read {@code http://qits-platform-idp:8080/...} — bare, because a platform-tier
-   * service was one process for the whole estate. That plane is deleted, the idp is an ordinary
-   * application addressed {@code <env>-<application>}, and its bare-named swarm service is retired
-   * as part of the rollout — at which point a bare address here would fail every {@code idp:client}
-   * provisioning with an unresolvable host.
-   *
-   * <p><b>The seam is still not widened, and that debt is unchanged.</b> {@link
-   * IdpClientProvisioner} carries no tier, so this uses the environment THIS component runs in
-   * rather than the environment of the application being provisioned for. Those are the same string
-   * on a single-environment estate and would diverge the day a second tier exists — at which point
-   * the three verbs have to take it, which is the fix the class javadoc describes. What has changed
-   * is that the address now resolves at all.
+   * <p>With no domain there is no address to derive, and the base stays null: every call then fails
+   * naming {@code QITS_DOMAIN} (see {@link #base()}), which is the deployment's failure rather than
+   * this component's boot failure — the service that would have to redeploy the idp must still start.
    */
   @PostConstruct
   void resolveBaseUrl() {
     if (baseUrl == null) {
       baseUrl =
-          "http://"
-              + PdNetworks.alias(environment, IDP_APPLICATION)
-              + ":"
-              + IDP_PORT
-              + "/idp/api/service-clients";
+          platformDomain
+              .map(String::strip)
+              .filter(domain -> !domain.isEmpty())
+              .map(domain -> "https://idp.qits." + domain + "/idp/api/service-clients")
+              .orElse(null);
     }
   }
+
+  /** The base, or a refusal naming the fact that is missing. */
+  private String base() {
+    if (baseUrl == null) {
+      throw new ResourceException(
+          "QITS_DOMAIN (qits.deployments.platform-domain) is not set, so there is no idp address"
+              + " to provision an idp client at");
+    }
+    return baseUrl;
+  }
+
+  /**
+   * The edge's break-glass (epic qits-428, E3), for the idp provisioning a redeploy of the edge or
+   * the idp itself needs. Null in a hand-built instance (the unit suites).
+   */
+  @Inject EdgeBreakGlass breakGlass;
 
   @ConfigProperty(name = "qits.deployments.idp-timeout-seconds")
   long timeoutSeconds;
@@ -161,7 +170,7 @@ public class HttpIdpClientProvisioner implements IdpClientProvisioner {
 
   @Override
   public boolean databaseClientPresent(String clientId) {
-    String url = baseUrl + "/" + segment(clientId);
+    String url = base() + "/" + segment(clientId);
     Answer answer = send("GET", url, null, clientId, "read");
     if (answer.status() == 404) {
       return false;
@@ -177,7 +186,7 @@ public class HttpIdpClientProvisioner implements IdpClientProvisioner {
 
   @Override
   public Result create(String clientId) {
-    String url = baseUrl;
+    String url = base();
     Answer answer =
         send("POST", url, "{\"clientId\":" + jsonString(clientId) + "}", clientId, "create");
     if (answer.status() == 201) {
@@ -202,7 +211,7 @@ public class HttpIdpClientProvisioner implements IdpClientProvisioner {
 
   @Override
   public Result rotate(String clientId) {
-    String url = baseUrl + "/" + segment(clientId) + "/secret";
+    String url = base() + "/" + segment(clientId) + "/secret";
     Answer answer = send("POST", url, "", clientId, "rotate");
     if (answer.status() == 200) {
       return new Result(true, false, validated(answer.body(), clientId), null);
@@ -232,7 +241,7 @@ public class HttpIdpClientProvisioner implements IdpClientProvisioner {
    */
   @Override
   public Result delete(String clientId) {
-    String url = baseUrl + "/" + segment(clientId);
+    String url = base() + "/" + segment(clientId);
     Answer answer;
     try {
       answer = send("DELETE", url, null, clientId, "delete");
@@ -273,8 +282,12 @@ public class HttpIdpClientProvisioner implements IdpClientProvisioner {
       int status;
       String raw;
       try {
+        HttpRequest request = request(method, url, body);
         HttpResponse<String> response =
-            client().send(request(method, url, body), HttpResponse.BodyHandlers.ofString());
+            breakGlass == null
+                ? client().send(request, HttpResponse.BodyHandlers.ofString())
+                : breakGlass.send(
+                    IDP_APPLICATION, client(), request, HttpResponse.BodyHandlers.ofString());
         status = response.statusCode();
         raw = response.body();
       } catch (InterruptedException e) {

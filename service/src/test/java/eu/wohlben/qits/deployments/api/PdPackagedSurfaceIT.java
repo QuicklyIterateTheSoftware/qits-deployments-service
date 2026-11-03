@@ -127,7 +127,11 @@ public class PdPackagedSurfaceIT {
           // (the live value, qits-765). This IT's posture is gate-off — forward-auth headers only,
           // no issuer to reach — so it is stated here rather than inherited. StoryProfile below is
           // the gate-on twin and sets the key the other way.
-          "qits.auth.machine.required", "false");
+          "qits.auth.machine.required", "false",
+          // The platform's domain, which the prod profile's peer addresses are expressions over
+          // (https://<host>.qits.${QITS_DOMAIN}, epic qits-428) and which has no default there: a
+          // packaged process without it refuses to start naming the key.
+          "QITS_DOMAIN", "dev.localhost:8080");
     }
 
     /**

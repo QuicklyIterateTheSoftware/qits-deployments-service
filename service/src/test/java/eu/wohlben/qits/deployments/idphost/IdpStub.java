@@ -2,6 +2,7 @@ package eu.wohlben.qits.deployments.idphost;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import eu.wohlben.qits.deployments.edge.EdgeBreakGlass;
 import eu.wohlben.qits.http.QitsHttpClients;
 import io.opentelemetry.api.OpenTelemetry;
 import java.io.IOException;
@@ -131,6 +132,22 @@ public final class IdpStub implements AutoCloseable {
     adapter.ownClientId = Optional.ofNullable(ownClientId);
     adapter.ownClientSecret = Optional.ofNullable(ownClientSecret);
     adapter.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
+    return adapter;
+  }
+
+  /**
+   * The same, on the given (retrying) clients and reading through {@code breakGlass} — the edge
+   * break-glass suite's arrangement (epic qits-428).
+   */
+  public static HttpIdpClientProvisioner adapterAt(
+      String baseUrl,
+      String ownClientId,
+      String ownClientSecret,
+      QitsHttpClients clients,
+      EdgeBreakGlass breakGlass) {
+    HttpIdpClientProvisioner adapter = adapterAt(baseUrl, ownClientId, ownClientSecret);
+    adapter.clients = clients;
+    adapter.breakGlass = breakGlass;
     return adapter;
   }
 
