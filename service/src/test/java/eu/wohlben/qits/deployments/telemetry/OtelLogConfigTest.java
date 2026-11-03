@@ -1,6 +1,7 @@
 package eu.wohlben.qits.deployments.telemetry;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.quarkus.test.junit.QuarkusTest;
 import org.eclipse.microprofile.config.Config;
@@ -9,20 +10,23 @@ import org.junit.jupiter.api.Test;
 
 /**
  * The drift guard on this service's OTel log export. It reads the config a run actually boots with
- * and pins the six keys that decide whether an {@code org.jboss.logging.Logger} call leaves the
- * process as an OTLP record: the four {@code quarkus.otel.logs.*} values, the exporter endpoint and
- * the http/protobuf protocol.
+ * and pins the keys that decide whether an {@code org.jboss.logging.Logger} call (and a span, and a
+ * metric) leaves this process: the four {@code quarkus.otel.logs.*} values, the {@code cdi}
+ * exporter of each signal, and qits-telemetry-core's {@code qits.telemetry.endpoint}.
  *
  * <p>This test asserts CONFIGURATION and nothing else. That the keys really produce an exported
  * record is proven once, in qits-events: {@code OtelLogBridgeTest} decodes a real {@code
  * ExportLogsServiceRequest} from the running handler and {@code PackagedLogBridgeIT} repeats the
  * claim against the packaged artifact. This service runs the same {@code quarkus-opentelemetry}
- * extension on the same four keys, so the behaviour is inherited rather than re-measured, and what
- * is left to lose here is the configuration — a Quarkus upgrade changing a default, or a property
- * edit, would otherwise stop this service's logging with a green build and no error anywhere.
+ * extension on the same keys, so the behaviour is inherited rather than re-measured, and what is
+ * left to lose here is the configuration — a Quarkus upgrade changing a default (the OTel logging
+ * integration is still PREVIEW), or a property edit, would otherwise stop this service's logging
+ * with a green build and no error anywhere.
  *
  * <p>The values come from {@code src/main/resources/application.properties}, which the suite
- * inherits rather than shadowing, so this is the shipped config under test.
+ * inherits rather than shadowing, so this is the shipped config under test. Note the suite runs
+ * with {@code quarkus.otel.sdk.disabled=true} under {@code %test} — a suite dials nothing — which
+ * is exactly why the keys below are read rather than exercised.
  */
 @QuarkusTest
 class OtelLogConfigTest {
@@ -50,12 +54,30 @@ class OtelLogConfigTest {
   }
 
   @Test
-  void theExporterPointsAtTheReceiverOverHttpProtobuf() {
-    // The SDK appends /v1/logs to this base, so it resolves to qits-observability's own ingest
-    // route. gRPC is the Quarkus default and the receiver does not speak it.
-    assertEquals("http/protobuf", value("quarkus.otel.exporter.otlp.protocol"));
+  void everySignalGoesThroughTheCdiExporters() {
+    // qits-telemetry-core's beans are the exporters (epic qits-428): `cdi` is what makes the SDK
+    // take them. Quarkus' default for all three, pinned for the reason the logs keys are.
+    assertEquals("cdi", value("quarkus.otel.traces.exporter"));
+    assertEquals("cdi", value("quarkus.otel.logs.exporter"));
+    assertEquals("true", value("quarkus.otel.metrics.enabled"));
+    assertEquals("cdi", value("quarkus.otel.metrics.exporter"));
+  }
+
+  @Test
+  void theExportersPointAtTheReceiversEdgeHost() {
+    // The library's default, not overridden here: the receiver at its edge host. The exporters
+    // append /v1/<signal>. RAW value, because this suite runs without QITS_DOMAIN on purpose (root
+    // pom surefire/failsafe excludedEnvironmentVariables, PdDeploymentNoDomainTest).
     assertEquals(
-        "http://dev-qits-observability:8080/observability/api/otel",
-        value("quarkus.otel.exporter.otlp.endpoint"));
+        "https://observability.qits.${QITS_DOMAIN}/observability/api/otel",
+        ConfigProvider.getConfig().getConfigValue("qits.telemetry.endpoint").getRawValue());
+    assertEquals("true", value("qits.telemetry.bearer.enabled"));
+    assertEquals("qits", value("qits.telemetry.bearer.client"));
+    // The wire-alias address is gone with Quarkus' own exporter, which was all that read it.
+    assertTrue(
+        ConfigProvider.getConfig()
+            .getOptionalValue("qits.observability.url", String.class)
+            .isEmpty(),
+        "qits.observability.url reaches no exporter and must not come back");
   }
 }

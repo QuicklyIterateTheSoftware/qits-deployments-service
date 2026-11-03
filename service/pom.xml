@@ -63,11 +63,18 @@
             <artifactId>quarkus-arc</artifactId>
         </dependency>
         <dependency>
-            <!-- OTLP export to qits-observability. The extension is what instruments the process;
-                 the endpoint and protocol in application.properties are what make it arrive, since
-                 the defaults are gRPC to localhost:4317 and the receiver speaks HTTP/protobuf. -->
+            <!-- The instrumentation. The extension makes the spans, log records and metrics; the
+                 exporters that ship them are qits-telemetry-core's, below. -->
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-opentelemetry</artifactId>
+        </dependency>
+        <dependency>
+            <!-- OTLP export to qits-observability through the edge (epic qits-428): replaces all
+                 three of Quarkus' own OTLP exporters with CDI beans that attach the `qits` oidc
+                 client's bearer on every export. qits.telemetry.endpoint in application.properties;
+                 quarkus.otel.exporter.otlp.* no longer reaches anything. -->
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-telemetry-core</artifactId>
         </dependency>
         <dependency>
             <!-- SecurityIdentity + the HttpAuthenticationMechanism SPI. Named here rather than

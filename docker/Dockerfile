@@ -36,11 +36,10 @@
 #     -e QUARKUS_DATASOURCE_PLATFORMDEPLOYMENTS_JDBC_URL=jdbc:h2:file:/data/platformdeployments/h2/platformdeployments \
 #     ...
 #
-# One more has a default that is wrong QUIETLY — nothing will tell you it is unset:
-#
-#   QITS_OBSERVABILITY_URL  where OTLP export goes; absent qits-observability, the exporter logs a
-#                           warning per export loudly enough to bury real lines
-#                           (OTEL_SDK_DISABLED=true is the escape hatch).
+# Telemetry needs no variable of its own: spans, logs and metrics go to the receiver's edge host,
+# derived from QITS_DOMAIN (qits-telemetry-core, epic qits-428, carrying the `qits` client's
+# bearer). QITS_OBSERVABILITY_URL maps to no key any more. An unreachable receiver logs a warning
+# per export; OTEL_SDK_DISABLED=true is the escape hatch.
 #
 # QITS_DOMAIN has no default at all and the registry host is DERIVED from it
 # (`registry.qits.<domain>`, see RegistryHost) — the bootstrap makes --domain mandatory, and a

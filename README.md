@@ -364,9 +364,14 @@ refuses (`%dev`/`%test` keep local wire aliases):
 | its own bearer (`quarkus.oidc-client.qits`) and its JWKS (`quarkus.oidc.auth-server-url`) | `https://idp.qits.<domain>/idp` |
 | the images it deploys | `registry.qits.<domain>/qits/<app>:<version>` |
 
-What stays on qits-net: the platform's postgres (JDBC), and — for now — telemetry
-(`qits.observability.url`) and the event stream (`qits.events.url`, the qits-eventstream library's
-default), both of which move in later steps.
+What stays on qits-net: the platform's postgres (JDBC) and the event stream (`qits.events.url`, the
+qits-eventstream library's default), which move in later steps.
+
+**Telemetry has already moved** (epic qits-428): spans, logs and metrics go to qits-observability
+through the edge now, exported by
+[`qits-telemetry-core`](https://github.com/QuicklyIterateTheSoftware/qits-integrations-quarkus-javalib)'s
+CDI beans, which attach the `qits` oidc client's bearer on every export — `qits.observability.url`
+is gone.
 
 **What every container is told about the idp** is `QITS_RESOURCE_IDP_URL=https://idp.qits.<domain>/idp`
 — with ONE exception: **qits-edge** is told the internal `http://<env>-qits-idp:8080/idp`. The edge
