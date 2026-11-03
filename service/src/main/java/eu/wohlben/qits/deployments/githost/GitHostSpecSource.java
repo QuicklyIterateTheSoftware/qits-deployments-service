@@ -84,6 +84,14 @@ public class GitHostSpecSource implements SpecSource {
   @Inject QitsHttpClients clients;
 
   /**
+   * This component's own machine bearer — the only credential the read presents (epic qits-543,
+   * qits-1331). It replaced a forwarded {@code X-Qits-User}/{@code X-Qits-Roles} pair. Empty means
+   * the {@code qits} client is off or could not mint, and the read is then refused before a socket
+   * opens: see {@link #get}.
+   */
+  @Inject GitHostBearer bearer;
+
+  /**
    * One client for the life of the process, the sibling's arrangement (qits-ci's {@code
    * HttpGitConfigSource} holds one too). A {@code HttpClient} owns a selector thread and a
    * connection pool, so building one per green build spends both on a single request; built lazily
@@ -155,10 +163,10 @@ public class GitHostSpecSource implements SpecSource {
    *
    * <p><b>Everything about the git host's MOMENT is retryable.</b> A 5xx is the host having a bad
    * second. A 401 or a 403 is the same shape here and not an authorisation decision worth
-   * believing: this reader sends one fixed forwarded identity ({@code qits-deployments} /
-   * {@code qits:system}) on every request, so a refusal cannot be about the credential — it is the
-   * peer mid-boot, mid-cutover, or an edge answering for it. That is exactly what was measured on
-   * 2026-09-04: the same blob 403'd once and read fine minutes later. A 408 and a 429 say the word
+   * believing: this reader presents one identity, its own {@code qits} client bearer ({@code
+   * qits:system}), on every request, so a refusal is far likelier the peer mid-boot, mid-cutover, an
+   * edge answering for it, or the idp mid-rotation than a decision about the credential. That is
+   * exactly what was measured on 2026-09-04: the same blob 403'd once and read fine minutes later. A 408 and a 429 say the word
    * themselves.
    *
    * <p><b>Every other 4xx is the REQUEST, and the request will not change.</b> A 400 or a 405 on a
@@ -212,13 +220,33 @@ public class GitHostSpecSource implements SpecSource {
     return blobUrl(gitHostUrl, addressSegment, rev, path);
   }
 
+  /**
+   * The one request. It carries this component's bearer and nothing that asserts an identity
+   * beside it; {@code X-Qits-Caller} (attribution, not authentication) is stamped by the {@link
+   * QitsHttpClients} wrap.
+   *
+   * <p><b>No bearer, no request.</b> A missing token is never answered with an anonymous read or a
+   * forwarded pair: the read fails closed, retryable — the client may be mid-mint, or the idp
+   * mid-boot — and {@link IdpGitHostBearer} has already logged which client is missing.
+   */
   private HttpResponse<String> get(String url) {
+    String token =
+        bearer
+            .token()
+            .filter(value -> !value.isBlank())
+            .orElseThrow(
+                () ->
+                    new SpecException(
+                        "could not read "
+                            + url
+                            + ": no machine bearer from the `qits` oidc client"
+                            + " (quarkus.oidc-client.qits)",
+                        true));
     try {
       HttpRequest request =
           HttpRequest.newBuilder(URI.create(url))
               .timeout(Duration.ofSeconds(timeoutSeconds))
-              .header("X-Qits-User", "qits-deployments")
-              .header("X-Qits-Roles", "qits:system")
+              .header("Authorization", "Bearer " + token)
               .GET()
               .build();
       return client().send(request, HttpResponse.BodyHandlers.ofString());

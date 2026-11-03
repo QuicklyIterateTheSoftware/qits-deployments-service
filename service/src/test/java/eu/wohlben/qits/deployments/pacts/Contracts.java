@@ -10,6 +10,7 @@ import eu.wohlben.qits.deployments.deployments.control.RepositoryRef;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource;
 import eu.wohlben.qits.deployments.githost.GitHostSources;
 import eu.wohlben.qits.deployments.githost.GitHostSpecSource;
+import eu.wohlben.qits.deployments.githost.IdpGitHostBearer;
 import eu.wohlben.qits.deployments.idphost.HttpIdpClientProvisioner;
 import eu.wohlben.qits.deployments.idphost.IdpStub;
 import eu.wohlben.qits.pact.consumer.ConsumerPact;
@@ -34,16 +35,17 @@ import java.util.Map;
  * each row the call this repository's real client makes against the pact mock server.
  *
  * <ul>
- *   <li>{@link #IDP} — {@code HttpIdpClientProvisioner}'s four service-client calls and the two
- *       reads quarkus-oidc makes at startup (the discovery document and the JWKS);
+ *   <li>{@link #IDP} — {@code HttpIdpClientProvisioner}'s four service-client calls, the two
+ *       reads quarkus-oidc makes at startup (the discovery document and the JWKS), and the
+ *       client-credentials mint quarkus-oidc-client makes for {@code IdpGitHostBearer} (qits-1331);
  *   <li>{@link #GITHOST} — {@code GitHostSpecSource}'s blob reads of {@code deployments.yml}:
  *       name-addressed when the release carries the name pair, id-addressed when it does not, with
- *       no fallback between them (qits-883).
+ *       no fallback between them (qits-883), each presenting this service's own bearer.
  * </ul>
  *
  * <p>The bus library qits-eventstream owns its catch-up and publish pact, so no events row is here.
- * qits-configuration's contract (the resolved read and the declaration POST) and the token mint
- * that authorised it went with that service (qits-1393).
+ * qits-configuration's contract (the resolved read and the declaration POST) went with that
+ * service (qits-1393); the token mint that authorised it came back for the git host (qits-1331).
  */
 public final class Contracts {
 
@@ -61,8 +63,8 @@ public final class Contracts {
    * @param method the public method of {@code client} that makes it
    * @param alongside rows the same call goes on to make against the same mock server, for a call
    *     that makes more than one request for one answer
-   * @param call null for a row whose client exists only inside the application, tested by a
-   *     {@code @QuarkusTest} of its own
+   * @param call null for a row whose client exists only inside the application — the token mint,
+   *     whose test is {@code IdpTokenMintPactTest}, a {@code @QuarkusTest} of its own
    */
   public record Check(
       GoldenInteraction row,
@@ -116,6 +118,14 @@ public final class Contracts {
   static final String A_DATABASE_SERVICE_CLIENT = "a database service client";
   static final String NO_SERVICE_CLIENT = "no service client with the given id";
   static final String A_PUBLISHED_SIGNING_KEY = "a published signing key";
+
+  static final String A_PEER_CALLER = "a service client calling its peers";
+
+  /** The {@code qits} oidc client's token request: Basic client auth, the platform audience. */
+  static final GoldenInteraction TOKEN_MINT =
+      GoldenInteraction.of(Trigger.event("SoftwareRelease"), A_PEER_CALLER, "issueToken")
+          .header("Authorization", "{authorization}")
+          .consumes("access_token", "expires_in");
 
   /** The discovery read, whose {@code issuer} the pact binds by value: see {@link PactFileTest}. */
   static final GoldenInteraction DISCOVERY =
@@ -211,7 +221,11 @@ public final class Contracts {
               (url, recorded) -> {
                 JsonWebKeySet keys = new JsonWebKeySet(get(url + recorded.path()));
                 assertNotNull(keys.getKeyWithId(recorded.params().get("kid")), "the state's signing key");
-              }));
+              }),
+          // quarkus-oidc-client's client-credentials grant, the bearer GitHostSpecSource presents to
+          // qits-githost (qits-1331). Its client exists only inside the application, so
+          // IdpTokenMintPactTest runs it.
+          new Check(TOKEN_MINT, IdpGitHostBearer.class, "token", List.of(), null));
 
   // --- qits-githost ----------------------------------------------------------------------------
 

@@ -37,11 +37,20 @@ import java.util.Optional;
  *       key stays tolerated.
  * </ul>
  *
- * <p>There used to be three more: a second blob ({@code .config/qits/configuration.yml}),
- * qits-configuration's resolved read and declaration seed, and the idp mint of the credential those
- * presented. All of them went with qits-configuration (qits-1393) — an application's environment is
- * the settings store now, a table in this component's own database, so it is a JDBC edge rather than
- * a peer.
+ * <p>There used to be more: a second blob ({@code .config/qits/configuration.yml}) and
+ * qits-configuration's resolved read and declaration seed, which went with qits-configuration
+ * (qits-1393) — an application's environment is the settings store now, a table in this component's
+ * own database, so it is a JDBC edge rather than a peer.
+ *
+ * <h2>The credential is answered and NOT drawn</h2>
+ *
+ * <p>The spec read presents this component's own bearer from the {@code qits} named oidc client
+ * (qits-1331), so this stub also answers {@code POST /idp/token} — StoryProfile points the client
+ * here. That request is deliberately left out of the recording. quarkus-oidc-client caches the
+ * token and re-mints only when it expires, so the mint belongs to whichever story deploys FIRST in
+ * the run, and since every deployment reads a spec, which one that is depends on the order the
+ * story classes ran in. An arrow that moves between diagrams with the run order is a {@code
+ * networkHash} that never settles; the token says {@code expires_in: 3600} and is simply answered.
  *
  * <h2>Stateless on purpose</h2>
  *
@@ -171,6 +180,20 @@ public final class StoryPeers {
     int status = 404;
     String contentType = "application/json";
     String body = "{}";
+
+    if ("POST".equals(method) && "/idp/token".equals(path)) {
+      // The deployer's own machine credential, answered and never recorded: see the class javadoc.
+      byte[] token =
+          ("{\"access_token\":\"story-deployer-machine-token\",\"token_type\":\"Bearer\","
+                  + "\"expires_in\":3600}")
+              .getBytes(StandardCharsets.UTF_8);
+      exchange.getResponseHeaders().add("Content-Type", contentType);
+      exchange.sendResponseHeaders(200, token.length);
+      try (OutputStream out = exchange.getResponseBody()) {
+        out.write(token);
+      }
+      return;
+    }
 
     String blob = blobFor(path);
     if (blob != null) {

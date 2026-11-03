@@ -22,6 +22,8 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -49,6 +51,9 @@ public class GitHostSpecSourceTest {
 
   /** RAW paths: the encoding of the rev segment is exactly what these tests are about. */
   private final List<String> paths = new ArrayList<>();
+
+  /** The request headers of every request, in order — what the read asserts about its caller. */
+  private final List<Map<String, List<String>>> headers = new ArrayList<>();
   private volatile int status = 200;
 
   /**
@@ -64,6 +69,7 @@ public class GitHostSpecSourceTest {
   @BeforeEach
   void start() throws IOException {
     paths.clear();
+    headers.clear();
     laterStatus = null;
     server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     server.createContext("/", this::handle);
@@ -79,6 +85,7 @@ public class GitHostSpecSourceTest {
     int answered;
     synchronized (paths) {
       paths.add(exchange.getRequestURI().getRawPath());
+      headers.add(Map.copyOf(exchange.getRequestHeaders()));
       answered = laterStatus != null && paths.size() > 1 ? laterStatus : status;
     }
     int status = answered;
@@ -173,8 +180,8 @@ public class GitHostSpecSourceTest {
   @Test
   public void anIntermittent403IsTheGitHostsMomentAndAsksToBeReadAgain() {
     // Measured on 2026-09-04: qits-githost answered 403 on a blob a later request served fine, and
-    // three releases stranded on the terminal FAILED rows that produced. This reader sends one
-    // fixed forwarded identity on every request, so a refusal here cannot be about the credential.
+    // three releases stranded on the terminal FAILED rows that produced. This reader presents one
+    // identity, its own machine bearer, so a refusal here is far likelier the moment than the key.
     status = 403;
 
     SpecException refused =
@@ -307,12 +314,55 @@ public class GitHostSpecSourceTest {
     assertNotNull(read.spec());
   }
 
+  @Test
+  public void theReadPresentsTheServicesOwnBearerAndNoForwardedPair() {
+    // Epic qits-543, qits-1331: a service calls another platform service on its own `qits` client
+    // bearer and nothing else. The X-Qits-User/X-Qits-Roles pair this read sent is the edge's
+    // assertion for a person; X-Qits-Caller is attribution and stays.
+    source().read(new RepositoryRef(UUID_ID, "qits", "qits-gateway"), SpecSource.tagRev(VERSION));
+
+    Map<String, List<String>> sent = onlyHeaders();
+    assertEquals(List.of("Bearer " + BEARER), sent.get("Authorization"));
+    assertFalse(sent.containsKey("X-qits-user"), "no forwarded user: " + sent);
+    assertFalse(sent.containsKey("X-qits-roles"), "no forwarded roles: " + sent);
+    assertTrue(sent.containsKey("X-qits-caller"), "attribution stays: " + sent);
+  }
+
+  @Test
+  public void noBearerIsNoRequestAndAsksToBeReadAgain() {
+    // Fail closed: with the `qits` client off or unable to mint, nothing is sent — not anonymously
+    // and not on a forwarded pair. Retryable, because a mint that failed may succeed next pass.
+    GitHostSpecSource source = source();
+    source.bearer = Optional::empty;
+
+    SpecException refused =
+        assertThrows(
+            SpecException.class,
+            () -> source.read(RepositoryRef.ofId("qits-gateway"), SpecSource.tagRev(VERSION)));
+
+    assertTrue(refused.getMessage().contains("quarkus.oidc-client.qits"), refused.getMessage());
+    assertTrue(refused.retryable(), "a missing bearer is retryable");
+    synchronized (paths) {
+      assertEquals(0, paths.size(), "no request without a bearer");
+    }
+  }
+
+  private static final String BEARER = "a-machine-token";
+
   private GitHostSpecSource source() {
     GitHostSpecSource source = new GitHostSpecSource();
     source.gitHostUrl = "http://127.0.0.1:" + server.getAddress().getPort();
     source.timeoutSeconds = 5;
-    source.clients = QitsHttpClients.of(OpenTelemetry.noop(), null);
+    source.clients = QitsHttpClients.of(OpenTelemetry.noop(), "qits-deployments");
+    source.bearer = () -> Optional.of(BEARER);
     return source;
+  }
+
+  private Map<String, List<String>> onlyHeaders() {
+    synchronized (paths) {
+      assertEquals(1, headers.size(), "requests made");
+      return headers.get(0);
+    }
   }
 
   private String onlyPath() {

@@ -48,7 +48,8 @@ import java.util.Map;
  *       shipped boot-time fetch is exercised rather than replaced.
  *   <li><b>{@code qits.deployments.container-runtime}</b> — {@link StorySwarm}, a recording
  *       executable. This is the seam that makes the orchestrator hop evidence instead of a claim.
- *   <li><b>{@code git-host-url}</b> — {@link StoryPeers}, the one peer a deployment reads from.
+ *   <li><b>{@code git-host-url}</b> — {@link StoryPeers}, the one peer a deployment reads from,
+ *       and {@code quarkus.oidc-client.qits.*} — the bearer the read presents, minted there too.
  *       An application's environment is the settings store, in this process's own database, so
  *       there is no second peer to point anywhere.
  *   <li><b>{@code observe-interval-seconds=0}</b> — see below.
@@ -110,8 +111,12 @@ public class StoryProfile extends PdPackagedSurfaceIT.PackagedUnderTarget {
     // The domain every image reference and StoryTarget.imageRef() are derived from (RegistryHost).
     overrides.put("qits.deployments.platform-domain", "dev.localhost:8080");
 
-    // The one peer a deployment reads from.
+    // The one peer a deployment reads from, and the credential it presents there (qits-1331): the
+    // `qits` oidc client, on, minting from the same stub (StoryPeers answers /idp/token unrecorded).
     overrides.put("qits.deployments.git-host-url", peers);
+    overrides.put("quarkus.oidc-client.qits.client-enabled", "true");
+    overrides.put("quarkus.oidc-client.qits.auth-server-url", peers + "/idp");
+    overrides.put("quarkus.oidc-client.qits.credentials.secret", "story-deployer-client-secret");
 
     // The timer whose pass a recording cannot tell from a deployment's own. See the class javadoc.
     overrides.put("qits.deployments.observe-interval-seconds", "0");

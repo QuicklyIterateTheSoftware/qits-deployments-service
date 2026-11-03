@@ -132,6 +132,16 @@
             <artifactId>quarkus-oidc</artifactId>
         </dependency>
         <dependency>
+            <!-- The other direction: the bearer this service PRESENTS, to qits-githost (epic
+                 qits-543, qits-1331). The spec read used to go out on a forwarded
+                 X-Qits-User/X-Qits-Roles pair; the owner's ruling is that a service calls another
+                 platform service on its own `qits` client bearer and nothing else. The client is
+                 on wherever the deployer runs and off under %dev and %test
+                 (quarkus.oidc-client.qits.client-enabled), so a clone-alone build needs no idp. -->
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-oidc-client</artifactId>
+        </dependency>
+        <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-rest-jackson</artifactId>
         </dependency>

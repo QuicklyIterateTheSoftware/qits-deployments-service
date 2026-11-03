@@ -90,7 +90,8 @@ Four maven modules, package root `eu.wohlben.qits.deployments`:
   the adapters. `idphost` is the youngest, and it presents a credential too — this component's own,
   to qits-idp's service-client API, over a plain JDK `HttpClient` rather than a named oidc client:
   the call is Basic-authenticated, not bearer-shaped, since it is provisioning a PEER's credential
-  rather than fetching a token for itself. `confighost` (qits-configuration's client) is gone
+  rather than fetching a token for itself. `githost` is the one adapter that presents a bearer —
+  the `qits` named oidc client's, through `IdpGitHostBearer` (qits-1331). `confighost` (qits-configuration's client) is gone
   (qits-1393). `bus` is the
   event-bus half: the durable `SoftwareRelease` subscriber, the `DeployEventAnnouncer` that
   publishes this component's own four events, and the native-image registration for what the
@@ -136,10 +137,12 @@ The topology was `qits-serviceregistry` for one release, reached over HTTP. All 
 
 - **`RegistryClient` and `HttpRegistryClient`.** Registration writes rows in the same transaction;
   resolution is a repository query. `ServiceCatalog` and `EnvironmentService` are called directly.
-- **`RegistryBearer`** — the class, and **the `quarkus-oidc-client` extension with it.** It came
-  back once, for qits-configuration (`confighost/IdpExtrasBearer` over a named `qits` client), and
-  left again with that service in qits-1393: "if this service ever calls a guarded peer again, all
-  three arrive in that commit" still holds. **qits-idp is a peer and does not need it** — it is
+- **`RegistryBearer`** — the class. **The `quarkus-oidc-client` extension** left with it, came
+  back for qits-configuration (`confighost/IdpExtrasBearer`), left again with that service in
+  qits-1393, and is back for good with qits-1331: the spec read presents this component's own
+  `qits` client bearer to qits-githost (`githost/IdpGitHostBearer`), the owner's ruling that a
+  service calls another platform service on its own bearer and never on a forwarded
+  `X-Qits-User`/`X-Qits-Roles` pair. **qits-idp is a peer and does not need it** — it is
   reached as `idphost/HttpIdpClientProvisioner`, Basic-authenticated with this component's own
   client id and secret, because it is a CREDENTIAL AUTHORITY this component provisions OTHER
   applications' secrets from, the same relationship it has with the platform's postgres (below) —
@@ -2757,12 +2760,19 @@ outbox and catch-up sweeps) and `quarkus-websockets-next` (the stream client, wh
 route, so `quarkus.quinoa.ignored-path-prefixes` is unchanged) — and one **mandatory deployment
 resource**, below.
 
-**`quarkus-oidc-client` is gone again** (qits-1393): it was here for one peer, qits-configuration,
-whose read took a machine bearer (`confighost/IdpExtrasBearer` over the named `qits` client). With
-that peer gone nothing presents a bearer, so the extension, the `qits` client block and the
-`configuration` neutralisation stub are deleted. A `QUARKUS_OIDC_CLIENT_CONFIGURATION_*` variable
-reaching the container is inert — there is no extension to mint a client from it — and the names are
-still read as raw env (`${…}`) by the provisioner pair and `BootResourceRegistration`.
+**`quarkus-oidc-client` is back** (qits-1331, epic qits-543). It left with qits-configuration in
+qits-1393, and returned for the git host: `GitHostSpecSource` presents the named `qits` client's
+bearer (`githost/IdpGitHostBearer`, audience `qits-platform`) and nothing else — the forwarded
+`X-Qits-User: qits-deployments` / `X-Qits-Roles: qits:system` pair it sent is gone, and so is any
+pair as a fallback. With the client off (`%dev`, `%test`) or unable to mint, the read fails closed
+before a socket opens: a retryable `SpecException` naming `quarkus.oidc-client.qits`, and a WARN
+from the bearer saying which client is missing. `X-Qits-Caller` stays — it is attribution, stamped
+by `QitsHttpClients`. The `configuration` neutralisation stub is back with the extension, because
+one `QUARKUS_OIDC_CLIENT_CONFIGURATION_*` variable reaching the container mints a client of that
+name again; those names are also still read as raw env (`${…}`) by the `qits` client's and the
+provisioner's id/secret chain and by `BootResourceRegistration`. The mint is pacted
+(`Contracts.TOKEN_MINT`, run by `IdpTokenMintPactTest`), and the story stub answers `/idp/token`
+without drawing it (`StoryPeers` says why).
 
 **`quarkus-undertow` must never be on the classpath.** Its presence breaks Quinoa's production static
 serving — the client 404s from a build that was green — and it arrives *transitively* from anything
