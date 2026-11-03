@@ -23,10 +23,10 @@ import org.junit.jupiter.api.Test;
  * @RolesAllowed} now, and the role is what says who the caller is meant to be:
  *
  * <ul>
- *   <li><b>{@code qits:admin}</b> — the reads. It reaches this service only through the
- *       forwarded {@code X-Qits-Roles} header: the platform edge asserts it for an authenticated
- *       admin session, and the bootstrap asserts it on its own hop over qits-net. A machine token
- *       never carries it, which is the point — the read surface is a person's.
+ *   <li><b>{@code qits:admin}</b> — the reads. It reaches this service in a person's bearer (the
+ *       forwarded {@code X-Qits-Roles} header it used to arrive in leaves qits-auth-core with
+ *       qits-1338). A machine token never carries it, which is the point — the read surface is a
+ *       person's.
  *   <li><b>{@code qits:system}</b> — the pins, the topology writes, the build-succeeded intake and
  *       the deployment-request listing qits-projects draws a release's deploy phase from.
  *       qits-platform-idp copies it into every platform service client's {@code groups} claim, so a
@@ -502,10 +502,15 @@ class MachineGuardEnforcedTest {
             "Bearer " + MachineTokens.token("qits-ci", AUDIENCE));
   }
 
-  /** A platform admin, as the edge and the bootstrap assert one. */
+  /**
+   * A platform admin: a signed-in person's bearer, {@code qits:admin} in {@code groups}. It used to
+   * be forward-auth's {@code X-Qits-User} / {@code X-Qits-Roles} pair, which leaves qits-auth-core
+   * with qits-1338 (epic qits-543, qits-1362).
+   */
   private static RequestSpecification admin() {
     return given()
-        .header("X-Qits-User", "qits-bootstrap")
-        .header("X-Qits-Roles", "qits:admin");
+        .header(
+            "Authorization",
+            "Bearer " + MachineTokens.adminGroupsToken("qits-bootstrap", AUDIENCE));
   }
 }

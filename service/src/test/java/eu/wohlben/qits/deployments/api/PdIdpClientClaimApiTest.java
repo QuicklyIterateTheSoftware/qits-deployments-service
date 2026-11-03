@@ -94,16 +94,14 @@ public class PdIdpClientClaimApiTest {
   @Test
   void anAgentReadsTheIdpClientClaims() {
     given()
-        .header("X-Qits-User", "dyn-workspace-agent-reads")
-        .header("X-Qits-Roles", "qits:agent")
+        .header("Authorization", SuiteBearers.bearer("dyn-workspace-agent-reads", "qits:agent"))
         .when()
         .get("/deployments/api/claims/idp-clients")
         .then()
         .statusCode(200);
   }
 
-  // An anonymous caller's refusal needs the machine gate ON, which this suite's dev identity (every
-  // platform role, %test only) makes unreachable here — see MachineGuardEnforcedTest's
+  // An anonymous caller's refusal needs the machine gate ON — see MachineGuardEnforcedTest's
   // theClaimsEndpointAnswersTheSameThreeDoorsThePinsDo, which is the real posture.
 
   @SuppressWarnings("unchecked")
@@ -116,6 +114,7 @@ public class PdIdpClientClaimApiTest {
 
   private List<Map<String, Object>> claims() {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .when()
         .get("/deployments/api/claims/idp-clients")

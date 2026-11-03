@@ -50,6 +50,7 @@ public class PdServiceApiTest {
   void registeringAServiceForTheFirstTimeIsCreated() {
     String env = createEnvironment("svc-first-env");
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             """
@@ -74,6 +75,7 @@ public class PdServiceApiTest {
     String firstId = upsertService("svc-second", 201, env);
     // Same name, different shape: 200, and the identity survives.
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             """
@@ -97,6 +99,7 @@ public class PdServiceApiTest {
     // The writer holds the whole spec, so what it sends IS the set. A merge would keep the link to
     // `a` forever, and nothing would ever remove it.
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             """
@@ -116,6 +119,7 @@ public class PdServiceApiTest {
     String env = createEnvironment("svc-unlink-env");
     upsertService("svc-unlink", 201, env);
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body("{\"availableOnEnv\":false,\"environmentIds\":[]}")
         .when()
@@ -127,6 +131,7 @@ public class PdServiceApiTest {
     // the links means the service runs NOWHERE — it used to be the spelling of "everywhere", which
     // is the reversal this whole change is about.
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS + "/" + env + "/links")
         .then()
@@ -138,6 +143,7 @@ public class PdServiceApiTest {
   void namingAnEnvironmentTwiceStatesTheSameLinkOnce() {
     String env = createEnvironment("svc-dupe-env");
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             """
@@ -167,6 +173,7 @@ public class PdServiceApiTest {
     // about an operator's write and deliberately not a claim that anything reads the value.
     String env = createEnvironment("svc-branch-roundtrip-env");
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             """
@@ -196,6 +203,7 @@ public class PdServiceApiTest {
     // very shape that used to be a 400 is therefore an ordinary 201, which is what this asserts.
     String env = createEnvironment("svc-links-stored-env");
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             """
@@ -211,6 +219,7 @@ public class PdServiceApiTest {
 
     // ...and it is present in that tier's link query, which is where a stored link is observable.
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS + "/" + env + "/links")
         .then()
@@ -233,6 +242,7 @@ public class PdServiceApiTest {
     // than one that is honestly stored and honestly unread.
     String env = createEnvironment("svc-branch-stored-env");
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             """
@@ -248,6 +258,7 @@ public class PdServiceApiTest {
 
     // Blank is still null rather than an empty string: the column says "no branch stated".
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             """
@@ -264,6 +275,7 @@ public class PdServiceApiTest {
   @Test
   void anUnknownEnvironmentIdIsNotFound() {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body("{\"availableOnEnv\":false,\"environmentIds\":[\"no-such-id\"]}")
         .when()
@@ -286,6 +298,7 @@ public class PdServiceApiTest {
     // it is the complete statement of a service.
     String env = createEnvironment("svc-no-target-env");
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             """
@@ -307,6 +320,7 @@ public class PdServiceApiTest {
     // the same answer `branch` got when `pd_environment.branch` left the environment create
     // payload, and it is the only compatibility this change owes.
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             """
@@ -326,6 +340,7 @@ public class PdServiceApiTest {
   @Test
   void aServiceNameOutsideTheDnsLabelCharsetIsRefused() {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body("{\"availableOnEnv\":false}")
         .when()
@@ -337,6 +352,7 @@ public class PdServiceApiTest {
   @Test
   void aHealthPathCarryingShellPunctuationIsRefused() {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body("{\"availableOnEnv\":false,\"healthPath\":\"/q;curl evil\"}")
         .when()
@@ -367,6 +383,7 @@ public class PdServiceApiTest {
     // — and the service now runs NOWHERE, which is the honest reading of an empty link set and the
     // exact opposite of what an empty link set used to mean.
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body("{\"availableOnEnv\":false,\"environmentIds\":[]}")
         .when()
@@ -379,6 +396,7 @@ public class PdServiceApiTest {
     // ...so it has dropped out of the tier it was linked into. Under the plane this is the moment
     // the service would have appeared in every tier's answer instead.
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS + "/" + a + "/links")
         .then()
@@ -388,6 +406,7 @@ public class PdServiceApiTest {
     // And back up, into a different tier. No 409, no remediation to follow, no row to delete first:
     // the way back is an ordinary write because the way out was one too.
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             """
@@ -403,6 +422,7 @@ public class PdServiceApiTest {
         .body("service.environmentIds", hasItem(b));
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS + "/" + b + "/links")
         .then()
@@ -420,6 +440,7 @@ public class PdServiceApiTest {
     String env = createEnvironment("svc-flat-env");
     upsertService("svc-flat-linked", 201, env);
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body("{\"availableOnEnv\":false,\"environmentIds\":[]}")
         .when()
@@ -428,6 +449,7 @@ public class PdServiceApiTest {
         .statusCode(201);
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(SERVICES)
         .then()
@@ -455,6 +477,7 @@ public class PdServiceApiTest {
     upsertService("svc-links-linked", 201, mine);
     upsertService("svc-links-elsewhere", 201, other);
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             """
@@ -467,6 +490,7 @@ public class PdServiceApiTest {
         .statusCode(201);
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS + "/" + mine + "/links")
         .then()
@@ -483,6 +507,7 @@ public class PdServiceApiTest {
     // The service that runs nowhere is in the OTHER tier's answer no more than in this one: it is
     // not a question of which tier asks, it is that there is no link to find.
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS + "/" + other + "/links")
         .then()
@@ -504,6 +529,7 @@ public class PdServiceApiTest {
     // new tier is an explicit registration away from being useful; the gain is that the link query
     // has one source, so what a tier holds is what somebody stated it holds.
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body("{\"branch\":\"main\",\"availableOnEnv\":false,\"environmentIds\":[]}")
         .when()
@@ -513,6 +539,7 @@ public class PdServiceApiTest {
 
     String fresh = createEnvironment("svc-fresh-env");
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS + "/" + fresh + "/links")
         .then()
@@ -523,6 +550,7 @@ public class PdServiceApiTest {
     // plane: a link, stated.
     upsertService("svc-preexisting-unlinked", 200, fresh);
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS + "/" + fresh + "/links")
         .then()
@@ -532,29 +560,39 @@ public class PdServiceApiTest {
 
   @Test
   void theLinkQueryOfAnUnknownEnvironmentIsNotFound() {
-    given().when().get(ENVIRONMENTS + "/no-such-id/links").then().statusCode(404);
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when().get(ENVIRONMENTS + "/no-such-id/links").then().statusCode(404);
   }
 
   @Test
   void deletingAServiceTakesItsLinksWithIt() {
     String env = createEnvironment("svc-delete-env");
     upsertService("svc-delete", 201, env);
-    given().when().delete(SERVICES + "/svc-delete").then().statusCode(204);
     given()
+        .header("Authorization", SuiteBearers.platform())
+        .when().delete(SERVICES + "/svc-delete").then().statusCode(204);
+    given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS + "/" + env + "/links")
         .then()
         .body("services.name", not(hasItem("svc-delete")));
-    given().when().get(SERVICES).then().body("services.name", not(hasItem("svc-delete")));
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when().get(SERVICES).then().body("services.name", not(hasItem("svc-delete")));
   }
 
   @Test
   void deletingAnUnknownServiceIsNotFound() {
-    given().when().delete(SERVICES + "/no-such-service").then().statusCode(404);
+    given()
+        .header("Authorization", SuiteBearers.platform())
+        .when().delete(SERVICES + "/no-such-service").then().statusCode(404);
   }
 
   private static String createEnvironment(String name) {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body("{\"name\":\"" + name + "\"}")
         .when()
@@ -574,6 +612,7 @@ public class PdServiceApiTest {
     String ids =
         String.join(",", Arrays.stream(environmentIds).map(id -> "\"" + id + "\"").toList());
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body("{\"availableOnEnv\":false,\"environmentIds\":[" + ids + "]}")
         .when()

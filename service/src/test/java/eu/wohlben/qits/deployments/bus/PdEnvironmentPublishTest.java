@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.deployments.api.SuiteBearers;
 import eu.wohlben.qits.deployments.deployments.control.FakeDeploymentDriver;
 import eu.wohlben.qits.eventstream.CausationHeader;
 import eu.wohlben.qits.eventstream.entity.OutboxEvent;
@@ -135,6 +136,7 @@ public class PdEnvironmentPublishTest {
     clearOutbox();
 
     given()
+        .header("Authorization", SuiteBearers.platform())
         .when()
         .delete("/deployments/api/environments/" + environmentId)
         .then()
@@ -159,6 +161,7 @@ public class PdEnvironmentPublishTest {
     clearOutbox();
 
     given()
+        .header("Authorization", SuiteBearers.platform())
         .when()
         .delete("/deployments/api/environments/" + environmentId)
         .then()
@@ -173,7 +176,9 @@ public class PdEnvironmentPublishTest {
     Map<String, Object> body = new HashMap<>();
     body.put("name", name);
     body.put("designated", designated);
-    var request = given().contentType(ContentType.JSON).body(body);
+    var request = given()
+        .header("Authorization", SuiteBearers.platform())
+        .contentType(ContentType.JSON).body(body);
     if (cause != null) {
       request = request.header(CausationHeader.NAME, cause);
     }
@@ -188,6 +193,7 @@ public class PdEnvironmentPublishTest {
 
   private void patchEnvironment(String environmentId, Map<String, Object> body) {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(body)
         .when()

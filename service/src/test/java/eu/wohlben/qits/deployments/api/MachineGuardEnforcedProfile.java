@@ -15,11 +15,9 @@ import java.util.Map;
  * signature, and {@code aud=qits-platform} from application.properties — is the shipped configuration,
  * checked by the real extension exactly as it will be against the real idp.
  *
- * <p><b>The dev user is switched off</b>, and that is load-bearing rather than tidy. Under
- * {@code %test} qits-auth-core ships {@code qits.auth.forward.dev-user=dev}, so forward-auth
- * authenticates every request and a bearer would never reach the token mechanism. Empty reads back
- * as absent, which is the mechanism's "no synthetic identity" state — the same state a production
- * build is always in.
+ * <p><b>There is no dev user.</b> The suite's test config blanks forward-auth's {@code %test} dev
+ * user (it leaves qits-auth-core with qits-1338, epic qits-543), so every request here is judged on
+ * its bearer alone — the same state a production build is always in.
  */
 public class MachineGuardEnforcedProfile implements QuarkusTestProfile {
 
@@ -27,7 +25,6 @@ public class MachineGuardEnforcedProfile implements QuarkusTestProfile {
   public Map<String, String> getConfigOverrides() {
     return Map.of(
         "qits.auth.machine.required", "true",
-        "qits.auth.forward.dev-user", "",
         "quarkus.oidc.auth-server-url", "",
         "quarkus.oidc.token.issuer", MachineTokens.ISSUER,
         "quarkus.oidc.public-key", base64Key());

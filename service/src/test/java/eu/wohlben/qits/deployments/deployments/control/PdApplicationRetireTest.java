@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import eu.wohlben.qits.deployments.api.SuiteBearers;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource.DeploymentSpec;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource.DeploymentSpec.ResourceSpec;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
@@ -247,8 +248,7 @@ public class PdApplicationRetireTest {
     fake.reset();
 
     given()
-        .header("X-Qits-User", "rt-operator")
-        .header("X-Qits-Roles", "qits:admin")
+        .header("Authorization", SuiteBearers.bearer("rt-operator", "qits:admin"))
         .when()
         .post("/deployments/api/applications/" + environmentId + ":" + app + "/decommission")
         .then()
@@ -262,8 +262,7 @@ public class PdApplicationRetireTest {
 
   private static ValidatableResponse retire(String applicationId) {
     return given()
-        .header("X-Qits-User", "rt-operator")
-        .header("X-Qits-Roles", "qits:admin")
+        .header("Authorization", SuiteBearers.bearer("rt-operator", "qits:admin"))
         .when()
         .post("/deployments/api/applications/" + applicationId + "/retire")
         .then();
@@ -334,6 +333,7 @@ public class PdApplicationRetireTest {
 
   private String createEnvironment(String name) {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", name, "platform", true))
         .when()
@@ -346,6 +346,7 @@ public class PdApplicationRetireTest {
 
   private void postRelease(String runId, String repoId) {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("runId", runId, "repoId", repoId, "version", VERSION))
         .when()
@@ -359,6 +360,7 @@ public class PdApplicationRetireTest {
     while (System.currentTimeMillis() < deadline) {
       List<Map<String, Object>> rows =
           given()
+              .header("Authorization", SuiteBearers.operator())
               .when()
               .get("/deployments/api/deployments?environmentId=" + environmentId)
               .then()

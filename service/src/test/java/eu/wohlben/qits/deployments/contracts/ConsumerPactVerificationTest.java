@@ -12,12 +12,14 @@ import au.com.dius.pact.provider.junitsupport.Provider;
 import au.com.dius.pact.provider.junitsupport.State;
 import au.com.dius.pact.provider.junitsupport.loader.PactFilter;
 import au.com.dius.pact.provider.junitsupport.loader.PactSource;
+import eu.wohlben.qits.deployments.api.SuiteBearers;
 import io.quarkus.test.common.http.TestHTTPResource;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.net.URL;
 import java.util.List;
 import java.util.Map;
+import org.apache.hc.core5.http.ClassicHttpRequest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestTemplate;
@@ -40,12 +42,13 @@ import org.junit.jupiter.api.extension.ExtendWith;
  * lost its pinned pacts fails rather than verifying nothing.
  *
  * <p>Each interaction runs against this {@code @QuarkusTest} application over real HTTP, as the
- * {@code %test} synthetic user — exactly as {@link GoldenMasterRecordingTest}'s calls run. Every
+ * caller its door is for ({@code SuiteBearers.forRequest}) when it carries no bearer — exactly as
+ * {@link GoldenMasterRecordingTest}'s calls run. Every
  * {@code @State} method delegates to {@link ProviderStates}; {@link #target} fails an unknown state,
  * and an interaction without {@code comments.references.qits-call} or {@code qits-trigger}.
  *
  * <p>The gated states ({@link ProviderStates#GATED}) are filtered out here: this application runs
- * with the dev user and the gate off, so it never answers 401. {@link
+ * with the gate off, so it never answers 401. {@link
  * GatedConsumerPactVerificationTest} verifies them. An interaction must name a provider state to
  * be verified at all.
  */
@@ -101,7 +104,15 @@ class ConsumerPactVerificationTest {
 
   @TestTemplate
   @ExtendWith(PactVerificationInvocationContextProvider.class)
-  void consumerPactHolds(PactVerificationContext context) {
+  void consumerPactHolds(PactVerificationContext context, ClassicHttpRequest request) {
+    if (!request.containsHeader("Authorization")) {
+      // An interaction without a bearer names no caller of its own, so the suite names the one
+      // that door is for (epic qits-543, qits-1362) rather than leaning on a forward-auth dev user.
+      request.setHeader(
+          "Authorization",
+          SuiteBearers.forRequest(
+              request.getMethod(), request.getRequestUri()));
+    }
     context.verifyInteraction();
   }
 

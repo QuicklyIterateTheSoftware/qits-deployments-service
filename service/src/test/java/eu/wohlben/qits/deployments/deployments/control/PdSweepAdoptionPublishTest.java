@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.deployments.api.SuiteBearers;
 import eu.wohlben.qits.eventstream.entity.OutboxEvent;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource.DeploymentSpec;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
@@ -300,6 +301,7 @@ public class PdSweepAdoptionPublishTest {
 
   private String createEnvironment(String name) {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", name, "platform", false))
         .when()

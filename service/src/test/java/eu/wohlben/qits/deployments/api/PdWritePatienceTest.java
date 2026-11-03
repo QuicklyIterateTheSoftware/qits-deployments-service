@@ -76,6 +76,7 @@ public class PdWritePatienceTest {
     QuarkusMock.installMockForType(flaky, PdEnvironmentRepository.class);
 
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", "write-patience-recovers"))
         .when()
@@ -87,6 +88,7 @@ public class PdWritePatienceTest {
 
     // The point of the whole exercise: the rolled-back attempt left nothing behind.
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS)
         .then()
@@ -103,6 +105,7 @@ public class PdWritePatienceTest {
     QuarkusMock.installMockForType(flaky, PdEnvironmentRepository.class);
 
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", "write-patience-reports"))
         .when()
@@ -116,6 +119,7 @@ public class PdWritePatienceTest {
         "a failure that would fail identically next time must not spend the deadline");
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(ENVIRONMENTS)
         .then()

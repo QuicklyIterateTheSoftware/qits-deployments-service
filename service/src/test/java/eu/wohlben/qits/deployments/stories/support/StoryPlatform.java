@@ -179,11 +179,10 @@ public final class StoryPlatform {
     }
   }
 
-  /** A request builder for one path, carrying the pair the edge asserts for a logged-in admin. */
+  /** A request builder for one path, carrying a signed-in admin's bearer. */
   private static HttpRequest.Builder personRequest(String path) {
     return request(path)
-        .header(StoryIdentities.USER_HEADER, FIXTURE_USER)
-        .header(StoryIdentities.ROLES_HEADER, StoryIdentities.HUMAN_ROLE);
+        .header("Authorization", "Bearer " + StoryIdentities.adminRoleToken(FIXTURE_USER));
   }
 
   /** A request builder carrying a machine peer's bearer — what every topology write takes. */

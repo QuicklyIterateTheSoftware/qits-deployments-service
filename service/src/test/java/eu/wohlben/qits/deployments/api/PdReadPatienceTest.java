@@ -71,6 +71,7 @@ public class PdReadPatienceTest {
     QuarkusMock.installMockForType(flaky, PdServiceRepository.class);
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(SERVICES)
         .then()
@@ -86,7 +87,9 @@ public class PdReadPatienceTest {
     FlakyServiceRepository flaky = new FlakyServiceRepository(Integer.MAX_VALUE);
     QuarkusMock.installMockForType(flaky, PdServiceRepository.class);
 
-    given().when().get(SERVICES).then().statusCode(500);
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when().get(SERVICES).then().statusCode(500);
 
     assertTrue(
         flaky.attempts > 1,
@@ -95,6 +98,7 @@ public class PdReadPatienceTest {
 
   private void registerPlatformService(String name) {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body("""
             {"deploymentTarget":"PLATFORM","availableOnEnv":false}

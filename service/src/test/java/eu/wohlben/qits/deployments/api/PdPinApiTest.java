@@ -141,11 +141,14 @@ public class PdPinApiTest {
   }
 
   private List<Map<String, Object>> pins() {
-    return given().when().get("/deployments/api/pins").then().statusCode(200).extract().jsonPath().getList("pins");
+    return given()
+        .header("Authorization", SuiteBearers.platform())
+        .when().get("/deployments/api/pins").then().statusCode(200).extract().jsonPath().getList("pins");
   }
 
   private String createEnvironment(String name) {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         // The entry tier: creating one moves the designation, and a release lands there.
         .body(Map.of("name", name, "platform", true))
@@ -160,6 +163,7 @@ public class PdPinApiTest {
   /** One release, awaited to a settled row — the pins are read off finished deployments. */
   private void deploy(String repoId, String version, String environmentId, int expected) {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("runId", "run-pins", "repoId", repoId, "version", version))
         .when()
@@ -173,6 +177,7 @@ public class PdPinApiTest {
   private void deployNamed(
       String repoId, String repoName, String version, String environmentId, int expected) {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             Map.of(
@@ -193,6 +198,7 @@ public class PdPinApiTest {
     while (System.currentTimeMillis() < deadline) {
       List<Map<String, Object>> deployments =
           given()
+              .header("Authorization", SuiteBearers.operator())
               .when()
               .get("/deployments/api/deployments?environmentId=" + environmentId)
               .then()

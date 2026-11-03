@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import eu.wohlben.qits.deployments.api.SuiteBearers;
 import eu.wohlben.qits.eventstream.control.EventFrame;
 import eu.wohlben.qits.deployments.bus.PdSoftwareReleaseSubscriber;
 import io.quarkus.test.junit.QuarkusTest;
@@ -252,6 +253,7 @@ public class PdSpecRetryTest {
 
   private String createEnvironment(String name) {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         // The entry tier: a release lands in the designated platform environment.
         .body(Map.of("name", name, "platform", true))
@@ -284,6 +286,7 @@ public class PdSpecRetryTest {
 
   private void postRelease(String repoId, String version) {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("runId", "run-" + version, "repoId", repoId, "version", version))
         .when()
@@ -298,6 +301,7 @@ public class PdSpecRetryTest {
     while (System.currentTimeMillis() < deadline) {
       List<Map<String, Object>> rows =
           given()
+              .header("Authorization", SuiteBearers.operator())
               .when()
               .get("/deployments/api/deployments?environmentId=" + environmentId)
               .then()

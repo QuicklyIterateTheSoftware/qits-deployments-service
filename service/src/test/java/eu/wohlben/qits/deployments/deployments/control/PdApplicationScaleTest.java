@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.deployments.api.SuiteBearers;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentStatus;
 import eu.wohlben.qits.deployments.deployments.persistence.PdDeploymentRepository;
@@ -170,6 +171,7 @@ public class PdApplicationScaleTest {
     String id = deployment("scale-down", TIER, PdDeploymentStatus.ACTIVE, service);
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .contentType(ContentType.JSON)
         .body("{\"replicas\":0}")
         .when()
@@ -197,6 +199,7 @@ public class PdApplicationScaleTest {
 
     // ...and the listing a client reads says so rather than claiming the place is serving.
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/deployments?environmentId=" + TIER)
         .then()
@@ -214,6 +217,7 @@ public class PdApplicationScaleTest {
     driver.scriptDeclaredReplicas(service, 0);
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .contentType(ContentType.JSON)
         .body("{\"replicas\":1}")
         .when()
@@ -251,6 +255,7 @@ public class PdApplicationScaleTest {
             DeploymentDriver.ScaleOutcome.REFUSED, "Error response from daemon: rpc error"));
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .contentType(ContentType.JSON)
         .body("{\"replicas\":0}")
         .when()
@@ -278,6 +283,7 @@ public class PdApplicationScaleTest {
     int before = rowCount("bounce", "env-bounce");
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .post(
             APPLICATIONS
@@ -320,6 +326,7 @@ public class PdApplicationScaleTest {
   @Test
   public void aMalformedApplicationIdIsRefusedBeforeAnythingIsQueued() {
     given()
+        .header("Authorization", SuiteBearers.operator())
         .contentType(ContentType.JSON)
         .body("{\"replicas\":0}")
         .when()
@@ -336,6 +343,7 @@ public class PdApplicationScaleTest {
     deployment("too-many", "env-too-many", PdDeploymentStatus.ACTIVE, "env-too-many-too-many");
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .contentType(ContentType.JSON)
         .body("{\"replicas\":2}")
         .when()
@@ -351,6 +359,7 @@ public class PdApplicationScaleTest {
   @Test
   public void aScaleWithNoCountIsRefusedRatherThanReadAsZero() {
     given()
+        .header("Authorization", SuiteBearers.operator())
         .contentType(ContentType.JSON)
         .body("{}")
         .when()
@@ -363,6 +372,7 @@ public class PdApplicationScaleTest {
   @Test
   public void anApplicationNothingEverDeployedHasNothingToScale() {
     given()
+        .header("Authorization", SuiteBearers.operator())
         .contentType(ContentType.JSON)
         .body("{\"replicas\":0}")
         .when()
@@ -370,6 +380,7 @@ public class PdApplicationScaleTest {
         .then()
         .statusCode(404);
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .post(APPLICATIONS + TIER + ":never-deployed-anywhere/restart")
         .then()
@@ -384,6 +395,7 @@ public class PdApplicationScaleTest {
     deployment("never-ran", TIER, PdDeploymentStatus.IMAGE_MISSING, null);
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .post(
             APPLICATIONS
@@ -404,6 +416,7 @@ public class PdApplicationScaleTest {
     String id = deployment("platform-lever", TIER, PdDeploymentStatus.ACTIVE, service);
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .post(APPLICATIONS + ApplicationKeys.of(TIER, "platform-lever") + "/restart")
         .then()
@@ -427,6 +440,7 @@ public class PdApplicationScaleTest {
     String id = deployment("planed-lever", "env-designated", PdDeploymentStatus.ACTIVE, service);
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .post(APPLICATIONS + "env-designated:planed-lever/restart")
         .then()

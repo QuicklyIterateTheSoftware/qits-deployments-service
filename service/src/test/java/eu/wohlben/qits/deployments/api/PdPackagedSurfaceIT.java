@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.deployments.testdb.EmbeddedPg;
+import eu.wohlben.qits.servicemock.idp.MockIdp;
 import io.quarkus.test.junit.QuarkusIntegrationTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
@@ -64,7 +65,7 @@ import org.junit.jupiter.api.Test;
  * effects.
  */
 @QuarkusIntegrationTest
-@TestProfile(PdPackagedSurfaceIT.PackagedUnderTarget.class)
+@TestProfile(PdPackagedSurfaceIT.PackagedWithIdp.class)
 public class PdPackagedSurfaceIT {
 
   private static final String SEGMENT = "/deployments";
@@ -124,9 +125,9 @@ public class PdPackagedSurfaceIT {
           // No docker on purpose: every driver call must degrade to a warning, never a failure.
           "qits.deployments.container-runtime", "docker-absent-for-this-it",
           // The packaged process runs the PROD profile, where the machine-token gate now ships ON
-          // (the live value, qits-765). This IT's posture is gate-off — forward-auth headers only,
-          // no issuer to reach — so it is stated here rather than inherited. StoryProfile below is
-          // the gate-on twin and sets the key the other way.
+          // (the live value, qits-765). This IT's posture is gate-off — PackagedWithIdp turns the
+          // tenant on against a mock idp without it — so it is stated here rather than inherited.
+          // StoryProfile below is the gate-on twin and sets the key the other way.
           "qits.auth.machine.required", "false");
     }
 
@@ -279,17 +280,30 @@ public class PdPackagedSurfaceIT {
   }
 
   /**
-   * The identity a call on this surface has to carry, and the reason it is a header pair rather
-   * than a bearer.
+   * {@link PackagedUnderTarget} with the shipped OIDC tenant on against a {@link MockIdp}, so every
+   * caller's bearer is validated the way a deployment validates it. The machine gate stays off: this
+   * IT is about the surface, and {@code StoryProfile} is where the gate is under test.
+   */
+  public static class PackagedWithIdp extends PackagedUnderTarget {
+
+    @Override
+    public Map<String, String> getConfigOverrides() {
+      MockIdp idp = MockIdp.ensureStarted();
+      Map<String, String> overrides = new java.util.LinkedHashMap<>(super.getConfigOverrides());
+      overrides.put("quarkus.oidc.tenant-enabled", "true");
+      overrides.put("quarkus.oidc.auth-server-url", idp.baseUrl());
+      return Map.copyOf(overrides);
+    }
+  }
+
+  /**
+   * The identity a call on this surface has to carry: a bearer this run's idp minted.
    *
    * <p>Every endpoint here carries a {@code @RolesAllowed} and has done since the surface was
-   * closed, so an anonymous request is a 401 whatever else is right about the artifact. This
-   * profile pins the machine gate {@code false} (the prod default ships {@code true} since
-   * qits-765, so this IT states the gate-off posture explicitly rather than inheriting it), which
-   * is what keeps {@code quarkus.oidc.tenant-enabled} off and this IT free of an idp to reach — so
-   * there is no tenant to validate a bearer with, and the forward-auth pair qits-auth-core reads is the only
-   * identity a packaged process in this posture accepts. It is a real one: the platform edge
-   * asserts it for a session, and the bootstrap asserts it on its own hop over qits-net.
+   * closed, so an anonymous request is a 401 whatever else is right about the artifact. The
+   * forward-auth pair qits-auth-core read leaves it with qits-1338 (epic qits-543, qits-1362), so a
+   * caller presents a bearer the shipped tenant validates ({@link PackagedWithIdp}), for a machine
+   * as for a signed-in person.
    *
    * <p><b>Nothing here is a claim about authorization</b> — the three doors and the fact that the
    * two role sets do not overlap are {@code MachineGuardEnforcedTest}'s and {@code
@@ -299,18 +313,27 @@ public class PdPackagedSurfaceIT {
    * states the ONE role its own door names — never both at once, which would be a caller the
    * platform does not have.
    */
-  private static final String USER_HEADER = "X-Qits-User";
-
-  private static final String ROLES_HEADER = "X-Qits-Roles";
+  private static RequestSpecification as(String role) {
+    return given()
+        .header(
+            "Authorization",
+            "Bearer "
+                + MockIdp.attach()
+                    .token()
+                    .subject("packaged-surface-it")
+                    .audience("qits-platform")
+                    .groups(role)
+                    .mint());
+  }
 
   /** {@code given()} carrying the machine role the writes and the intake name. */
   private static RequestSpecification machine() {
-    return given().header(USER_HEADER, "packaged-surface-it").header(ROLES_HEADER, "qits:system");
+    return as("qits:system");
   }
 
   /** …and the person's role every read of this surface names. */
   private static RequestSpecification person() {
-    return given().header(USER_HEADER, "packaged-surface-it").header(ROLES_HEADER, "qits:admin");
+    return as("qits:admin");
   }
 
   @Test

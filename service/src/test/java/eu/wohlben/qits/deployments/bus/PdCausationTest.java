@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import eu.wohlben.qits.deployments.api.SuiteBearers;
 import eu.wohlben.qits.eventstream.CausationHeader;
 import eu.wohlben.qits.eventstream.control.EventFrame;
 import eu.wohlben.qits.deployments.deployments.control.DeployService;
@@ -100,6 +101,7 @@ public class PdCausationTest {
     String cause = UUID.randomUUID().toString();
 
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .header(CausationHeader.NAME, cause)
         .body(
@@ -122,6 +124,7 @@ public class PdCausationTest {
     createEnvironment("cause-none", null);
 
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             Map.of(
@@ -203,7 +206,9 @@ public class PdCausationTest {
   /** The entry tier: a release lands in the designated platform environment, so every tier here is one. */
   private void createEnvironment(String name, String cause) {
     var request =
-        given().contentType(ContentType.JSON).body(Map.of("name", name, "platform", true));
+        given()
+            .header("Authorization", SuiteBearers.platform())
+            .contentType(ContentType.JSON).body(Map.of("name", name, "platform", true));
     if (cause != null) {
       request = request.header(CausationHeader.NAME, cause);
     }

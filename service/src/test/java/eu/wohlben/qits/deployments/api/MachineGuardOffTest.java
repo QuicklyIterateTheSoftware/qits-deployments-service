@@ -23,6 +23,7 @@ class MachineGuardOffTest {
   @Test
   void theIntakeAcceptsACredentialFreeCall() {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             """
@@ -37,6 +38,7 @@ class MachineGuardOffTest {
   @Test
   void anEnvironmentIsCreatedWithNoCredentialAtAll() {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body("{\"name\":\"unguarded-env\"}")
         .when()
@@ -48,6 +50,7 @@ class MachineGuardOffTest {
   @Test
   void aServiceIsUpsertedWithNoCredentialAtAll() {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body("{\"deploymentTarget\":\"PLATFORM\",\"branch\":\"main\",\"availableOnEnv\":false}")
         .when()

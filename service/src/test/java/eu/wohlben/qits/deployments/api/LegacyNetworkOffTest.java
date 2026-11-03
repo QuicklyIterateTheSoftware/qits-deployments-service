@@ -45,6 +45,7 @@ public class LegacyNetworkOffTest {
   @Test
   public void anEmptyLegacyNetworkDropsItFromTheDeclaredMembership() {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", "flip", "platform", true))
         .when()
@@ -52,6 +53,7 @@ public class LegacyNetworkOffTest {
         .then()
         .statusCode(201);
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("repoId", "repo-flip", "version", VERSION))
         .when()

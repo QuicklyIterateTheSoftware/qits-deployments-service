@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import eu.wohlben.qits.deployments.api.SuiteBearers;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentStatus;
 import eu.wohlben.qits.deployments.deployments.persistence.PdDeploymentRepository;
@@ -195,6 +196,7 @@ public class PdHeldSpecSweepTest {
 
   private String createEnvironment(String name) {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", name, "platform", true))
         .when()
@@ -207,6 +209,7 @@ public class PdHeldSpecSweepTest {
 
   private void postRelease(String repoId, String version) {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("runId", "run-" + version, "repoId", repoId, "version", version))
         .when()
@@ -221,6 +224,7 @@ public class PdHeldSpecSweepTest {
     while (System.currentTimeMillis() < deadline) {
       List<Map<String, Object>> rows =
           given()
+              .header("Authorization", SuiteBearers.operator())
               .when()
               .get("/deployments/api/deployments?environmentId=" + environmentId)
               .then()

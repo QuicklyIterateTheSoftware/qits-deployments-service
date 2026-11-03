@@ -74,6 +74,7 @@ public class PdDeploymentFlowTest {
 
   private String createEnvironment(String name, boolean platform) {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", name, "platform", platform))
         .when()
@@ -90,6 +91,7 @@ public class PdDeploymentFlowTest {
 
   private void postRelease(String runId, String repoId, String version) {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("runId", runId, "repoId", repoId, "version", version))
         .when()
@@ -103,6 +105,7 @@ public class PdDeploymentFlowTest {
     while (System.currentTimeMillis() < deadline) {
       List<Map<String, Object>> deployments =
           given()
+              .header("Authorization", SuiteBearers.operator())
               .when()
               .get("/deployments/api/deployments?environmentId=" + environmentId)
               .then()
@@ -433,6 +436,7 @@ public class PdDeploymentFlowTest {
 
     Map<String, Object> registered =
         given()
+            .header("Authorization", SuiteBearers.operator())
             .when()
             .get("/deployments/api/applications")
             .then()
@@ -524,6 +528,7 @@ public class PdDeploymentFlowTest {
 
     List<Map<String, Object>> inTier =
         given()
+            .header("Authorization", SuiteBearers.operator())
             .when()
             .get("/deployments/api/deployments?environmentId=" + environmentId)
             .then()
@@ -708,6 +713,7 @@ public class PdDeploymentFlowTest {
 
     List<Map<String, Object>> rows =
         given()
+            .header("Authorization", SuiteBearers.operator())
             .when()
             .get("/deployments/api/applications")
             .then()
@@ -783,6 +789,7 @@ public class PdDeploymentFlowTest {
     // shape now and the read surface must say null rather than guess a run from the version.
     String environmentId = createEnvironment("flow-norunid");
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("repoId", "repo-norunid", "version", V_A))
         .when()
@@ -800,6 +807,7 @@ public class PdDeploymentFlowTest {
     // The column is bounded, and the sender is fire-and-forget: without the boundary check this is
     // a 500 on an insert and a deployment that silently never happens.
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             Map.of(
@@ -817,6 +825,7 @@ public class PdDeploymentFlowTest {
     // The intake is attacker-reachable; a version that could escape an image reference must never
     // reach a docker argv (400 from this component's own validation, not a queued deployment).
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             Map.of(

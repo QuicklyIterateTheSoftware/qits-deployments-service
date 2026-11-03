@@ -26,9 +26,9 @@ import org.junit.jupiter.api.Test;
  * {@code /deployments/api/settings} — the store's three doors and the preview (qits-1390).
  *
  * <p>Every case uses application and environment names of its own, because the suite shares one
- * database across classes. Calls with no header run as the {@code %test} dev user, which holds
- * every platform role; the role cases send the forward-auth pair, whose roles are then exactly
- * {@code X-Qits-Roles}.
+ * database across classes. Every call names its caller with a {@link SuiteBearers} bearer: the
+ * store's doors as an operator ({@code qits:admin}), the topology it needs as the platform ({@code
+ * qits:system}), and the role cases as exactly the roles they send.
  */
 @QuarkusTest
 class PdSettingApiTest {
@@ -45,7 +45,7 @@ class PdSettingApiTest {
   }
 
   private static RequestSpecification as(String user, String roles) {
-    return given().header("X-Qits-User", user).header("X-Qits-Roles", roles);
+    return given().header("Authorization", SuiteBearers.bearer(user, roles));
   }
 
   private static RequestSpecification asAgent() {
@@ -54,6 +54,7 @@ class PdSettingApiTest {
 
   private static void put(String app, String env, String key, String value, boolean secret) {
     given()
+        .header("Authorization", SuiteBearers.operator())
         .contentType(ContentType.JSON)
         .body(Map.of("value", value, "secret", secret))
         .when()
@@ -96,6 +97,7 @@ class PdSettingApiTest {
     put("set-upsert", "set-dev", "LEVEL", "2", false);
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(SETTINGS + "?application=set-upsert")
         .then()
@@ -107,6 +109,7 @@ class PdSettingApiTest {
   @Test
   void aSecretIsMaskedOnThePutAnswerAndOnTheListing() {
     given()
+        .header("Authorization", SuiteBearers.operator())
         .contentType(ContentType.JSON)
         .body(Map.of("value", SECRET_VALUE, "secret", true))
         .when()
@@ -128,7 +131,9 @@ class PdSettingApiTest {
     assertFalse(listing.contains(SECRET_VALUE), "the stored secret must never appear in a listing");
 
     List<Map<String, Object>> rows =
-        given().when().get(SETTINGS).then().statusCode(200).extract().path("settings");
+        given()
+            .header("Authorization", SuiteBearers.operator())
+            .when().get(SETTINGS).then().statusCode(200).extract().path("settings");
     Map<String, Object> row =
         rows.stream()
             .filter(r -> "set-secret".equals(r.get("application")))
@@ -143,6 +148,7 @@ class PdSettingApiTest {
   void aKeyThatIsNotAnEnvironmentVariableNameIs400() {
     for (String key : List.of("lower_case", "1LEADING_DIGIT", "DASH-ED")) {
       given()
+          .header("Authorization", SuiteBearers.operator())
           .contentType(ContentType.JSON)
           .body(Map.of("value", "v", "secret", false))
           .when()
@@ -155,6 +161,7 @@ class PdSettingApiTest {
   @Test
   void aMissingValueIs400() {
     given()
+        .header("Authorization", SuiteBearers.operator())
         .contentType(ContentType.JSON)
         .body(Map.of("secret", true))
         .when()
@@ -167,9 +174,14 @@ class PdSettingApiTest {
   void aDeleteRemovesTheRowAndASecondDeleteIs404() {
     put("set-delete", "set-dev", "DOOMED", "x", false);
 
-    given().when().delete(SETTINGS + "/set-delete/set-dev/DOOMED").then().statusCode(204);
-    given().when().delete(SETTINGS + "/set-delete/set-dev/DOOMED").then().statusCode(404);
     given()
+        .header("Authorization", SuiteBearers.operator())
+        .when().delete(SETTINGS + "/set-delete/set-dev/DOOMED").then().statusCode(204);
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when().delete(SETTINGS + "/set-delete/set-dev/DOOMED").then().statusCode(404);
+    given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(SETTINGS + "?application=set-delete")
         .then()
@@ -198,6 +210,7 @@ class PdSettingApiTest {
         .statusCode(403);
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(SETTINGS + "?application=set-agent")
         .then()
@@ -225,6 +238,7 @@ class PdSettingApiTest {
 
   private static String createEnvironment(String name) {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body("{\"name\":\"" + name + "\"}")
         .when()
@@ -237,6 +251,7 @@ class PdSettingApiTest {
 
   private static void registerService(String name, String environmentId) {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             "{\"branch\":null,\"availableOnEnv\":false,\"environmentIds\":[\""
@@ -320,6 +335,7 @@ class PdSettingApiTest {
 
     for (String extras : List.of("include", "exclude")) {
       given()
+          .header("Authorization", SuiteBearers.operator())
           .when()
           .get(SETTINGS + "/preview/" + app + "/" + env + "?extras=" + extras)
           .then()
@@ -334,6 +350,7 @@ class PdSettingApiTest {
     assertFalse(
         driver.calls().contains("stagedEnvironment:" + app + ":true"), driver.calls().toString());
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(SETTINGS + "/preview/" + app + "/" + env + "?extras=sometimes")
         .then()
@@ -348,6 +365,7 @@ class PdSettingApiTest {
     driver.scriptStagedEnvironment(app, List.of("QITS_APPLICATION=" + app, "A=1"), List.of());
 
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(SETTINGS + "/preview/" + app + "/" + env)
         .then()
@@ -363,7 +381,11 @@ class PdSettingApiTest {
   void anUnknownApplicationOrEnvironmentIs404() {
     String env = "set-preview-unknown";
     createEnvironment(env);
-    given().when().get(SETTINGS + "/preview/set-nobody-knows/" + env).then().statusCode(404);
-    given().when().get(SETTINGS + "/preview/set-nobody-knows/set-no-such-env").then().statusCode(404);
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when().get(SETTINGS + "/preview/set-nobody-knows/" + env).then().statusCode(404);
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when().get(SETTINGS + "/preview/set-nobody-knows/set-no-such-env").then().statusCode(404);
   }
 }

@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import eu.wohlben.qits.deployments.api.SuiteBearers;
 import eu.wohlben.qits.eventstream.control.EventFrame;
 import eu.wohlben.qits.deployments.deployments.control.DeployService;
 import eu.wohlben.qits.deployments.deployments.control.FakeDeploymentDriver;
@@ -362,6 +363,7 @@ public class PdBusReleaseIntakeTest {
     // `workspace` and `workspace-editor` in the catalogue with no deployment that ever worked.
     List<String> services =
         given()
+            .header("Authorization", SuiteBearers.operator())
             .when()
             .get("/deployments/api/services")
             .then()
@@ -451,6 +453,7 @@ public class PdBusReleaseIntakeTest {
    */
   private String createEntryTier(String name) {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", name, "platform", true))
         .when()
@@ -463,6 +466,7 @@ public class PdBusReleaseIntakeTest {
 
   private void postRelease(String application, String version) {
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(
             Map.of(
@@ -498,6 +502,7 @@ public class PdBusReleaseIntakeTest {
     while (System.currentTimeMillis() < deadline) {
       List<Map<String, Object>> deployments =
           given()
+              .header("Authorization", SuiteBearers.operator())
               .when()
               .get("/deployments/api/deployments?environmentId=" + environmentId)
               .then()

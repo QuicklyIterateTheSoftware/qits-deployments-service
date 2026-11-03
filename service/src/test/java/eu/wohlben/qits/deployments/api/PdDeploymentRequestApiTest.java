@@ -117,11 +117,13 @@ public class PdDeploymentRequestApiTest {
     // The deployments listing's shape verbatim: an unscoped listing would answer with every request
     // on the instance, and a missing tier must say so rather than answer with an empty list.
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/deployment-requests")
         .then()
         .statusCode(400);
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/deployment-requests?environmentId=no-such-tier")
         .then()
@@ -134,6 +136,7 @@ public class PdDeploymentRequestApiTest {
     // does not, so the word names no tier this table can answer for and is a 404 rather than a
     // silently empty list.
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/deployment-requests?environmentId=platform")
         .then()
@@ -188,6 +191,7 @@ public class PdDeploymentRequestApiTest {
     // environment is a 409, because a release would then enter nowhere.
     createEnvironment("req-orphan-successor");
     given()
+        .header("Authorization", SuiteBearers.platform())
         .when()
         .delete("/deployments/api/environments/" + environmentId)
         .then()
@@ -209,6 +213,7 @@ public class PdDeploymentRequestApiTest {
 
     Map<String, Object> answer =
         given()
+            .header("Authorization", SuiteBearers.operator())
             .when()
             .get("/deployments/api/deployment-requests/" + id)
             .then()
@@ -231,6 +236,7 @@ public class PdDeploymentRequestApiTest {
   @Test
   public void anIdNothingWroteIsA404() {
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/deployment-requests/no-such-request")
         .then()
@@ -321,11 +327,13 @@ public class PdDeploymentRequestApiTest {
     // A lone repoId would silently answer with a repository's whole history and a lone version with
     // every repository's, so neither is a filter this surface accepts.
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/deployment-requests?repoId=repo-req-half")
         .then()
         .statusCode(400);
     given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/deployment-requests?version=" + V_A)
         .then()
@@ -346,6 +354,7 @@ public class PdDeploymentRequestApiTest {
         "?environmentId=" + environmentId
             + (applicationName == null ? "" : "&applicationName=" + applicationName);
     return given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/deployment-requests" + query)
         .then()
@@ -358,6 +367,7 @@ public class PdDeploymentRequestApiTest {
   /** One project's answer: every pending request, and the ten newest settled ones. */
   private List<Map<String, Object>> requestsOfProject(String projectId) {
     return given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/deployment-requests?projectId=" + projectId)
         .then()
@@ -369,6 +379,7 @@ public class PdDeploymentRequestApiTest {
 
   private List<Map<String, Object>> byRelease(String repoId, String version) {
     return given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get(
             "/deployments/api/deployment-requests?repoId="
@@ -390,6 +401,7 @@ public class PdDeploymentRequestApiTest {
 
   private List<Map<String, Object>> deployments(String environmentId) {
     return given()
+        .header("Authorization", SuiteBearers.operator())
         .when()
         .get("/deployments/api/deployments?environmentId=" + environmentId)
         .then()
@@ -402,6 +414,7 @@ public class PdDeploymentRequestApiTest {
   /** The entry tier: creating one moves the designation, and a release lands there. */
   private String createEnvironment(String name) {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("name", name, "platform", true))
         .when()
@@ -448,6 +461,7 @@ public class PdDeploymentRequestApiTest {
       body.put("priority", priority);
     }
     given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(body)
         .when()

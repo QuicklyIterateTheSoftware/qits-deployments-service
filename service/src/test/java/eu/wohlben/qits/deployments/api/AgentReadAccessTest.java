@@ -13,9 +13,9 @@ import org.junit.jupiter.api.Test;
  * <p>Agents will stop inheriting their owner's roles and hold {@code qits:agent} instead. Every
  * read here accepts that role; no write does, the operator's levers included.
  *
- * <p>The identity is the forward-auth pair. With {@code X-Qits-User} present, the roles are exactly
- * {@code X-Qits-Roles}, so the {@code %test} dev user's roles do not leak in. Seeding sends no
- * header and so runs as that dev user, which holds {@code qits:system}.
+ * <p>Each request names its caller with a {@link SuiteBearers} bearer, whose roles are exactly the
+ * ones it was granted: the agent's reads as {@code qits:agent}, the seeding as the platform ({@code
+ * qits:system}). Forward-auth and its {@code %test} dev user leave qits-auth-core with qits-1338.
  */
 @QuarkusTest
 class AgentReadAccessTest {
@@ -24,12 +24,12 @@ class AgentReadAccessTest {
 
   private static RequestSpecification asAgent() {
     return given()
-        .header("X-Qits-User", "dyn-workspace-agent-reads")
-        .header("X-Qits-Roles", "qits:agent");
+        .header("Authorization", SuiteBearers.bearer("dyn-workspace-agent-reads", "qits:agent"));
   }
 
   private static String createEnvironment(String name) {
     return given()
+        .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body("{\"name\":\"" + name + "\"}")
         .when()
@@ -131,8 +131,7 @@ class AgentReadAccessTest {
 
   private static RequestSpecification asAdminAgent() {
     return given()
-        .header("X-Qits-User", "dyn-admin-workspace")
-        .header("X-Qits-Roles", "qits:admin-agent");
+        .header("Authorization", SuiteBearers.bearer("dyn-admin-workspace", "qits:admin-agent"));
   }
 
   /**
@@ -182,8 +181,7 @@ class AgentReadAccessTest {
 
   private static RequestSpecification asDesk() {
     return given()
-        .header("X-Qits-User", "dyn-delivery-desk")
-        .header("X-Qits-Roles", "qits:agent,qits:desk");
+        .header("Authorization", SuiteBearers.bearer("dyn-delivery-desk", "qits:agent,qits:desk"));
   }
 
   /**

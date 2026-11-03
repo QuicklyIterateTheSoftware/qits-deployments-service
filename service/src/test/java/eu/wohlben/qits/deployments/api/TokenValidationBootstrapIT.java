@@ -239,9 +239,9 @@ public class TokenValidationBootstrapIT {
         .as("wrong-audience-refused");
 
     // The third door, and the one that is this service's own shape rather than the fleet's: the
-    // roles say who a caller is meant to be, and qits:admin is the PERSON's — it reaches
-    // this service only as a forwarded X-Qits-Roles header from an admin session, never in a
-    // token. Minted into one anyway it authenticates perfectly and still covers nothing here.
+    // roles say who a caller is meant to be, and qits:admin is the PERSON's — a signed-in
+    // person's token carries it, and at this machine door it authenticates perfectly and still
+    // covers nothing.
     //
     // A different initiator, so a different actor and therefore a different edge: this one is a
     // person's session reaching a machine peer's door, which is the whole of what the 403 says.
