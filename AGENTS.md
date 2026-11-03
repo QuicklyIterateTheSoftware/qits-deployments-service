@@ -1368,7 +1368,7 @@ carries a `@RolesAllowed`, and there are exactly four roles:
 | `qits:admin-agent` | wherever `qits:admin` is (qits-628 follow-up) | an ADMIN workspace's coding agent's credential, alongside `qits:agent`; for now it may use everything `qits:admin` may use |
 | `qits:desk-admin` | wherever `qits:admin-agent` is (qits-1621) | the delivery desk's admin grant, alongside `qits:agent` and `qits:desk` |
 | `qits:system` | the pins, the **idp-client claims** (`GET /claims/idp-clients`, qits-idp's read for its service-client garbage collection), the **deployment-request listing** (`GET /deployment-requests`, the read qits-projects draws a release's deploy phase from), every topology **write** (environment create/patch/delete, service upsert/delete) and the release intake | a machine bearer: qits-platform-idp copies `qits.idp.client.<id>.roles` into the token's `groups` claim, which quarkus-oidc reads as roles with no configuration at all. It is the open calling model's role — "a service calling a service" |
-| `qits:agent` | every read — the ones `qits:admin` has, plus the pins and the idp-client claims — and no write | an agent's own bearer: a commissioned client whose kind maps to this role (`principal-bound-git-refs-plan.md`, C7) |
+| `qits:agent` | every read — the ones `qits:admin` has, plus the pins and the idp-client claims — and no write | an agent's own bearer: a commissioned client whose kind maps to this role (epic qits-543, dossier page "Plan (as of 2026-09-13)", C7) |
 
 **The two sets — `qits:system` and `qits:admin` — do not overlap and must not.** A machine token
 never carries `qits:admin`, so the read surface is a person's; a browser session never carries
