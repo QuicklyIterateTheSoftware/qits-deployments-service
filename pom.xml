@@ -61,36 +61,36 @@
              and it stays one line: the release train's follow-bump step
              (.config/qits/ci-event-upstream-eventstream.yml) rewrites exactly this element with a
              `sed`, so a second spelling of the version anywhere would be left behind. -->
-        <qits.eventstream.version>2026.1103.231226</qits.eventstream.version>
-        <qits.auth-core.version>2026.1105.105731</qits.auth-core.version>
+        <qits.eventstream.version>2026.1106.12426</qits.eventstream.version>
+        <qits.auth-core.version>2026.1106.507</qits.auth-core.version>
         <!-- The platform's shared ArchUnit rules, published by qits-integrations-quarkus beside
              qits-auth-core. Test scope wherever entities live — see service/pom.xml. -->
-        <qits.arch-rules.version>2026.1030.30851</qits.arch-rules.version>
+        <qits.arch-rules.version>2026.1106.507</qits.arch-rules.version>
         <!-- The platform's database patience, published beside the two above: PatientPgDriver (the
              datasource's driver line) and DbRetry (the worker's brackets). -->
-        <qits.db-core.version>2026.1002.70617</qits.db-core.version>
+        <qits.db-core.version>2026.1106.507</qits.db-core.version>
         <!-- qits-http-core: QitsHttpClients.wrap puts a CLIENT span and X-Qits-Caller on every
              outbound java.net.http.HttpClient this repo builds to another qits service, the same
              way quarkus-opentelemetry already does for the REST client. Published by
              qits-integrations-quarkus, same publisher as qits-auth-core and qits-db-core above.
              From 2026.1103.132907 the wrap also rides out an edge switchover (RetryPolicy, 30 s),
              which edge/EdgeBreakGlass's one internal-address try sits behind (epic qits-428). -->
-        <qits.http-core.version>2026.1103.132907</qits.http-core.version>
+        <qits.http-core.version>2026.1106.507</qits.http-core.version>
         <!-- qits-telemetry-core (epic qits-428): the three OTLP/HTTP exporters as CDI beans whose
              header supplier carries the `qits` oidc client's current bearer, so spans, logs and
              metrics reach qits-observability at its edge host. Published by
              qits-integrations-quarkus, like qits-http-core above. -->
-        <qits.telemetry-core.version>2026.1103.201640</qits.telemetry-core.version>
+        <qits.telemetry-core.version>2026.1106.507</qits.telemetry-core.version>
         <!-- The user-story framework (test scope): this repo's story catalogue is written as
              @UserStory methods, so a `mvn verify -DskipITs=false` also regenerates
              service/target/userstories/ — the story logs and their network diagrams, which are
              OBSERVED rather than narrated. This version is the one that ships NetworkTaps, the
              RestAssured filter four repos had each kept a copy of; the copy here is gone with it. -->
-        <qits.userflows.version>2026.1028.231715</qits.userflows.version>
+        <qits.userflows.version>2026.1106.205</qits.userflows.version>
         <!-- The recording service mocks the story ITs boot against (the generic MockService plus
              idp.MockIdp), published by qits-integrations-quarkus beside qits-auth-core,
              qits-arch-rules and qits-db-core above. -->
-        <qits.service-mock.version>2026.1002.70617</qits.service-mock.version>
+        <qits.service-mock.version>2026.1106.507</qits.service-mock.version>
         <!-- pact-jvm, for this repository's consumer pacts (service/src/test/.../pacts/) and for
              verifying the pacts its own consumers hold (.../contracts/): the version every provider
              on the estate verifies with, so a pact is read the same way at both ends. -->
@@ -108,7 +108,7 @@
         <qits.orchestrator-service-pacts-qits-deployments-service.version>2026.1018.172917</qits.orchestrator-service-pacts-qits-deployments-service.version>
         <qits.projects-service-pacts-qits-deployments-service.version>2026.1018.195756</qits.projects-service-pacts-qits-deployments-service.version>
         <!-- The one golden-master reader for Java consumers, from qits-integrations-quarkus. -->
-        <qits.pact-consumer.version>2026.1019.82625</qits.pact-consumer.version>
+        <qits.pact-consumer.version>2026.1106.507</qits.pact-consumer.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
