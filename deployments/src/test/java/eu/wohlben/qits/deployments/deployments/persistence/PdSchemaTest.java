@@ -597,6 +597,38 @@ public class PdSchemaTest {
     }
   }
 
+  @Test
+  public void v17RecordsEveryDecommissionRunAndTakesNoRemovedListForAFailure() throws Exception {
+    // V17, qits-1941. One row per run with no unique key — a retried purge is a second row, not an
+    // update — and `removed` null is the failed run's answer, distinct from an empty list.
+    try (Connection connection = migrated();
+        Statement sql = connection.createStatement()) {
+      for (String run :
+          List.of(
+              "'FAILED', null, 'qits-artifacts answered 500'",
+              "'PURGED', '[{\"type\":\"oci\",\"versions\":[\"1\"]}]'::jsonb, null",
+              "'PURGED', '[]'::jsonb, null")) {
+        sql.execute(
+            "insert into pd_decommission (id, application_name, environment_id, actor,"
+                + " decommissioned_at, repositories, purge_outcome, removed, failure_detail)"
+                + " values (gen_random_uuid(), 'retired-app', null, null, now(),"
+                + " '[\"retired-app-service\"]'::jsonb, "
+                + run
+                + ")");
+      }
+      assertEquals(
+          List.of("FAILED|true", "PURGED|false", "PURGED|false"),
+          rows(
+              sql,
+              "select purge_outcome || '|' || (removed is null)::text from pd_decommission"
+                  + " where application_name = 'retired-app' order by purge_outcome,"
+                  + " jsonb_array_length(removed) desc nulls first"));
+      assertEquals(
+          List.of("retired-app-service"),
+          rows(sql, "select distinct repositories->>0 from pd_decommission"));
+    }
+  }
+
   private static void request(
       Statement sql, String id, String applicationName, String version, String priority)
       throws SQLException {

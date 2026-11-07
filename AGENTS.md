@@ -10,8 +10,9 @@ build → registration → health-gated cutover). This file is the working conve
 instead of inheriting them, and why every seam that reaches outside the process is faked rather than
 skipped: `FakeDeploymentDriver` behind `DeploymentDriver` (the orchestrator), `FakeSpecSource` behind
 `SpecSource` (the git host), `FakeResourceProvisioner` behind `ResourceProvisioner` (the
-platform's postgres) and `FakeIdpClientProvisioner` behind `IdpClientProvisioner` (qits-idp's
-service-client API). **Four fakes** — the ancestor's stub HTTP server for the topology dissolved
+platform's postgres), `FakeIdpClientProvisioner` behind `IdpClientProvisioner` (qits-idp's
+service-client API) and `FakeArtifactPurge` behind `ArtifactPurge` (qits-artifacts' purge door,
+qits-1941). **Five fakes** — the ancestor's stub HTTP server for the topology dissolved
 when the topology became a repository query, and `FakeDeclarationSeed` went with qits-configuration
 (qits-1393).
 
@@ -90,8 +91,9 @@ Four maven modules, package root `eu.wohlben.qits.deployments`:
   the adapters. `idphost` is the youngest, and it presents a credential too — this component's own,
   to qits-idp's service-client API, over a plain JDK `HttpClient` rather than a named oidc client:
   the call is Basic-authenticated, not bearer-shaped, since it is provisioning a PEER's credential
-  rather than fetching a token for itself. `githost` is the one adapter that presents a bearer —
-  the `qits` named oidc client's, through `IdpGitHostBearer` (qits-1331). `confighost` (qits-configuration's client) is gone
+  rather than fetching a token for itself. `githost` presents a bearer — the `qits` named oidc
+  client's, through `IdpGitHostBearer` (qits-1331) — and `artifactshost` (`HttpArtifactPurge`,
+  qits-1941) presents the same one through the same `GitHostBearer` port. `confighost` (qits-configuration's client) is gone
   (qits-1393). `bus` is the
   event-bus half: the durable `SoftwareRelease` subscriber, the `DeployEventAnnouncer` that
   publishes this component's own four events, and the native-image registration for what the
@@ -451,6 +453,7 @@ that fails when the daemon is busy.
 application, and nothing here helps". This is the "here".**
 
     POST /deployments/api/applications/{applicationId}/decommission   → 200
+    [{"repositories":["<repository>",…]}]                              (optional, qits-1941)
 
 A repository that is renamed, or that starts overriding its deployed identity, leaves its old
 application name behind holding whatever its last attempt wrote. Three of them sat on this install —
@@ -460,7 +463,7 @@ telling the truth about a row and lying about the platform.
 
 Six things about it:
 
-- **It writes a word; it deletes nothing.** `DECOMMISSIONED` is this component's own vocabulary for
+- **It writes a word; it deletes no row of its own.** `DECOMMISSIONED` is this component's own vocabulary for
   "this deployment's place was taken", written by `DeployService` on every cutover; a retirement is
   the same statement with an *application* as the successor rather than a deployment. The shas, the
   run ids, the timestamps and the failure text stay exactly as they were. There is no delete on this
@@ -490,6 +493,34 @@ Six things about it:
   what makes the retirement re-runnable. There is one stamp format on a deployment row and one place
   that knows it.
 
+**Then it purges the application's published artifacts (qits-1941)**, which is the one thing it
+removes and none of it is this component's: images, maven and npm packages, docs and SBOMs of a name
+nothing will deploy again. After the relabel commits, `ApplicationRetirement` calls `ArtifactPurge`
+ONCE — `POST <artifacts-url>/artifacts/api/applications/<name>/purge` on qits-artifacts'
+machine-only door — with the application NAME (never the `<env>:<name>` key) and the repositories,
+deduplicated and sorted: the optional body's, plus every non-null `pd_owed_release.repo_name` whose
+`package_name` is `qits/<name>` (docs and maven/npm packages are published under the repository's
+name, not the application's). Five things about it:
+
+- **The body is read from a `String`, not bound to `DecommissionRequest`**: a bound entity 415s a
+  request with no `Content-Type`, and the empty POST every existing caller sends is exactly that.
+  Its names are checked (`PdIdentifiers.requireName`) BEFORE the relabel, so a bad one is a 400 that
+  wrote nothing.
+- **Every run is a `pd_decommission` row (V17)**, `PURGED` with qits-artifacts' `removed` list or
+  `FAILED` with `failure_detail`, written in its own transaction after the call, never updated. A
+  refusal (400/404/409) makes no call and writes no row.
+- **A failed purge is a 502 over a committed relabel.** Unreachable, non-2xx, no bearer: the rows
+  stay `DECOMMISSIONED`, the `FAILED` row is written, the message names the failure. Calling the door
+  again is the retry — the relabel is re-runnable (the stamp rule above) and the purge is idempotent
+  at the far end (a second call answers `removed: []`).
+- **The bearer is this component's own `qits` client's** (`GitHostBearer`, `IdpGitHostBearer`): a
+  qits-idp service client, so its token carries `qits:system` (`ClientRegistry`'s fixed
+  `SERVICE_CLIENT_ROLES`) and `aud qits-platform` — what the purge door's `@RolesAllowed` admits.
+  This door's own callers stay persons; the machine role is on the hop out, not the door in.
+- **The address is the registry's edge host**, `https://registry.qits.<domain>` via `RegistryHost`
+  (`qits.deployments.artifacts-url` empty by default; set it only to aim elsewhere). The response's
+  `removedArtifacts` is the list qits-artifacts reported; the pact row is `Contracts.ARTIFACTS`.
+
 **Role: `qits:admin`**, for the reason the other two levers carry it — a service bearer must
 no more be able to declare an application retired than to stop one. `qits:admin-agent` is admitted
 too (qits-628 follow-up), for the same reason it is on the other two. `qits:desk-admin` is admitted
@@ -513,7 +544,8 @@ edge kept serving because nothing ever sent the empty snapshot).
 
 **A separate door, not an extension of `decommission`, and that was the choice to make.** Every line
 of decommission's section above is its documented contract — it writes a word and deletes nothing,
-calls no orchestrator, answers 200, refuses a deployed application and does not touch `pd_service`.
+calls no orchestrator, answers 200, refuses a deployed application and does not touch `pd_service`
+(its artifact purge, qits-1941, removes only what qits-artifacts stores, never a row of this one).
 Extending it would have broken all five behind a path scripts already call. Decommission stays the
 door for a name that is already dead; retire is the door for one that is still deployed.
 
@@ -2751,6 +2783,12 @@ learns a word; not a match on `detail`, which is prose. **No backfill**: false i
 what the guard answered for every old row anyway, and an obligation already settled is never read
 again. The re-drive guard also requires the row to still be `FAILED`, so a row something later moved
 answers by its status.
+
+**`V17__decommission.sql` is an account, not a state** (qits-1941): one `pd_decommission` row per
+decommission run, never updated, no unique key — a retried purge is a second row. `repositories` and
+`removed` are `jsonb` written as JSON text (`@ColumnTransformer(write = "?::jsonb")` on a `String`,
+so no JSON type mapping is involved); `removed` null is a `FAILED` run, `[]` a purge that found
+nothing. `PdDecommission` is a stamped `CausedRow` (request thread, the `PdEnvironment` case).
 
 **Nulls are distinct to `=`, and the queries still test for one.** A deployment's `environment_id` was
 null until V8 and is the designated tier now, so the null-testing arms of

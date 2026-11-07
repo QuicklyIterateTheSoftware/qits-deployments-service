@@ -5,6 +5,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.deployments.artifactshost.ArtifactPurges;
+import eu.wohlben.qits.deployments.artifactshost.HttpArtifactPurge;
+import eu.wohlben.qits.deployments.deployments.control.ArtifactPurge;
 import eu.wohlben.qits.deployments.deployments.control.IdpClientProvisioner;
 import eu.wohlben.qits.deployments.deployments.control.RepositoryRef;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource;
@@ -40,7 +43,9 @@ import java.util.Map;
  *       client-credentials mint quarkus-oidc-client makes for {@code IdpGitHostBearer} (qits-1331);
  *   <li>{@link #GITHOST} — {@code GitHostSpecSource}'s blob reads of {@code deployments.yml}:
  *       name-addressed when the release carries the name pair, id-addressed when it does not, with
- *       no fallback between them (qits-883), each presenting this service's own bearer.
+ *       no fallback between them (qits-883), each presenting this service's own bearer;
+ *   <li>{@link #ARTIFACTS} — {@code HttpArtifactPurge}'s purge of a decommissioned application's
+ *       published artifacts (qits-1941).
  * </ul>
  *
  * <p>The bus library qits-eventstream owns its catch-up and publish pact, so no events row is here.
@@ -308,8 +313,54 @@ public final class Contracts {
               (url, recorded) ->
                   declared(GitHostSources.at(url).read(byId(recorded.params()), recorded.params().get("rev")), recorded)));
 
+  // --- qits-artifacts --------------------------------------------------------------------------
+
+  static final GoldenMasters ARTIFACTS_MASTERS =
+      GoldenMasters.of("qits-artifacts-service", "qits-artifacts");
+
+  static final String AN_APPLICATION_WITH_PUBLISHED_ARTIFACTS =
+      "an application with published artifacts";
+
+  /**
+   * The decommission's purge (qits-1941): the application name in the path, the repositories in
+   * the body, and the {@code removed} list read whole. Its length is not pinned — a second purge
+   * answers it empty, and that is the same contract.
+   */
+  static final GoldenInteraction PURGE =
+      GoldenInteraction.of(
+              Trigger.operation("decommissionApplication"),
+              AN_APPLICATION_WITH_PUBLISHED_ARTIFACTS,
+              "purgeApplication")
+          .consumes(
+              "removed[].type", "removed[].repository", "removed[].name", "removed[].versions[]")
+          .anyLength("removed", "removed[].versions");
+
+  public static final Contract ARTIFACTS =
+      Contract.of(
+          ARTIFACTS_MASTERS,
+          Check.of(
+              HttpArtifactPurge.class,
+              "purge",
+              PURGE,
+              (url, recorded) -> {
+                List<ArtifactPurge.RemovedArtifact> removed =
+                    ArtifactPurges.at(url)
+                        .purge(
+                            recorded.params().get("application"),
+                            List.of(recorded.params().get("repository")));
+                // The length is not pinned, so the mock answers one element of the recorded shape;
+                // what the client owes is reading every field of it.
+                assertFalse(removed.isEmpty(), "the removed list is read");
+                for (ArtifactPurge.RemovedArtifact artifact : removed) {
+                  assertNotNull(artifact.type(), "type");
+                  assertNotNull(artifact.repository(), "repository");
+                  assertNotNull(artifact.name(), "name");
+                  assertFalse(artifact.versions().isEmpty(), "the versions are read");
+                }
+              }));
+
   /** Every contract this repository holds. */
   public static List<Contract> all() {
-    return List.of(IDP, GITHOST);
+    return List.of(IDP, GITHOST, ARTIFACTS);
   }
 }

@@ -99,6 +99,7 @@
              read by the consumer pacts. Moves like every internal pin. -->
         <qits.idp-golden-masters.version>2026.1027.165632</qits.idp-golden-masters.version>
         <qits.githost-golden-masters.version>2026.1020.204038</qits.githost-golden-masters.version>
+        <qits.artifacts-golden-masters.version>2026.1029.125556</qits.artifacts-golden-masters.version>
         <!-- THE CONSUMER PACTS ConsumerPactVerificationTest verifies (qits-1149): one jar per consumer
              that commits `pacts/<consumer>_qits-deployments-service.json`, test scope. Exact pins;
              qits-maintenance bumps each when its consumer releases a changed pact. -->
@@ -322,6 +323,13 @@
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-githost-golden-masters</artifactId>
                 <version>${qits.githost-golden-masters.version}</version>
+            </dependency>
+            <dependency>
+                <!-- qits-artifacts' recorded answers (the decommission's purge, qits-1941). Test
+                     scope: recordings, never code. -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-artifacts-golden-masters</artifactId>
+                <version>${qits.artifacts-golden-masters.version}</version>
             </dependency>
             <dependency>
                 <!-- Test scope at every declaration site: a consumer's pact, verified by

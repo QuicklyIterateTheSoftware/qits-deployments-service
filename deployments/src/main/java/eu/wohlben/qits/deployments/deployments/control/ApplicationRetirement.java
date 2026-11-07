@@ -2,14 +2,20 @@ package eu.wohlben.qits.deployments.deployments.control;
 
 import static eu.wohlben.qits.deployments.deployments.control.DeployService.CUTOVER_BUDGET;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.db.DbRetry;
+import eu.wohlben.qits.deployments.deployments.entity.PdDecommission;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentStatus;
+import eu.wohlben.qits.deployments.deployments.persistence.PdDecommissionRepository;
 import eu.wohlben.qits.deployments.deployments.persistence.PdDeploymentRepository;
+import eu.wohlben.qits.deployments.deployments.persistence.PdOwedReleaseRepository;
 import eu.wohlben.qits.deployments.environments.control.ApplicationKeys;
 import eu.wohlben.qits.deployments.environments.control.EnvironmentService;
 import eu.wohlben.qits.deployments.environments.control.PdIdentifiers;
 import eu.wohlben.qits.deployments.environments.control.PdNetworks;
+import eu.wohlben.qits.deployments.environments.error.BadGatewayException;
 import eu.wohlben.qits.deployments.environments.error.BadRequestException;
 import eu.wohlben.qits.deployments.environments.error.ConflictException;
 import eu.wohlben.qits.deployments.environments.error.NotFoundException;
@@ -20,6 +26,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.UUID;
 import org.jboss.logging.Logger;
 
 /**
@@ -57,10 +65,20 @@ import org.jboss.logging.Logger;
  *       re-reads such a row on the observation's cadence until the file answers. A retired
  *       application's spec is never going to answer, so leaving one would be a retry that runs
  *       forever against a git address nobody maintains;
- *   <li><b>nothing else.</b> Older terminal rows keep the word they earned. A retirement is not a
- *       rewrite of what happened, and a listing that showed six identical {@code DECOMMISSIONED}
- *       rows would have destroyed exactly the history this door refuses to delete.
+ *   <li><b>no other deployment row.</b> Older terminal rows keep the word they earned. A retirement
+ *       is not a rewrite of what happened, and a listing that showed six identical {@code
+ *       DECOMMISSIONED} rows would have destroyed exactly the history this door refuses to delete.
  * </ul>
+ *
+ * <p><b>Then the application's published artifacts are purged</b> (qits-1941): once the relabel
+ * has committed, one call to qits-artifacts ({@link ArtifactPurge}) with the application NAME and
+ * the repositories it was published from — the ones the caller named, and every repository a
+ * release of {@code qits/<name>} was accepted from ({@code pd_owed_release}). Images, packages, docs
+ * and SBOMs of a retired name are nothing anybody can deploy again, so they are what "deletes
+ * nothing" never covered: this component's own rows still are not deleted. Each run is recorded in
+ * {@code pd_decommission}, purged or failed, in a transaction of its own. A failed purge leaves the
+ * relabel committed and answers 502; calling the door again retries both halves, and both are
+ * idempotent.
  *
  * <p><b>It runs on the request thread, and that is the difference from {@link
  * ApplicationScaling}.</b> Both of that class's levers issue a {@code docker service update} and
@@ -122,6 +140,10 @@ public class ApplicationRetirement {
       Set.of(PdDeploymentStatus.QUEUED, PdDeploymentStatus.STARTING);
 
   @Inject PdDeploymentRepository deployments;
+  @Inject PdOwedReleaseRepository owedReleases;
+  @Inject PdDecommissionRepository decommissions;
+  @Inject ArtifactPurge artifacts;
+  @Inject ObjectMapper json;
   @Inject DeploymentDriver driver;
   @Inject EnvironmentService environments;
   @Inject DeployService worker;
@@ -132,6 +154,7 @@ public class ApplicationRetirement {
    *
    * @param decommissionedIds every row this call settled, newest first: the current one, and any
    *     {@code SPEC_UNREADABLE} row whose retry it stopped
+   * @param removedArtifacts what qits-artifacts reported it purged; empty when nothing was left
    */
   public record Retired(
       String applicationId,
@@ -139,16 +162,33 @@ public class ApplicationRetirement {
       String environmentId,
       String currentDeploymentId,
       String previousStatus,
-      List<String> decommissionedIds) {}
+      List<String> decommissionedIds,
+      List<ArtifactPurge.RemovedArtifact> removedArtifacts) {
+
+    Retired withRemovedArtifacts(List<ArtifactPurge.RemovedArtifact> removed) {
+      return new Retired(
+          applicationId,
+          applicationName,
+          environmentId,
+          currentDeploymentId,
+          previousStatus,
+          decommissionedIds,
+          List.copyOf(removed));
+    }
+  }
 
   /**
-   * Retire one application: settle its current row and stop any retry still running for it.
+   * Retire one application: settle its current row, stop any retry still running for it, and purge
+   * its published artifacts.
    *
    * @param applicationId the derived key the read surface carries, {@code <environmentId>:<name>}
-   *     or {@code platform:<name>}
    * @param actor who asked, for the row's stamp; null reads as "an operator"
+   * @param repositories repositories the caller names for the purge, beside the ones the release
+   *     ledger knows; null or empty is none. Validated before anything is written.
+   * @throws BadGatewayException when the purge failed — the relabel is committed by then, and the
+   *     failed run is recorded
    */
-  public Retired decommission(String applicationId, String actor) {
+  public Retired decommission(String applicationId, String actor, List<String> repositories) {
     ApplicationKeys.Key key =
         ApplicationKeys.parse(applicationId)
             .orElseThrow(
@@ -160,6 +200,12 @@ public class ApplicationRetirement {
                             + " platform:<name> for an application on no tier"));
     // The name reaches a query — checked where every other stored identifier is, at the boundary.
     PdIdentifiers.requireName(key.applicationName(), "application name");
+    // The body's names too, and before the relabel: a bad one is a 400 that wrote nothing, rather
+    // than a committed relabel followed by a purge qits-artifacts refuses.
+    List<String> asked = repositories == null ? List.of() : repositories;
+    for (String repository : asked) {
+      PdIdentifiers.requireName(repository, "repository name");
+    }
 
     String stamp =
         "[decommissioned by "
@@ -177,7 +223,96 @@ public class ApplicationRetirement {
     LOG.infof(
         "Decommissioned %s: %d row(s) settled, the current one was %s",
         applicationId, retired.decommissionedIds().size(), retired.previousStatus());
-    return retired;
+    return purge(retired, actor, asked);
+  }
+
+  /**
+   * The second half, after the relabel has committed: one purge call, then the run's row.
+   *
+   * <p>Outside any transaction on purpose — the call is a network round trip, and holding a
+   * connection across it would be holding the relabel's outcome hostage to qits-artifacts. The row
+   * is written either way, so a failure is on record and not only in a log.
+   */
+  private Retired purge(Retired retired, String actor, List<String> asked) {
+    String name = retired.applicationName();
+    List<String> repositories = repositoriesToPurge(name, asked);
+    List<ArtifactPurge.RemovedArtifact> removed;
+    try {
+      removed = artifacts.purge(name, repositories);
+    } catch (RuntimeException failure) {
+      String detail = failure.getMessage() == null ? failure.toString() : failure.getMessage();
+      record(retired, actor, repositories, PdDecommission.PurgeOutcome.FAILED, null, detail);
+      LOG.warnf(
+          "Decommissioned %s, but its published artifacts were not purged: %s",
+          retired.applicationId(), detail);
+      throw new BadGatewayException(
+          retired.applicationId()
+              + " is decommissioned, but purging its published artifacts failed: "
+              + detail
+              + " — call decommission again to retry the purge",
+          failure);
+    }
+    record(retired, actor, repositories, PdDecommission.PurgeOutcome.PURGED, removed, null);
+    LOG.infof(
+        "Purged %d published package(s) of %s from qits-artifacts (repositories %s)",
+        removed.size(), name, repositories);
+    return retired.withRemovedArtifacts(removed);
+  }
+
+  /**
+   * The caller's repositories and every repository the release ledger accepted a {@code
+   * qits/<name>} release from, deduplicated and sorted. A stored name that would not pass the
+   * door's own check is left out with a WARN rather than handed to a purge that would refuse the
+   * whole request over it.
+   */
+  private List<String> repositoriesToPurge(String applicationName, List<String> asked) {
+    TreeSet<String> all = new TreeSet<>(asked);
+    List<String> owed =
+        QuarkusTransaction.requiringNew()
+            .call(() -> owedReleases.repositoryNamesOfPackage("qits/" + applicationName));
+    for (String repository : owed) {
+      try {
+        all.add(PdIdentifiers.requireName(repository, "repository name"));
+      } catch (BadRequestException unusable) {
+        LOG.warnf(
+            "Leaving the stored repository name '%s' of %s out of the purge: it is not a"
+                + " repository name",
+            repository, applicationName);
+      }
+    }
+    return List.copyOf(all);
+  }
+
+  /**
+   * The run's row, in a transaction of its own. Not retried: it is an insert, and a commit whose
+   * outcome a lost connection hid would be written twice (AGENTS.md, "The worker").
+   */
+  private void record(
+      Retired retired,
+      String actor,
+      List<String> repositories,
+      PdDecommission.PurgeOutcome outcome,
+      List<ArtifactPurge.RemovedArtifact> removed,
+      String failureDetail) {
+    PdDecommission row = new PdDecommission();
+    row.id = UUID.randomUUID();
+    row.applicationName = retired.applicationName();
+    row.environmentId = retired.environmentId();
+    row.actor = actor;
+    row.decommissionedAt = Instant.now();
+    row.repositories = asJson(repositories);
+    row.purgeOutcome = outcome;
+    row.removed = removed == null ? null : asJson(removed);
+    row.failureDetail = failureDetail;
+    QuarkusTransaction.requiringNew().run(() -> decommissions.persist(row));
+  }
+
+  private String asJson(Object value) {
+    try {
+      return json.writeValueAsString(value);
+    } catch (JsonProcessingException e) {
+      throw new IllegalStateException("could not write " + value + " as JSON", e);
+    }
   }
 
   /**
@@ -244,7 +379,8 @@ public class ApplicationRetirement {
         current.environmentId,
         current.id,
         previous,
-        List.copyOf(settled));
+        List.copyOf(settled),
+        List.of());
   }
 
   /**

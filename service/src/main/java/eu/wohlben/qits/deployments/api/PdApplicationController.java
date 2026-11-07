@@ -1,7 +1,10 @@
 package eu.wohlben.qits.deployments.api;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.deployments.deployments.control.ApplicationRetirement;
 import eu.wohlben.qits.deployments.deployments.control.ApplicationScaling;
+import eu.wohlben.qits.deployments.deployments.control.ArtifactPurge;
 import eu.wohlben.qits.deployments.environments.control.ServiceCatalog;
 import eu.wohlben.qits.deployments.environments.dto.PdApplicationDto;
 import eu.wohlben.qits.deployments.environments.error.BadRequestException;
@@ -19,6 +22,9 @@ import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.SecurityContext;
 import java.util.List;
 import org.eclipse.microprofile.openapi.annotations.Operation;
+import org.eclipse.microprofile.openapi.annotations.media.Content;
+import org.eclipse.microprofile.openapi.annotations.media.Schema;
+import org.eclipse.microprofile.openapi.annotations.parameters.RequestBody;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 
 /**
@@ -77,6 +83,7 @@ public class PdApplicationController {
   @Inject PdReadPatience reads;
   @Inject ApplicationScaling scaling;
   @Inject ApplicationRetirement retirement;
+  @Inject ObjectMapper json;
 
   public record ListApplicationsResponse(List<PdApplicationDto> applications) {}
 
@@ -106,7 +113,8 @@ public class PdApplicationController {
    * because it is the only place that word survives at all.
    *
    * <p>{@code decommissionedIds} is every row this call wrote, newest first: the current one, and
-   * any {@code SPEC_UNREADABLE} row whose retry it stopped.
+   * any {@code SPEC_UNREADABLE} row whose retry it stopped. {@code removedArtifacts} is what
+   * qits-artifacts reported it purged (qits-1941) — empty on a second call, when nothing was left.
    */
   public record RetirementResponse(
       String applicationId,
@@ -114,7 +122,15 @@ public class PdApplicationController {
       String environmentId,
       String currentDeploymentId,
       String previousStatus,
-      List<String> decommissionedIds) {}
+      List<String> decommissionedIds,
+      List<ArtifactPurge.RemovedArtifact> removedArtifacts) {}
+
+  /**
+   * What a decommission may name beside what the release ledger knows: the repositories whose
+   * published artifacts are the application's too (qits-1941). Optional — an empty POST is the same
+   * request with none.
+   */
+  public record DecommissionRequest(List<String> repositories) {}
 
   /**
    * What a retirement with no successor resolved and queued — never an outcome, because nothing has
@@ -209,25 +225,41 @@ public class PdApplicationController {
    * that explains them; what changes is the word on the current one and a stamp above that text.
    * See {@link ApplicationRetirement}, which argues the whole shape, including why the catalogue row
    * is left to {@code DELETE /services/{name}}.
+   *
+   * <p><b>Then its published artifacts are purged</b> (qits-1941): one call to qits-artifacts with
+   * the application name and the repositories it was published from — the body's, and every one
+   * the release ledger accepted a {@code qits/<name>} release from. The answer names what went. A
+   * purge that fails is a 502 with the relabel already committed; calling the door again retries.
    */
   @POST
   @Path("/{applicationId}/decommission")
-  @Operation(operationId = "decommissionApplication", summary = "Retire an application — its current row becomes DECOMMISSIONED, nothing is deleted")
-  @APIResponse(responseCode = "200", description = "Retired; the rows it settled are named")
-  @APIResponse(responseCode = "400", description = "Not an application id")
+  @Operation(operationId = "decommissionApplication", summary = "Retire an application — its current row becomes DECOMMISSIONED and its published artifacts are purged")
+  @APIResponse(responseCode = "200", description = "Retired; the rows it settled and the artifacts it purged are named")
+  @APIResponse(responseCode = "400", description = "Not an application id, or a repository that is not a repository name")
   @APIResponse(responseCode = "404", description = "Nothing has ever been deployed for this application")
   @APIResponse(responseCode = "409", description = "It is still deployed, or the deploy worker still has work for it")
+  @APIResponse(responseCode = "502", description = "Retired, but qits-artifacts could not purge its artifacts; call again to retry")
   public RetirementResponse decommission(
-      @PathParam("applicationId") String applicationId, @Context SecurityContext security) {
+      @PathParam("applicationId") String applicationId,
+      @RequestBody(
+              required = false,
+              description = "Repositories to purge beside the ones the release ledger knows; may be omitted",
+              content =
+                  @Content(
+                      mediaType = MediaType.APPLICATION_JSON,
+                      schema = @Schema(implementation = DecommissionRequest.class)))
+          String body,
+      @Context SecurityContext security) {
     ApplicationRetirement.Retired retired =
-        retirement.decommission(applicationId, actor(security));
+        retirement.decommission(applicationId, actor(security), repositoriesIn(body));
     return new RetirementResponse(
         retired.applicationId(),
         retired.applicationName(),
         retired.environmentId(),
         retired.currentDeploymentId(),
         retired.previousStatus(),
-        retired.decommissionedIds());
+        retired.decommissionedIds(),
+        retired.removedArtifacts());
   }
 
   /**
@@ -266,6 +298,26 @@ public class PdApplicationController {
                 queued.deploymentId(),
                 queued.previousStatus()))
         .build();
+  }
+
+  /**
+   * The optional body's repositories, or null for none. Read by hand from a {@code String} rather
+   * than bound to {@link DecommissionRequest}, because a bound entity makes the door 415 a request
+   * with no {@code Content-Type} — and the empty POST every existing caller sends is exactly that.
+   */
+  private List<String> repositoriesIn(String body) {
+    if (body == null || body.isBlank()) {
+      return null;
+    }
+    DecommissionRequest request;
+    try {
+      request = json.readValue(body, DecommissionRequest.class);
+    } catch (JsonProcessingException wrong) {
+      throw new BadRequestException(
+          "the decommission body must be {\"repositories\":[\"<repository>\",…]} or absent: "
+              + wrong.getOriginalMessage());
+    }
+    return request == null ? null : request.repositories();
   }
 
   private static Response accepted(ApplicationScaling.Accepted queued) {

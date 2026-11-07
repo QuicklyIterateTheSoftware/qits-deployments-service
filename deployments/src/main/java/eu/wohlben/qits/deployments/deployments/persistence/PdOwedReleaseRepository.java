@@ -47,6 +47,21 @@ public class PdOwedReleaseRepository implements PanacheRepositoryBase<PdOwedRele
   }
 
   /**
+   * Every repository name a release of this package was accepted from, settled or not, distinct
+   * and sorted; rows that carry no name are left out. What a decommission adds to the repositories
+   * it asks qits-artifacts to purge (qits-1941).
+   */
+  public List<String> repositoryNamesOfPackage(String packageName) {
+    return getEntityManager()
+        .createQuery(
+            "select distinct o.repoName from PdOwedRelease o where o.packageName = :packageName"
+                + " and o.repoName is not null order by o.repoName",
+            String.class)
+        .setParameter("packageName", packageName)
+        .getResultList();
+  }
+
+  /**
    * Move every obligation of one repository onto its new public name, and answer how many moved.
    *
    * <p><b>A bulk JPQL update rather than a load-and-set loop</b>, because it is a statement about a

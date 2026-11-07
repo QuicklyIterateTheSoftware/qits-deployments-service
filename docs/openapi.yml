@@ -39,6 +39,13 @@ components:
           items:
             $ref: "#/components/schemas/ApplicationSpec"
           deprecated: true
+    DecommissionRequest:
+      type: object
+      properties:
+        repositories:
+          type: array
+          items:
+            type: string
     DeploymentRequestResponse:
       type: object
       properties:
@@ -357,6 +364,19 @@ components:
           type: string
         secret:
           type: boolean
+    RemovedArtifact:
+      type: object
+      properties:
+        type:
+          type: string
+        repository:
+          type: string
+        name:
+          type: string
+        versions:
+          type: array
+          items:
+            type: string
     RetirementResponse:
       type: object
       properties:
@@ -374,6 +394,10 @@ components:
           type: array
           items:
             type: string
+        removedArtifacts:
+          type: array
+          items:
+            $ref: "#/components/schemas/RemovedArtifact"
     ScaleRequest:
       type: object
       properties:
@@ -458,8 +482,8 @@ paths:
         - qits:agent
   /deployments/api/applications/{applicationId}/decommission:
     post:
-      summary: "Retire an application — its current row becomes DECOMMISSIONED, nothing\
-        \ is deleted"
+      summary: Retire an application — its current row becomes DECOMMISSIONED and
+        its published artifacts are purged
       operationId: decommissionApplication
       parameters:
       - name: applicationId
@@ -467,20 +491,33 @@ paths:
         required: true
         schema:
           type: string
+      requestBody:
+        description: Repositories to purge beside the ones the release ledger knows;
+          may be omitted
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecommissionRequest"
+        required: false
       responses:
         "200":
-          description: Retired; the rows it settled are named
+          description: Retired; the rows it settled and the artifacts it purged are
+            named
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/RetirementResponse"
         "400":
-          description: Not an application id
+          description: "Not an application id, or a repository that is not a repository\
+            \ name"
         "404":
           description: Nothing has ever been deployed for this application
         "409":
           description: "It is still deployed, or the deploy worker still has work\
             \ for it"
+        "502":
+          description: "Retired, but qits-artifacts could not purge its artifacts;\
+            \ call again to retry"
         "401":
           description: Not Authorized
         "403":

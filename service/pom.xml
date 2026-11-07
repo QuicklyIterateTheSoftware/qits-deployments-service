@@ -253,7 +253,7 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <!-- qits-idp's and qits-githost's golden masters: the answers the
+            <!-- qits-idp's, qits-githost's and qits-artifacts' golden masters: the answers the
                  pacts bind. -->
             <groupId>${project.groupId}</groupId>
             <artifactId>qits-idp-golden-masters</artifactId>
@@ -262,6 +262,12 @@
         <dependency>
             <groupId>${project.groupId}</groupId>
             <artifactId>qits-githost-golden-masters</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- qits-artifacts' golden masters, for the decommission's purge row (qits-1941). -->
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-artifacts-golden-masters</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
