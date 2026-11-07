@@ -65,10 +65,10 @@
         <qits.auth-core.version>2026.1106.507</qits.auth-core.version>
         <!-- The platform's shared ArchUnit rules, published by qits-integrations-quarkus beside
              qits-auth-core. Test scope wherever entities live — see service/pom.xml. -->
-        <qits.arch-rules.version>2026.1106.507</qits.arch-rules.version>
+        <qits.arch-rules.version>2026.1107.191249</qits.arch-rules.version>
         <!-- The platform's database patience, published beside the two above: PatientPgDriver (the
              datasource's driver line) and DbRetry (the worker's brackets). -->
-        <qits.db-core.version>2026.1106.507</qits.db-core.version>
+        <qits.db-core.version>2026.1107.191249</qits.db-core.version>
         <!-- qits-http-core: QitsHttpClients.wrap puts a CLIENT span and X-Qits-Caller on every
              outbound java.net.http.HttpClient this repo builds to another qits service, the same
              way quarkus-opentelemetry already does for the REST client. Published by
