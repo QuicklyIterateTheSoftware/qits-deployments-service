@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.Test;
 
@@ -33,6 +34,8 @@ class GatedGoldenMasterRecordingTest {
     Path dir = GoldenFiles.repositoryRoot().resolve("golden-masters");
     boolean update = GoldenFiles.updating();
     List<String> failures = new ArrayList<>();
+    Map<String, Map<String, String>> committedParams =
+        GoldenMasterRecordingTest.committedParams(dir.resolve("index.json"));
     for (Interaction interaction : GoldenMasterRecordingTest.INTERACTIONS) {
       if (!GoldenMasterRecordingTest.gated(interaction)) {
         continue;
@@ -42,7 +45,10 @@ class GatedGoldenMasterRecordingTest {
       try {
         recorded =
             GoldenMasterRecordingTest.call(
-                interaction, setup, GoldenMasterRecordingTest.GATED_HEADERS);
+                interaction,
+                setup,
+                GoldenMasterRecordingTest.GATED_HEADERS,
+                committedParams.getOrDefault(ProviderStates.slug(interaction.state()), Map.of()));
       } finally {
         states.cleanUp();
       }

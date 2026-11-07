@@ -69,7 +69,15 @@ public class ProviderStates {
   /** The version the rollback state ships second, so {@link #VERSION} is its rollback target. */
   static final String NEXT_VERSION = "2026.102.120000";
 
-  /** What a state hands back: its parameters, keys sorted, and its unique tokens. */
+  /**
+   * What a state hands back: its parameters, keys sorted, and its unique tokens.
+   *
+   * @param params the state's parameters, keys sorted — what a pact {@code @State} method returns.
+   *     A UUID's frozen number in a param — the whole value or embedded in it — is sticky to the
+   *     committed {@code golden-masters/index.json} ({@link Freezer#seed(Map, Map)}): adding or
+   *     removing a param never renumbers the others
+   * @param uniqueTokens random tokens the state had to put into names to keep them unique
+   */
   public record Setup(Map<String, String> params, List<String> uniqueTokens) {}
 
   @Inject FakeDeploymentDriver driver;
