@@ -1,0 +1,1243 @@
+{
+  "formatVersion" : 1,
+  "application" : "qits-deployments",
+  "entities" : [
+    {
+      "entity" : "eu.wohlben.qits.deployments.deployments.entity.PdDecommission",
+      "table" : "pd_decommission",
+      "marking" : "domain",
+      "reason" : null,
+      "projectionOf" : null,
+      "knownGap" : "qits-1956",
+      "dtos" : [ ],
+      "operations" : [ ]
+    },
+    {
+      "entity" : "eu.wohlben.qits.deployments.deployments.entity.PdDeployment",
+      "table" : "pd_deployment",
+      "marking" : "domain",
+      "reason" : null,
+      "projectionOf" : null,
+      "knownGap" : null,
+      "dtos" : [
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdApplicationController$RetireResponse",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.control.ApplicationRetirement$Queued",
+          "site" : "PdApplicationController.retire(String, SecurityContext)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdApplicationController$RetirementResponse",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.control.ApplicationRetirement$Retired",
+          "site" : "PdApplicationController.decommission(String, String, SecurityContext)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdDeploymentController$ListDeploymentsResponse",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
+          "site" : "ListDeploymentsResponse.<init>(List)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$DeploymentRequestResponse",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "PdDeploymentRequestController.byId(String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$ListDeploymentRequestsResponse",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "PdDeploymentRequestController.listOf(List)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdPinController$ListPinsResponse",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.control.RollbackPins$Pin",
+          "site" : "PdPinController.list()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.ApplicationRetirement$Queued",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "ApplicationRetirement.retire(String, String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.ApplicationRetirement$Retired",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "ApplicationRetirement.settle(String, Key, String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$Accepted",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$Placed",
+          "site" : "ApplicationScaling.accepted(Placed, Integer)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$Placed",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "ApplicationScaling.resolve(String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.ArtifactPurge$RemovedArtifact",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.control.ApplicationRetirement$Retired",
+          "site" : "Retired.removedArtifacts()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.RollbackPins$Pin",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "RollbackPins.pins()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
+          "kind" : "mapper",
+          "via" : null,
+          "site" : "DeploymentMapper.toDto(PdDeployment)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentRequestDto",
+          "kind" : "mapper",
+          "via" : null,
+          "site" : "DeploymentMapper.toDto(PdDeploymentRequest, PdDeployment)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdPinDto",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.control.RollbackPins$Pin",
+          "site" : "PdPinController.list()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "SettingsPreview.preview(String, String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto$PreviewChange",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto",
+          "site" : "PdSettingsPreviewDto.changed()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto$PreviewEntry",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto",
+          "site" : "PdSettingsPreviewDto.added()"
+        }
+      ],
+      "operations" : [
+        {
+          "operationId" : "decommissionApplication",
+          "method" : "POST",
+          "path" : "/applications/{applicationId}/decommission",
+          "dto" : "eu.wohlben.qits.deployments.api.PdApplicationController$RetirementResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "decommissionApplication",
+          "method" : "POST",
+          "path" : "/applications/{applicationId}/decommission",
+          "dto" : "eu.wohlben.qits.deployments.deployments.control.ArtifactPurge$RemovedArtifact",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "getDeploymentRequest",
+          "method" : "GET",
+          "path" : "/deployment-requests/{id}",
+          "dto" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$DeploymentRequestResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "getDeploymentRequest",
+          "method" : "GET",
+          "path" : "/deployment-requests/{id}",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "getDeploymentRequest",
+          "method" : "GET",
+          "path" : "/deployment-requests/{id}",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentRequestDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listDeploymentRequests",
+          "method" : "GET",
+          "path" : "/deployment-requests",
+          "dto" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$ListDeploymentRequestsResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listDeploymentRequests",
+          "method" : "GET",
+          "path" : "/deployment-requests",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentRequestDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listDeployments",
+          "method" : "GET",
+          "path" : "/deployments",
+          "dto" : "eu.wohlben.qits.deployments.api.PdDeploymentController$ListDeploymentsResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listDeployments",
+          "method" : "GET",
+          "path" : "/deployments",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listPins",
+          "method" : "GET",
+          "path" : "/pins",
+          "dto" : "eu.wohlben.qits.deployments.api.PdPinController$ListPinsResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listPins",
+          "method" : "GET",
+          "path" : "/pins",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdPinDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "previewSettings",
+          "method" : "GET",
+          "path" : "/settings/preview/{application}/{environment}",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "previewSettings",
+          "method" : "GET",
+          "path" : "/settings/preview/{application}/{environment}",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto$PreviewChange",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "previewSettings",
+          "method" : "GET",
+          "path" : "/settings/preview/{application}/{environment}",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto$PreviewEntry",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "restartApplication",
+          "method" : "POST",
+          "path" : "/applications/{applicationId}/restart",
+          "dto" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$Accepted",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "retireApplication",
+          "method" : "POST",
+          "path" : "/applications/{applicationId}/retire",
+          "dto" : "eu.wohlben.qits.deployments.api.PdApplicationController$RetireResponse",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "retireApplication",
+          "method" : "POST",
+          "path" : "/applications/{applicationId}/retire",
+          "dto" : "eu.wohlben.qits.deployments.deployments.control.ApplicationRetirement$Queued",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "scaleApplication",
+          "method" : "POST",
+          "path" : "/applications/{applicationId}/scale",
+          "dto" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$Accepted",
+          "kind" : "body"
+        }
+      ]
+    },
+    {
+      "entity" : "eu.wohlben.qits.deployments.deployments.entity.PdDeploymentRequest",
+      "table" : "pd_deployment_request",
+      "marking" : "domain",
+      "reason" : null,
+      "projectionOf" : null,
+      "knownGap" : null,
+      "dtos" : [
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$DeploymentRequestResponse",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "PdDeploymentRequestController.byId(String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$ListDeploymentRequestsResponse",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "PdDeploymentRequestController.listOf(List)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$DeploymentRequestResponse",
+          "site" : "DeploymentRequestResponse.deployment()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentRequestDto",
+          "kind" : "mapper",
+          "via" : null,
+          "site" : "DeploymentMapper.toDto(PdDeploymentRequest, PdDeployment)"
+        }
+      ],
+      "operations" : [
+        {
+          "operationId" : "getDeploymentRequest",
+          "method" : "GET",
+          "path" : "/deployment-requests/{id}",
+          "dto" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$DeploymentRequestResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "getDeploymentRequest",
+          "method" : "GET",
+          "path" : "/deployment-requests/{id}",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "getDeploymentRequest",
+          "method" : "GET",
+          "path" : "/deployment-requests/{id}",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentRequestDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listDeploymentRequests",
+          "method" : "GET",
+          "path" : "/deployment-requests",
+          "dto" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$ListDeploymentRequestsResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listDeploymentRequests",
+          "method" : "GET",
+          "path" : "/deployment-requests",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentRequestDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listDeployments",
+          "method" : "GET",
+          "path" : "/deployments",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
+          "kind" : "returns"
+        }
+      ]
+    },
+    {
+      "entity" : "eu.wohlben.qits.deployments.deployments.entity.PdOwedRelease",
+      "table" : "pd_owed_release",
+      "marking" : "domain",
+      "reason" : null,
+      "projectionOf" : null,
+      "knownGap" : null,
+      "dtos" : [
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.RepositoryRef",
+          "kind" : "mapper",
+          "via" : null,
+          "site" : "ReleaseAcceptance.owedOf(PdOwedRelease)"
+        }
+      ],
+      "operations" : [
+        {
+          "operationId" : "softwareReleased",
+          "method" : "POST",
+          "path" : "/events/software-released",
+          "dto" : "eu.wohlben.qits.deployments.deployments.control.RepositoryRef",
+          "kind" : "body"
+        }
+      ]
+    },
+    {
+      "entity" : "eu.wohlben.qits.deployments.deployments.entity.PdResource",
+      "table" : "pd_resource",
+      "marking" : "domain",
+      "reason" : null,
+      "projectionOf" : null,
+      "knownGap" : null,
+      "dtos" : [
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdIdpClientClaimController$ListIdpClientClaimsResponse",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "PdIdpClientClaimController.list()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdIdpClientClaimDto",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "PdIdpClientClaimController.list()"
+        }
+      ],
+      "operations" : [
+        {
+          "operationId" : "listIdpClientClaims",
+          "method" : "GET",
+          "path" : "/claims/idp-clients",
+          "dto" : "eu.wohlben.qits.deployments.api.PdIdpClientClaimController$ListIdpClientClaimsResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listIdpClientClaims",
+          "method" : "GET",
+          "path" : "/claims/idp-clients",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdIdpClientClaimDto",
+          "kind" : "returns"
+        }
+      ]
+    },
+    {
+      "entity" : "eu.wohlben.qits.deployments.deployments.entity.PdSetting",
+      "table" : "pd_setting",
+      "marking" : "domain",
+      "reason" : null,
+      "projectionOf" : null,
+      "knownGap" : null,
+      "dtos" : [
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdSettingController$ListSettingsResponse",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingDto",
+          "site" : "ListSettingsResponse.<init>(List)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingDto",
+          "kind" : "mapper",
+          "via" : null,
+          "site" : "Settings.toDto(PdSetting)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "SettingsPreview.preview(String, String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto$PreviewChange",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto",
+          "site" : "PdSettingsPreviewDto.changed()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto$PreviewEntry",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto",
+          "site" : "PdSettingsPreviewDto.added()"
+        }
+      ],
+      "operations" : [
+        {
+          "operationId" : "listSettings",
+          "method" : "GET",
+          "path" : "/settings",
+          "dto" : "eu.wohlben.qits.deployments.api.PdSettingController$ListSettingsResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listSettings",
+          "method" : "GET",
+          "path" : "/settings",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "previewSettings",
+          "method" : "GET",
+          "path" : "/settings/preview/{application}/{environment}",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "previewSettings",
+          "method" : "GET",
+          "path" : "/settings/preview/{application}/{environment}",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto$PreviewChange",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "previewSettings",
+          "method" : "GET",
+          "path" : "/settings/preview/{application}/{environment}",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto$PreviewEntry",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "putSetting",
+          "method" : "PUT",
+          "path" : "/settings/{application}/{environment}/{key}",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingDto",
+          "kind" : "returns"
+        }
+      ]
+    },
+    {
+      "entity" : "eu.wohlben.qits.deployments.environments.entity.PdEnvironment",
+      "table" : "pd_environment",
+      "marking" : "domain",
+      "reason" : null,
+      "projectionOf" : null,
+      "knownGap" : null,
+      "dtos" : [
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdApplicationController$RetireResponse",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.control.ApplicationRetirement$Queued",
+          "site" : "PdApplicationController.retire(String, SecurityContext)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdDeploymentController$ListDeploymentsResponse",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "PdDeploymentController.list(String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$ListDeploymentRequestsResponse",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "PdDeploymentRequestController.list(String, String, String, String, String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdEnvironmentController$EnvironmentResponse",
+          "kind" : "mapper",
+          "via" : null,
+          "site" : "PdEnvironmentController.toResponse(PdEnvironment)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdEnvironmentController$ListEnvironmentsResponse",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.environments.dto.PdEnvironmentDto",
+          "site" : "ListEnvironmentsResponse.<init>(List)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdServiceController$ListServicesResponse",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$LinkedService",
+          "site" : "PdServiceController.list()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdServiceController$ServiceResponse",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$LinkedService",
+          "site" : "PdServiceController.upsert(String, UpsertServiceRequest)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdServiceController$UpsertServiceRequest",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$LinkedService",
+          "site" : "PdServiceController.upsert(String, UpsertServiceRequest)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.ApplicationRetirement$Queued",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "ApplicationRetirement.retire(String, String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.api.PdDeploymentController$ListDeploymentsResponse",
+          "site" : "ListDeploymentsResponse.deployments()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentRequestDto",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$ListDeploymentRequestsResponse",
+          "site" : "ListDeploymentRequestsResponse.deploymentRequests()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "SettingsPreview.preview(String, String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto$PreviewChange",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto",
+          "site" : "PdSettingsPreviewDto.changed()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto$PreviewEntry",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto",
+          "site" : "PdSettingsPreviewDto.added()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$ApplicationView",
+          "kind" : "mapper",
+          "via" : null,
+          "site" : "ServiceCatalog.applicationsOf(PdEnvironment)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$LinkedService",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "ServiceCatalog.upsert(Upsert, UUID)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$Upsert",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "DeployService.register(String, DeploymentSpec, UUID)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$UpsertResult",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "ServiceCatalog.upsert(Upsert, UUID)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$ApplicationView",
+          "site" : "EnvironmentMapper.toDto(ApplicationView)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.dto.PdEnvironmentDto",
+          "kind" : "mapper",
+          "via" : null,
+          "site" : "EnvironmentMapper.toDto(PdEnvironment)"
+        }
+      ],
+      "operations" : [
+        {
+          "operationId" : "createEnvironment",
+          "method" : "POST",
+          "path" : "/environments",
+          "dto" : "eu.wohlben.qits.deployments.api.PdEnvironmentController$EnvironmentResponse",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "createEnvironment",
+          "method" : "POST",
+          "path" : "/environments",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "createEnvironment",
+          "method" : "POST",
+          "path" : "/environments",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdEnvironmentDto",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "getDeploymentRequest",
+          "method" : "GET",
+          "path" : "/deployment-requests/{id}",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "getDeploymentRequest",
+          "method" : "GET",
+          "path" : "/deployment-requests/{id}",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentRequestDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "getEnvironment",
+          "method" : "GET",
+          "path" : "/environments/{environmentId}",
+          "dto" : "eu.wohlben.qits.deployments.api.PdEnvironmentController$EnvironmentResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "getEnvironment",
+          "method" : "GET",
+          "path" : "/environments/{environmentId}",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "getEnvironment",
+          "method" : "GET",
+          "path" : "/environments/{environmentId}",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdEnvironmentDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listApplications",
+          "method" : "GET",
+          "path" : "/applications",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listDeploymentRequests",
+          "method" : "GET",
+          "path" : "/deployment-requests",
+          "dto" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$ListDeploymentRequestsResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listDeploymentRequests",
+          "method" : "GET",
+          "path" : "/deployment-requests",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentRequestDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listDeployments",
+          "method" : "GET",
+          "path" : "/deployments",
+          "dto" : "eu.wohlben.qits.deployments.api.PdDeploymentController$ListDeploymentsResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listDeployments",
+          "method" : "GET",
+          "path" : "/deployments",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listEnvironments",
+          "method" : "GET",
+          "path" : "/environments",
+          "dto" : "eu.wohlben.qits.deployments.api.PdEnvironmentController$ListEnvironmentsResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listEnvironments",
+          "method" : "GET",
+          "path" : "/environments",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listEnvironments",
+          "method" : "GET",
+          "path" : "/environments",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdEnvironmentDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listServices",
+          "method" : "GET",
+          "path" : "/services",
+          "dto" : "eu.wohlben.qits.deployments.api.PdServiceController$ListServicesResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "previewSettings",
+          "method" : "GET",
+          "path" : "/settings/preview/{application}/{environment}",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "previewSettings",
+          "method" : "GET",
+          "path" : "/settings/preview/{application}/{environment}",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto$PreviewChange",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "previewSettings",
+          "method" : "GET",
+          "path" : "/settings/preview/{application}/{environment}",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdSettingsPreviewDto$PreviewEntry",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "retireApplication",
+          "method" : "POST",
+          "path" : "/applications/{applicationId}/retire",
+          "dto" : "eu.wohlben.qits.deployments.api.PdApplicationController$RetireResponse",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "retireApplication",
+          "method" : "POST",
+          "path" : "/applications/{applicationId}/retire",
+          "dto" : "eu.wohlben.qits.deployments.deployments.control.ApplicationRetirement$Queued",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "updateEnvironment",
+          "method" : "PATCH",
+          "path" : "/environments/{environmentId}",
+          "dto" : "eu.wohlben.qits.deployments.api.PdEnvironmentController$EnvironmentResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "updateEnvironment",
+          "method" : "PATCH",
+          "path" : "/environments/{environmentId}",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "updateEnvironment",
+          "method" : "PATCH",
+          "path" : "/environments/{environmentId}",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdEnvironmentDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "upsertService",
+          "method" : "PUT",
+          "path" : "/services/{name}",
+          "dto" : "eu.wohlben.qits.deployments.api.PdServiceController$ServiceResponse",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "upsertService",
+          "method" : "PUT",
+          "path" : "/services/{name}",
+          "dto" : "eu.wohlben.qits.deployments.api.PdServiceController$UpsertServiceRequest",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "upsertService",
+          "method" : "PUT",
+          "path" : "/services/{name}",
+          "dto" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$LinkedService",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "upsertService",
+          "method" : "PUT",
+          "path" : "/services/{name}",
+          "dto" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$Upsert",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "upsertService",
+          "method" : "PUT",
+          "path" : "/services/{name}",
+          "dto" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$UpsertResult",
+          "kind" : "body"
+        }
+      ]
+    },
+    {
+      "entity" : "eu.wohlben.qits.deployments.environments.entity.PdService",
+      "table" : "pd_service",
+      "marking" : "domain",
+      "reason" : null,
+      "projectionOf" : null,
+      "knownGap" : null,
+      "dtos" : [
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdApplicationController$ListApplicationsResponse",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "site" : "ListApplicationsResponse.<init>(List)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdEnvironmentController$ListLinksResponse",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.environments.dto.PdLinkedServiceDto",
+          "site" : "ListLinksResponse.<init>(List)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdServiceController$ListServicesResponse",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "PdServiceController.list()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdServiceController$ServiceResponse",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "PdServiceController.upsert(String, UpsertServiceRequest)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdServiceController$UpsertServiceRequest",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "PdServiceController.upsert(String, UpsertServiceRequest)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$ApplicationView",
+          "kind" : "factory",
+          "via" : null,
+          "site" : "ApplicationView.<init>(PdService, String, String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$LinkedService",
+          "kind" : "factory",
+          "via" : null,
+          "site" : "LinkedService.<init>(PdService, List)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$Upsert",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "PdServiceController.upsert(String, UpsertServiceRequest)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$UpsertResult",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "ServiceCatalog.upsert(Upsert, UUID)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "EnvironmentMapper.toDto(ApplicationView)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.dto.PdEnvironmentDto",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$ApplicationView",
+          "site" : "EnvironmentMapper.toDto(PdEnvironment, List)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.dto.PdLinkedServiceDto",
+          "kind" : "mapper",
+          "via" : null,
+          "site" : "EnvironmentMapper.toLinkDto(PdService)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.dto.PdServiceDto",
+          "kind" : "mapper",
+          "via" : null,
+          "site" : "EnvironmentMapper.toDto(PdService, List)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.entity.PdService",
+          "kind" : "direct",
+          "via" : null,
+          "site" : "PdServiceController.upsert(String, UpsertServiceRequest)"
+        }
+      ],
+      "operations" : [
+        {
+          "operationId" : "createEnvironment",
+          "method" : "POST",
+          "path" : "/environments",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "createEnvironment",
+          "method" : "POST",
+          "path" : "/environments",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdEnvironmentDto",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "getEnvironment",
+          "method" : "GET",
+          "path" : "/environments/{environmentId}",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "getEnvironment",
+          "method" : "GET",
+          "path" : "/environments/{environmentId}",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdEnvironmentDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listApplications",
+          "method" : "GET",
+          "path" : "/applications",
+          "dto" : "eu.wohlben.qits.deployments.api.PdApplicationController$ListApplicationsResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listApplications",
+          "method" : "GET",
+          "path" : "/applications",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listEnvironmentLinks",
+          "method" : "GET",
+          "path" : "/environments/{environmentId}/links",
+          "dto" : "eu.wohlben.qits.deployments.api.PdEnvironmentController$ListLinksResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listEnvironmentLinks",
+          "method" : "GET",
+          "path" : "/environments/{environmentId}/links",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdLinkedServiceDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listEnvironments",
+          "method" : "GET",
+          "path" : "/environments",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listEnvironments",
+          "method" : "GET",
+          "path" : "/environments",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdEnvironmentDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listServices",
+          "method" : "GET",
+          "path" : "/services",
+          "dto" : "eu.wohlben.qits.deployments.api.PdServiceController$ListServicesResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listServices",
+          "method" : "GET",
+          "path" : "/services",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdServiceDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "updateEnvironment",
+          "method" : "PATCH",
+          "path" : "/environments/{environmentId}",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "updateEnvironment",
+          "method" : "PATCH",
+          "path" : "/environments/{environmentId}",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdEnvironmentDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "upsertService",
+          "method" : "PUT",
+          "path" : "/services/{name}",
+          "dto" : "eu.wohlben.qits.deployments.api.PdServiceController$ServiceResponse",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "upsertService",
+          "method" : "PUT",
+          "path" : "/services/{name}",
+          "dto" : "eu.wohlben.qits.deployments.api.PdServiceController$UpsertServiceRequest",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "upsertService",
+          "method" : "PUT",
+          "path" : "/services/{name}",
+          "dto" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$LinkedService",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "upsertService",
+          "method" : "PUT",
+          "path" : "/services/{name}",
+          "dto" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$Upsert",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "upsertService",
+          "method" : "PUT",
+          "path" : "/services/{name}",
+          "dto" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$UpsertResult",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "upsertService",
+          "method" : "PUT",
+          "path" : "/services/{name}",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdServiceDto",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "upsertService",
+          "method" : "PUT",
+          "path" : "/services/{name}",
+          "dto" : "eu.wohlben.qits.deployments.environments.entity.PdService",
+          "kind" : "direct"
+        }
+      ]
+    },
+    {
+      "entity" : "eu.wohlben.qits.deployments.environments.entity.PdServiceLink",
+      "table" : "pd_service_link",
+      "marking" : "domain",
+      "reason" : null,
+      "projectionOf" : null,
+      "knownGap" : null,
+      "dtos" : [
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdServiceController$ListServicesResponse",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$LinkedService",
+          "site" : "PdServiceController.list()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdServiceController$ServiceResponse",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$LinkedService",
+          "site" : "PdServiceController.upsert(String, UpsertServiceRequest)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdServiceController$UpsertServiceRequest",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$LinkedService",
+          "site" : "PdServiceController.upsert(String, UpsertServiceRequest)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$ApplicationView",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "ServiceCatalog.applicationsOf(PdEnvironment)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$LinkedService",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "ServiceCatalog.find(String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$Upsert",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$LinkedService",
+          "site" : "DeployService.register(String, DeploymentSpec, UUID)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$UpsertResult",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "ServiceCatalog.upsert(Upsert, UUID)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$ApplicationView",
+          "site" : "EnvironmentMapper.toDto(ApplicationView)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.environments.dto.PdEnvironmentDto",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$ApplicationView",
+          "site" : "EnvironmentMapper.toDto(PdEnvironment, List)"
+        }
+      ],
+      "operations" : [
+        {
+          "operationId" : "createEnvironment",
+          "method" : "POST",
+          "path" : "/environments",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "createEnvironment",
+          "method" : "POST",
+          "path" : "/environments",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdEnvironmentDto",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "getEnvironment",
+          "method" : "GET",
+          "path" : "/environments/{environmentId}",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "getEnvironment",
+          "method" : "GET",
+          "path" : "/environments/{environmentId}",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdEnvironmentDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listApplications",
+          "method" : "GET",
+          "path" : "/applications",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listEnvironments",
+          "method" : "GET",
+          "path" : "/environments",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listEnvironments",
+          "method" : "GET",
+          "path" : "/environments",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdEnvironmentDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listServices",
+          "method" : "GET",
+          "path" : "/services",
+          "dto" : "eu.wohlben.qits.deployments.api.PdServiceController$ListServicesResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "updateEnvironment",
+          "method" : "PATCH",
+          "path" : "/environments/{environmentId}",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdApplicationDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "updateEnvironment",
+          "method" : "PATCH",
+          "path" : "/environments/{environmentId}",
+          "dto" : "eu.wohlben.qits.deployments.environments.dto.PdEnvironmentDto",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "upsertService",
+          "method" : "PUT",
+          "path" : "/services/{name}",
+          "dto" : "eu.wohlben.qits.deployments.api.PdServiceController$ServiceResponse",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "upsertService",
+          "method" : "PUT",
+          "path" : "/services/{name}",
+          "dto" : "eu.wohlben.qits.deployments.api.PdServiceController$UpsertServiceRequest",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "upsertService",
+          "method" : "PUT",
+          "path" : "/services/{name}",
+          "dto" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$LinkedService",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "upsertService",
+          "method" : "PUT",
+          "path" : "/services/{name}",
+          "dto" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$Upsert",
+          "kind" : "body"
+        },
+        {
+          "operationId" : "upsertService",
+          "method" : "PUT",
+          "path" : "/services/{name}",
+          "dto" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$UpsertResult",
+          "kind" : "body"
+        }
+      ]
+    }
+  ]
+}
