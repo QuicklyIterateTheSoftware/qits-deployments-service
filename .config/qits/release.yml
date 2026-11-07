@@ -20,6 +20,8 @@ contracts:
     # GitHostSpecSource's blob reads of deployments.yml (qits-1149).
     qits-githost-service: { packages: [maven] }
     qits-idp-service: { packages: [maven] }
+    # HttpArtifactPurge's purge of a decommissioned application's published artifacts (qits-1941).
+    qits-artifacts-service: { packages: [maven] }
 # THE SITE IS SPELLED, AND IT NAMES THE COMPONENT. `true` derives it from the REPOSITORY name,
 # which would put the retired tier modifier in a storage id and then MOVE that id the day the
 # repository is renamed — a bundle's history stranded under a name nothing publishes to any

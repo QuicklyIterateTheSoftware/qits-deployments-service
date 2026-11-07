@@ -1,0 +1,158 @@
+{
+  "consumer": {
+    "name": "qits-deployments-service"
+  },
+  "interactions": [
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-artifacts-service",
+            "operationId": "purgeApplication"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "kind": "operation",
+            "operationId": "decommissionApplication"
+          }
+        }
+      },
+      "description": "decommissionApplication: purgeApplication",
+      "key": "113bd1b9",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "an application with published artifacts",
+          "params": {
+            "application": "contract-application",
+            "repository": "contract-application-service"
+          }
+        }
+      ],
+      "request": {
+        "body": {
+          "content": {
+            "repositories": [
+              "contract-application-service"
+            ]
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/artifacts/api/applications/${application}/purge",
+            "type": "ProviderState"
+          }
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "method": "POST",
+        "path": "/artifacts/api/applications/contract-application/purge"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "removed": [
+              {
+                "name": "@contracts/contract-application",
+                "repository": "docs",
+                "type": "docs",
+                "versions": [
+                  "2100.1.0"
+                ]
+              }
+            ]
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.removed": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 0
+                }
+              ]
+            },
+            "$.removed[*].name": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.removed[*].repository": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.removed[*].type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.removed[*].versions": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 0
+                }
+              ]
+            },
+            "$.removed[*].versions[*]": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "4.0"
+    },
+    "plugins": []
+  },
+  "provider": {
+    "name": "qits-artifacts-service"
+  }
+}
