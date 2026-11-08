@@ -97,7 +97,7 @@
         <pact.version>4.7.5</pact.version>
         <!-- THE PROVIDERS' GOLDEN MASTERS, test scope: what each provider records for its states,
              read by the consumer pacts. Moves like every internal pin. -->
-        <qits.idp-golden-masters.version>2026.1107.220215</qits.idp-golden-masters.version>
+        <qits.idp-golden-masters.version>2026.1108.62139</qits.idp-golden-masters.version>
         <qits.githost-golden-masters.version>2026.1020.204038</qits.githost-golden-masters.version>
         <qits.artifacts-golden-masters.version>2026.1107.150727</qits.artifacts-golden-masters.version>
         <!-- THE CONSUMER PACTS ConsumerPactVerificationTest verifies (qits-1149): one jar per consumer
