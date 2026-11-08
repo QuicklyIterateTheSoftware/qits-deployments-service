@@ -5,6 +5,7 @@ import static eu.wohlben.qits.deployments.deployments.control.DeployService.CUTO
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.db.DbRetry;
+import eu.wohlben.qits.deployments.deployments.dto.PdDecommissionDto;
 import eu.wohlben.qits.deployments.deployments.entity.PdDecommission;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentStatus;
@@ -189,17 +190,7 @@ public class ApplicationRetirement {
    *     failed run is recorded
    */
   public Retired decommission(String applicationId, String actor, List<String> repositories) {
-    ApplicationKeys.Key key =
-        ApplicationKeys.parse(applicationId)
-            .orElseThrow(
-                () ->
-                    new BadRequestException(
-                        "'"
-                            + applicationId
-                            + "' is not an application id: it reads <environmentId>:<name>, or"
-                            + " platform:<name> for an application on no tier"));
-    // The name reaches a query — checked where every other stored identifier is, at the boundary.
-    PdIdentifiers.requireName(key.applicationName(), "application name");
+    ApplicationKeys.Key key = placeOf(applicationId);
     // The body's names too, and before the relabel: a bad one is a 400 that wrote nothing, rather
     // than a committed relabel followed by a purge qits-artifacts refuses.
     List<String> asked = repositories == null ? List.of() : repositories;
@@ -224,6 +215,54 @@ public class ApplicationRetirement {
         "Decommissioned %s: %d row(s) settled, the current one was %s",
         applicationId, retired.decommissionedIds().size(), retired.previousStatus());
     return purge(retired, actor, asked);
+  }
+
+  /**
+   * Every decommission run of one application, oldest first — the {@code pd_decommission} history
+   * the door above writes and nothing else read until qits-1956.
+   *
+   * <p>Filtered by the PLACE the id names, name and tier, not by the name alone: the purge itself is
+   * per name (artifacts are published per application, not per tier), but a run is the retirement
+   * of one place and is recorded with that place's tier, so a run of the same name on another tier
+   * is that place's history and not this one's.
+   *
+   * <p><b>An id nothing was ever decommissioned under is an empty list, not a 404</b> — even one
+   * nothing was ever deployed under. The question is "what runs are on record", and "none" is its
+   * answer; the decommission door's 404 is about there being nothing to act on, which a read does
+   * not need. A malformed id is the same 400 the door gives.
+   *
+   * <p>Bracketed with {@code joiningExisting} like every read in this component's control layer, and
+   * mapped inside it, so the caller needs no transaction of its own.
+   *
+   * @param applicationId the derived key the read surface carries, {@code <environmentId>:<name>}
+   */
+  public List<PdDecommissionDto> decommissions(String applicationId) {
+    ApplicationKeys.Key key = placeOf(applicationId);
+    return QuarkusTransaction.joiningExisting()
+        .call(
+            () ->
+                decommissions.listByPlace(key.applicationName(), key.environmentId()).stream()
+                    .map(row -> PdDecommissionDto.of(row, json))
+                    .toList());
+  }
+
+  /**
+   * The place an application id names, refused as a 400 when it is not one. Shared by the door and
+   * its history so the two give one answer to one malformed id.
+   */
+  private static ApplicationKeys.Key placeOf(String applicationId) {
+    ApplicationKeys.Key key =
+        ApplicationKeys.parse(applicationId)
+            .orElseThrow(
+                () ->
+                    new BadRequestException(
+                        "'"
+                            + applicationId
+                            + "' is not an application id: it reads <environmentId>:<name>, or"
+                            + " platform:<name> for an application on no tier"));
+    // The name reaches a query — checked where every other stored identifier is, at the boundary.
+    PdIdentifiers.requireName(key.applicationName(), "application name");
+    return key;
   }
 
   /**

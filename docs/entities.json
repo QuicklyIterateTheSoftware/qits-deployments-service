@@ -8,9 +8,43 @@
       "marking" : "domain",
       "reason" : null,
       "projectionOf" : null,
-      "knownGap" : "qits-1956",
-      "dtos" : [ ],
-      "operations" : [ ]
+      "knownGap" : null,
+      "dtos" : [
+        {
+          "type" : "eu.wohlben.qits.deployments.api.PdApplicationController$ListDecommissionsResponse",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.dto.PdDecommissionDto",
+          "site" : "ListDecommissionsResponse.<init>(List)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.ArtifactPurge$RemovedArtifact",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.dto.PdDecommissionDto",
+          "site" : "PdDecommissionDto.removed()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.PdDecommissionDto",
+          "kind" : "factory",
+          "via" : null,
+          "site" : "PdDecommissionDto.of(PdDecommission, ObjectMapper)"
+        }
+      ],
+      "operations" : [
+        {
+          "operationId" : "decommissionApplication",
+          "method" : "POST",
+          "path" : "/applications/{applicationId}/decommission",
+          "dto" : "eu.wohlben.qits.deployments.deployments.control.ArtifactPurge$RemovedArtifact",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listDecommissions",
+          "method" : "GET",
+          "path" : "/applications/{applicationId}/decommissions",
+          "dto" : "eu.wohlben.qits.deployments.api.PdApplicationController$ListDecommissionsResponse",
+          "kind" : "returns"
+        }
+      ]
     },
     {
       "entity" : "eu.wohlben.qits.deployments.deployments.entity.PdDeployment",
@@ -142,6 +176,13 @@
           "method" : "GET",
           "path" : "/deployment-requests/{id}",
           "dto" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$DeploymentRequestResponse",
+          "kind" : "returns"
+        },
+        {
+          "operationId" : "listDecommissions",
+          "method" : "GET",
+          "path" : "/applications/{applicationId}/decommissions",
+          "dto" : "eu.wohlben.qits.deployments.deployments.control.ArtifactPurge$RemovedArtifact",
           "kind" : "returns"
         },
         {

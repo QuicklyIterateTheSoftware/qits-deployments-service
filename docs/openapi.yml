@@ -70,6 +70,13 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PdApplicationDto"
+    ListDecommissionsResponse:
+      type: object
+      properties:
+        decommissions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PdDecommissionDto"
     ListDeploymentRequestsResponse:
       type: object
       properties:
@@ -147,6 +154,31 @@ components:
           type: string
         createdAt:
           $ref: "#/components/schemas/Instant"
+    PdDecommissionDto:
+      type: object
+      properties:
+        id:
+          type: string
+        applicationName:
+          type: string
+        environmentId:
+          type: string
+        actor:
+          type: string
+        decommissionedAt:
+          $ref: "#/components/schemas/Instant"
+        repositories:
+          type: array
+          items:
+            type: string
+        purgeOutcome:
+          $ref: "#/components/schemas/PurgeOutcome"
+        removed:
+          type: array
+          items:
+            $ref: "#/components/schemas/RemovedArtifact"
+        failureDetail:
+          type: string
     PdDeploymentDto:
       type: object
       properties:
@@ -357,6 +389,11 @@ components:
           type: string
         secret:
           type: boolean
+    PurgeOutcome:
+      type: string
+      enum:
+      - PURGED
+      - FAILED
     PutSettingRequest:
       type: object
       properties:
@@ -530,6 +567,39 @@ paths:
         - qits:admin-agent
         - qits:desk-admin
         - qits:desk
+  /deployments/api/applications/{applicationId}/decommissions:
+    get:
+      summary: "Every decommission run of an application, oldest first, and what its\
+        \ artifact purge came to"
+      operationId: listDecommissions
+      parameters:
+      - name: applicationId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: "The runs, oldest first; empty when none is on record"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListDecommissionsResponse"
+        "400":
+          description: Not an application id
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Application Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:admin-agent
+        - qits:desk-admin
+        - qits:desk
+        - qits:agent
   /deployments/api/applications/{applicationId}/restart:
     post:
       summary: "Restart an application in place — its tasks are replaced, its deployment\

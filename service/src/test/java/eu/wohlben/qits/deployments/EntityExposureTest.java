@@ -20,8 +20,7 @@ import java.util.Set;
 @AnalyzeClasses(packages = "eu.wohlben.qits.deployments", importOptions = ImportOption.DoNotIncludeTests.class)
 class EntityExposureTest {
 
-  /** PdDecommission: the run history is written by the decommission door and read by none. */
-  static final Set<String> KNOWN_GAPS = Set.of("PdDecommission qits-1956");
+  static final Set<String> KNOWN_GAPS = Set.of();
 
   @ArchTest
   static final ArchRule EXPOSED = EntityExposureRules.everyDomainEntityIsExposed(KNOWN_GAPS);

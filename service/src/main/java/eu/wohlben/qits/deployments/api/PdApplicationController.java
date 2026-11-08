@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.deployments.deployments.control.ApplicationRetirement;
 import eu.wohlben.qits.deployments.deployments.control.ApplicationScaling;
 import eu.wohlben.qits.deployments.deployments.control.ArtifactPurge;
+import eu.wohlben.qits.deployments.deployments.dto.PdDecommissionDto;
 import eu.wohlben.qits.deployments.environments.control.ServiceCatalog;
 import eu.wohlben.qits.deployments.environments.dto.PdApplicationDto;
 import eu.wohlben.qits.deployments.environments.error.BadRequestException;
@@ -146,6 +147,13 @@ public class PdApplicationController {
       String deploymentId,
       String previousStatus) {}
 
+  /**
+   * Every decommission run of one application, oldest first (qits-1956): what each purge of its
+   * published artifacts came to. {@code removed} is null on a {@code FAILED} run and a list —
+   * possibly empty — on a {@code PURGED} one; see {@link PdDecommissionDto}.
+   */
+  public record ListDecommissionsResponse(List<PdDecommissionDto> decommissions) {}
+
   /** Held through a short database outage rather than answering 500 — see {@link PdReadPatience}. */
   @GET
   @Operation(operationId = "listApplications", summary = "Every application deployed here — environment applications and platform services")
@@ -260,6 +268,33 @@ public class PdApplicationController {
         retired.previousStatus(),
         retired.decommissionedIds(),
         retired.removedArtifacts());
+  }
+
+  /**
+   * The decommission door's own history: every run of it for this application, oldest first, and
+   * what each purge came to (qits-1956). A failed purge followed by its retry reads as two entries,
+   * {@code FAILED} with its {@code failureDetail} and then {@code PURGED} with what went — the
+   * {@code pd_decommission} rows exactly as written, one per run and never updated.
+   *
+   * <p><b>Filtered by the place the id names</b>, name and tier: a run of the same name on another
+   * tier is that tier's history. <b>An id with no runs is 200 and an empty list</b>, even one nothing
+   * was ever deployed under — the question is what is on record, and "nothing" answers it. A
+   * malformed id is the same 400 the decommission door gives.
+   *
+   * <p>Read by the same callers as {@link #list()}, {@code qits:agent} included: it is history, and
+   * an agent checking that a purge went is exactly who asks.
+   */
+  @GET
+  @Path("/{applicationId}/decommissions")
+  @Operation(operationId = "listDecommissions", summary = "Every decommission run of an application, oldest first, and what its artifact purge came to")
+  @APIResponse(responseCode = "200", description = "The runs, oldest first; empty when none is on record")
+  @APIResponse(responseCode = "400", description = "Not an application id")
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:admin-agent", "qits:desk-admin", "qits:desk", "qits:agent"})
+  public ListDecommissionsResponse listDecommissions(@PathParam("applicationId") String applicationId) {
+    return new ListDecommissionsResponse(
+        reads.call(
+            "The decommission history of " + applicationId,
+            () -> retirement.decommissions(applicationId)));
   }
 
   /**

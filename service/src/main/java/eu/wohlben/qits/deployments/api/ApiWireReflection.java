@@ -1,6 +1,7 @@
 package eu.wohlben.qits.deployments.api;
 
 import eu.wohlben.qits.deployments.deployments.control.ArtifactPurge;
+import eu.wohlben.qits.deployments.deployments.dto.PdDecommissionDto;
 import eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto;
 import eu.wohlben.qits.deployments.deployments.dto.PdDeploymentRequestDto;
 import eu.wohlben.qits.deployments.deployments.dto.PdPinDto;
@@ -40,6 +41,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       PdApplicationController.DecommissionRequest.class,
       ArtifactPurge.RemovedArtifact.class,
       PdApplicationController.RetireResponse.class,
+      PdApplicationController.ListDecommissionsResponse.class,
       PdDeploymentController.ListDeploymentsResponse.class,
       PdDeploymentRequestController.ListDeploymentRequestsResponse.class,
       PdDeploymentRequestController.DeploymentRequestResponse.class,
@@ -52,6 +54,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       PdServiceDto.class,
       PdLinkedServiceDto.class,
       PdDeploymentDto.class,
+      PdDecommissionDto.class,
       PdDeploymentRequestDto.class,
       PdPinDto.class,
       PdSettingDto.class,
