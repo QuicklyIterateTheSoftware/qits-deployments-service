@@ -397,6 +397,77 @@ class SwarmDeploymentDriverTest {
     }
   }
 
+  /** {@link #spec()} deployed as the variant {@code variant} (qits-1976). */
+  private DeploymentDriver.ServiceSpec variantSpec(String variant) {
+    DeploymentDriver.ServiceSpec main = spec();
+    return new DeploymentDriver.ServiceSpec(
+        main.environmentId(),
+        main.environmentName(),
+        main.applicationId(),
+        main.applicationName(),
+        main.deploymentId(),
+        main.commitSha(),
+        main.version(),
+        main.deploymentName(),
+        main.wireAlias(),
+        main.networks(),
+        main.imageRef(),
+        main.healthPath(),
+        main.healthCmd(),
+        main.availableOnEnv(),
+        main.updateOrder(),
+        main.publishMode(),
+        main.resources(),
+        main.volumes(),
+        main.stopGracePeriod(),
+        main.shape(),
+        main.renamedFrom(),
+        main.takesOverPredecessor(),
+        main.exposure(),
+        variant);
+  }
+
+  @Test
+  void aVariantsContainerIsToldWhichVariantItIsOnCreateAndOnUpdate() {
+    // A variant gets no deployment settings (owner ruling, qits-1976): it derives its configuration
+    // from its declaration, and the one fact it cannot derive is which variant it is.
+    List<String> create =
+        driver().buildCreateArgv(variantSpec("private"), "dev-qits-gateway", List.of("qits-net"));
+    assertTrue(create.containsAll(List.of("--env", "QITS_VARIANT=private")), create.toString());
+    assertTrue(create.contains("QITS_APPLICATION=qits-gateway"), create.toString());
+
+    List<String> update = driver().buildUpdateArgv(variantSpec("private"), "dev-qits-gateway");
+    assertTrue(
+        update.containsAll(List.of("--env-add", "QITS_VARIANT=private")), update.toString());
+  }
+
+  @Test
+  void aMainDeploymentCarriesNoVariantVariableAtAll() {
+    // Not an empty one: the main deployment's argv is exactly what it was before variants existed.
+    List<String> create =
+        driver().buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
+    List<String> update = driver().buildUpdateArgv(spec(), "dev-qits-gateway");
+    for (List<String> argv : List.of(create, update)) {
+      assertTrue(
+          argv.stream().noneMatch(argument -> argument.startsWith("QITS_VARIANT")),
+          argv.toString());
+    }
+  }
+
+  @Test
+  void aVariantsUpdateKeepsItsVariantVariable() {
+    // QITS_VARIANT is deployer-owned like QITS_APPLICATION: the update diff never removes it.
+    SwarmDeploymentDriver driver = driver();
+    cli.script(
+        SwarmDeploymentDriver.SPEC_ENV_FORMAT,
+        result(0, "QITS_ENVIRONMENT=dev\nQITS_APPLICATION=qits-gateway\nQITS_VARIANT=private\n"));
+
+    List<String> argv = driver.buildUpdateArgv(variantSpec("private"), "dev-qits-gateway");
+
+    assertFalse(argv.contains("--env-rm"), argv.toString());
+    assertTrue(argv.containsAll(List.of("--env-add", "QITS_VARIANT=private")), argv.toString());
+  }
+
   @Test
   void anEnvironmentTeardownReapsByTheEnvironmentLabelAndNothingElse() {
     // The reader that moved with the label, twice.
@@ -1574,6 +1645,7 @@ class SwarmDeploymentDriverTest {
         List.of(
             "QITS_ENVIRONMENT",
             "QITS_APPLICATION",
+            "QITS_VARIANT",
             "QITS_DOMAIN",
             "OTEL_RESOURCE_ATTRIBUTES",
             "QUARKUS_OTEL_RESOURCE_ATTRIBUTES",

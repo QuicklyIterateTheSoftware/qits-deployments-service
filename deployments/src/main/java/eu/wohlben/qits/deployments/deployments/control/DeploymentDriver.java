@@ -562,6 +562,12 @@ public interface DeploymentDriver {
    * It decides whether the derived alias is worth a recreate on a service that already exists
    * without it; see the swarm driver's {@code missingDeclaredAlias}. Everywhere else the alias rides
    * the next create and an existing service is updated in place.
+   *
+   * <p>{@code variant} is null for the main deployment and the variant's name ({@code private})
+   * for an application deployed from a main file's {@code variants:} (qits-1976). A driver tells
+   * the container which variant it is — the swarm driver as {@code QITS_VARIANT} — because a
+   * variant has no deployment settings of its own and derives its configuration from its
+   * declaration. A main deployment is told nothing: no variable, not an empty one.
    */
   record ServiceSpec(
       String environmentId,
@@ -586,7 +592,8 @@ public interface DeploymentDriver {
       DeclaredShape shape,
       String renamedFrom,
       boolean takesOverPredecessor,
-      Exposure exposure) {
+      Exposure exposure,
+      String variant) {
 
     /** Null lists and empty ones are the same statement: this application declared none. */
     public ServiceSpec {
@@ -598,6 +605,58 @@ public interface DeploymentDriver {
       updateOrder = updateOrder == null ? UpdateOrder.START_FIRST : updateOrder;
       publishMode = publishMode == null ? PublishMode.HOST : publishMode;
       stopGracePeriod = stopGracePeriod == null ? DEFAULT_STOP_GRACE_PERIOD : stopGracePeriod;
+    }
+
+    /** The shape before {@code variant}: the main deployment, which is no variant. */
+    public ServiceSpec(
+        String environmentId,
+        String environmentName,
+        String applicationId,
+        String applicationName,
+        String deploymentId,
+        String commitSha,
+        String version,
+        String deploymentName,
+        String wireAlias,
+        List<String> networks,
+        String imageRef,
+        String healthPath,
+        String healthCmd,
+        boolean availableOnEnv,
+        UpdateOrder updateOrder,
+        PublishMode publishMode,
+        List<ResourceBinding> resources,
+        List<VolumeMount> volumes,
+        Duration stopGracePeriod,
+        DeclaredShape shape,
+        String renamedFrom,
+        boolean takesOverPredecessor,
+        Exposure exposure) {
+      this(
+          environmentId,
+          environmentName,
+          applicationId,
+          applicationName,
+          deploymentId,
+          commitSha,
+          version,
+          deploymentName,
+          wireAlias,
+          networks,
+          imageRef,
+          healthPath,
+          healthCmd,
+          availableOnEnv,
+          updateOrder,
+          publishMode,
+          resources,
+          volumes,
+          stopGracePeriod,
+          shape,
+          renamedFrom,
+          takesOverPredecessor,
+          exposure,
+          null);
     }
 
     /** The shape before {@code exposure}: a spec that names none is {@link Exposure#PUBLIC}. */

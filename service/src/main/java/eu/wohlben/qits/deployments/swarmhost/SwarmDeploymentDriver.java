@@ -269,6 +269,15 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   static final String APPLICATION_VARIABLE = "QITS_APPLICATION";
 
   /**
+   * Which variant this is — {@code private} for the private edge — written beside {@link
+   * #APPLICATION_VARIABLE} for a service deployed from a main file's {@code variants:} (qits-1976),
+   * and for NO other. A variant gets no deployment settings of its own (owner ruling): it derives
+   * its configuration from its declaration, and this is the one fact it cannot derive itself. A
+   * main deployment carries no {@code QITS_VARIANT} at all, so its argv is what it always was.
+   */
+  static final String VARIANT_VARIABLE = "QITS_VARIANT";
+
+  /**
    * The platform's domain, stated once and handed to every container — the one fact a service needs
    * in order to derive its own public names.
    *
@@ -289,9 +298,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   static final String RESOURCE_PREFIX = "QITS_RESOURCE_";
 
   /**
-   * This component's own five, written on every argv before the deployment's own and therefore
-   * never stated by config. They are the exception the update diff needs: measured against the
-   * extras alone, every deployment would remove and immediately re-add all five.
+   * This component's own six, written on an argv before the deployment's own and therefore never
+   * stated by config. They are the exception the update diff needs: measured against the extras
+   * alone, every deployment would remove and immediately re-add them.
+   *
+   * <p>{@link #VARIANT_VARIABLE} is written only for a variant, and is a member for the reason
+   * {@link #DOMAIN_VARIABLE} is: the deployer writes it, config states it nowhere, and a diff
+   * against config alone would {@code --env-rm} it off a live variant on its next deployment.
    *
    * <p>{@link #DOMAIN_VARIABLE} is the newest member and belongs here for exactly the reason the
    * other four do — the deployer writes it and config states it nowhere, so a diff against config
@@ -306,6 +319,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       Set.of(
           ENVIRONMENT_VARIABLE,
           APPLICATION_VARIABLE,
+          VARIANT_VARIABLE,
           DOMAIN_VARIABLE,
           DeployedIdentity.OTEL_VARIABLE,
           DeployedIdentity.QUARKUS_OTEL_VARIABLE);
@@ -2324,6 +2338,12 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       variables.add(ENVIRONMENT_VARIABLE + "=" + spec.environmentName());
     }
     variables.add(APPLICATION_VARIABLE + "=" + spec.applicationName());
+    // QITS_VARIANT only for a variant (qits-1976): it gets no deployment settings and derives its
+    // configuration from its declaration, so the one fact it needs is which variant it is. A main
+    // deployment gets no variable — not an empty one — and its argv is unchanged by this line.
+    if (spec.variant() != null && !spec.variant().isBlank()) {
+      variables.add(VARIANT_VARIABLE + "=" + spec.variant());
+    }
     // QITS_DOMAIN is written for EVERY service too, and for the same reason QITS_ENVIRONMENT is:
     // the platform's domain is ONE fact, and a service that has to know a hostname derives it from
     // this rather than carrying a composed copy of it in its own configuration. The five composed
@@ -2570,7 +2590,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    *       what config says;
    *   <li>{@link #DEPLOYER_OWN_VARIABLES}, this component's identity set: it writes them on every
    *       argv and an operator never states them, so a diff against config alone would remove and
-   *       re-add the same four values on every deployment;
+   *       re-add the same values on every deployment ({@link #VARIANT_VARIABLE} on a variant's);
    *   <li>anything under {@link #RESOURCE_PREFIX}, which {@code ResourceProvisioning} injects from
    *       the registry row. Config cannot state a provisioned credential and must not be able to
    *       delete one — a removed datasource triple is an application that cannot boot.

@@ -3866,7 +3866,9 @@ public class DeployService implements ReleaseAnnouncements {
         plan.renamedFrom(),
         takesOverPredecessor,
         // Which networks it joins — the flat one, the private one, or the two.
-        plan.exposure());
+        plan.exposure(),
+        // Null for the main deployment; the variant's name otherwise, which the container is told.
+        plan.variant());
   }
 
   /**

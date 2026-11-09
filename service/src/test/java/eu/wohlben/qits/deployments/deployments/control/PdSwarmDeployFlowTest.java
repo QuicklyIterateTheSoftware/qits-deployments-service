@@ -222,6 +222,14 @@ public class PdSwarmDeployFlowTest {
     assertEquals("swarm-variant-repo-swarm-edge-private", variant.wireAlias());
     assertEquals(DeploymentDriver.Exposure.BOTH, variant.exposure());
     assertEquals(List.of("NET_ADMIN"), variant.shape().capAdd());
+    // The variant's container is told which variant it is (QITS_VARIANT); the main one is not.
+    assertEquals("private", variant.variant());
+    assertNull(
+        fake.applied().stream()
+            .filter(spec -> spec.applicationName().equals("repo-swarm-edge"))
+            .findFirst()
+            .orElseThrow()
+            .variant());
 
     List<OutboxEvent> active = all("DeploymentActive");
     assertEquals(2, active.size());

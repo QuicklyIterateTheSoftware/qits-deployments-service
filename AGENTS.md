@@ -772,7 +772,7 @@ things about it, each easy to undo by accident:
   null becomes `public` in the record itself.
 
 **`image`, `cap_add` and `variants` deploy one image as a second application** (qits-1976), and
-the private edge — `qits-edge-private` from qits-edge's own release — is what they are for. Six
+the private edge — `qits-edge-private` from qits-edge's own release — is what they are for. Seven
 things about them, each easy to undo by accident:
 
 - **`image:` is the pulled image's path segment**, `qits/<image>:<version>` via
@@ -797,6 +797,12 @@ things about them, each easy to undo by accident:
   `renamed_from:`) is a `FAILED` row on the places its application is registered in — the file's
   `application:` when it named a usable one, else `<main>-<variant>` — and a WARN only for one never
   registered. It is not held for a retry; the main deployment has already run and is untouched.
+- **A variant's container is told which variant it is**: `QITS_VARIANT=<variant>` (`private` for
+  the private edge), written by `SwarmDeploymentDriver.environment` right after `QITS_APPLICATION`
+  from `ServiceSpec.variant` (`Plan.variant`, off the `Target`). A variant gets no deployment
+  settings (owner ruling) and derives its configuration from its declaration, so this is the one
+  fact it is handed. A main deployment gets no `QITS_VARIANT` at all — not an empty one — so every
+  non-variant argv is unchanged; it is in `DEPLOYER_OWN_VARIABLES`, so an update never removes it.
 - **The events say which is which**: `DeploymentActive.variant` and `DeploymentFailed.variant`, the
   last components, null for the main deployment. A release-following consumer reads non-null as "not
   the release's own deployment". An adopted or retired frame names none (a row records no variant).
@@ -1240,9 +1246,11 @@ two, and the one that wins is the one that is written down.
 **What is never removed is a family, not a list of exceptions**, and it has three members:
 
 - **everything this argv states** — the extras' own `env`, which is the whole of what config says;
-- **`DEPLOYER_OWN_VARIABLES`** — `QITS_ENVIRONMENT`, `QITS_APPLICATION`, `OTEL_RESOURCE_ATTRIBUTES`
-  and its `QUARKUS_` twin, this component's identity set. It writes them on every argv and config
-  states none of them, so a diff against config alone would remove and re-add all four every time;
+- **`DEPLOYER_OWN_VARIABLES`** — `QITS_ENVIRONMENT`, `QITS_APPLICATION`, `QITS_VARIANT`,
+  `QITS_DOMAIN`, `OTEL_RESOURCE_ATTRIBUTES` and its `QUARKUS_` twin, this component's identity set.
+  It writes them on the argv and config states none of them, so a diff against config alone would
+  remove and re-add them every time. `QITS_VARIANT` is written for a variant only (see the variants
+  section); membership protects it on a variant's update and adds it to nothing else;
 - **anything under `QITS_RESOURCE_`** — `ResourceProvisioning` injects those from the registry row,
   which is the single authority for the credential. Config cannot state a provisioned password and
   must not be able to delete one.
