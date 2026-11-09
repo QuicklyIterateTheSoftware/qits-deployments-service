@@ -185,6 +185,129 @@ public class PdSwarmDeployFlowTest {
   }
 
   @Test
+  public void aReleaseWithAVariantDeploysOneImageAsTwoApplications() {
+    // qits-1976, the private edge's shape: the main file says `variants: private`, the variant file
+    // at the same tag names its own application and no image — so the MAIN image is deployed twice,
+    // once per application, both from this one release.
+    String environmentId = createEnvironment("swarm-variant");
+    specs.script(
+        "repo-swarm-edge",
+        DeploymentSpecParser.parse("variants: private\n", "deployments.yml of repo-swarm-edge"));
+    specs.scriptAt(
+        "repo-swarm-edge",
+        SpecSource.variantPath("private"),
+        DeploymentSpecParser.parse(
+            "application: repo-swarm-edge-private\nexposure: both\ncap_add: NET_ADMIN\n",
+            "deployments.private.yml of repo-swarm-edge"));
+
+    postRelease("run-variant", "repo-swarm-edge");
+    List<Map<String, Object>> deployments = awaitSettled(environmentId, 2);
+
+    assertEquals(
+        List.of("repo-swarm-edge", "repo-swarm-edge-private"),
+        deployments.stream().map(row -> (String) row.get("applicationName")).sorted().toList());
+    for (Map<String, Object> row : deployments) {
+      assertEquals("ACTIVE", row.get("status"), row.toString());
+      assertEquals(VERSION, row.get("version"));
+    }
+    assertEquals(1, specs.readsOf("repo-swarm-edge", SpecSource.variantPath("private")));
+    String image = "registry.qits.dev.localhost:8080/qits/repo-swarm-edge:" + VERSION;
+    assertEquals(List.of(image, image), fake.pulled(), "one image, pulled for each application");
+    DeploymentDriver.ServiceSpec variant =
+        fake.applied().stream()
+            .filter(spec -> spec.applicationName().equals("repo-swarm-edge-private"))
+            .findFirst()
+            .orElseThrow();
+    assertEquals(image, variant.imageRef());
+    assertEquals("swarm-variant-repo-swarm-edge-private", variant.wireAlias());
+    assertEquals(DeploymentDriver.Exposure.BOTH, variant.exposure());
+    assertEquals(List.of("NET_ADMIN"), variant.shape().capAdd());
+
+    List<OutboxEvent> active = all("DeploymentActive");
+    assertEquals(2, active.size());
+    OutboxEvent main =
+        active.stream()
+            .filter(row -> row.payload.contains("\"applicationName\":\"repo-swarm-edge\""))
+            .findFirst()
+            .orElseThrow();
+    OutboxEvent second =
+        active.stream()
+            .filter(
+                row -> row.payload.contains("\"applicationName\":\"repo-swarm-edge-private\""))
+            .findFirst()
+            .orElseThrow();
+    assertTrue(!main.payload.contains("\"variant\":"), "the main deployment names no variant");
+    assertTrue(second.payload.contains("\"variant\":\"private\""), second.payload);
+    assertTrue(second.payload.contains("\"exposure\":\"both\""), second.payload);
+    assertNull(only("DeploymentFailed", 0));
+  }
+
+  @Test
+  public void aBrokenVariantFileNeverStopsTheMainDeployment() {
+    String environmentId = createEnvironment("swarm-variant-broken");
+    specs.script(
+        "repo-swarm-broken",
+        DeploymentSpecParser.parse(
+            "variants: private, missing, same\n", "deployments.yml of repo-swarm-broken"));
+    specs.scriptFailureAt(
+        "repo-swarm-broken",
+        SpecSource.variantPath("private"),
+        "deployments.private.yml line 1: unknown key `nonsense`");
+    // `missing` is scripted nowhere: the release carries no such file.
+    specs.scriptAt(
+        "repo-swarm-broken",
+        SpecSource.variantPath("same"),
+        DeploymentSpecParser.parse("application: repo-swarm-broken\n", "deployments.same.yml"));
+
+    postRelease("run-variant-broken", "repo-swarm-broken");
+    List<Map<String, Object>> deployments = awaitSettled(environmentId, 1);
+
+    assertEquals("repo-swarm-broken", deployments.get(0).get("applicationName"));
+    assertEquals("ACTIVE", deployments.get(0).get("status"));
+    assertEquals(1, fake.applied().size(), "only the main application was applied");
+    assertEquals(1, all("DeploymentActive").size());
+  }
+
+  @Test
+  public void aRegisteredVariantWhoseFileBreaksRecordsItsOwnFailure() {
+    String environmentId = createEnvironment("swarm-variant-later");
+    specs.script(
+        "repo-swarm-later",
+        DeploymentSpecParser.parse("variants: private\n", "deployments.yml of repo-swarm-later"));
+    specs.scriptAt(
+        "repo-swarm-later",
+        SpecSource.variantPath("private"),
+        DeploymentSpecParser.parse(
+            "application: repo-swarm-later-private\n", "deployments.private.yml"));
+    postRelease("run-later-1", "repo-swarm-later");
+    awaitSettled(environmentId, 2);
+
+    specs.scriptFailureAt(
+        "repo-swarm-later", SpecSource.variantPath("private"), "line 3: duplicate key `image`");
+    postRelease("run-later-2", "repo-swarm-later");
+    List<Map<String, Object>> deployments = awaitSettled(environmentId, 4);
+
+    Map<String, Object> failed =
+        deployments.stream()
+            .filter(row -> "FAILED".equals(row.get("status")))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError(deployments.toString()));
+    assertEquals("repo-swarm-later-private", failed.get("applicationName"));
+    assertTrue(((String) failed.get("detail")).contains("variant private"), failed.toString());
+    assertEquals(
+        2,
+        deployments.stream()
+            .filter(
+                row ->
+                    "repo-swarm-later".equals(row.get("applicationName"))
+                        && List.of("ACTIVE", "DECOMMISSIONED").contains(row.get("status")))
+            .count(),
+        "the main application deployed both times");
+    OutboxEvent failure = only("DeploymentFailed");
+    assertTrue(failure.payload.contains("\"variant\":\"private\""), failure.payload);
+  }
+
+  @Test
   public void aStopFirstRepositoryWithALongGraceIsGivenTheGraceOnTopOfTheHealthTimeout() {
     // qits-1170, end to end: stop_grace_period is read from the repository's spec, carried through
     // the target and the plan, and handed to the orchestrator. Under stop-first swarm waits the
@@ -385,6 +508,10 @@ public class PdSwarmDeployFlowTest {
             () ->
                 outbox.createQuery("select o from OutboxEvent o", OutboxEvent.class)
                     .getResultList());
+  }
+
+  private List<OutboxEvent> all(String name) {
+    return rows().stream().filter(row -> name.equals(row.name)).toList();
   }
 
   private OutboxEvent only(String name) {

@@ -3422,6 +3422,96 @@ class SwarmDeploymentDriverTest {
     assertEquals(Optional.empty(), driver.liveExposure("dev-qits-gateway"), "cannot say");
   }
 
+  // --- cap_add (qits-1976) ------------------------------------------------------------------------
+
+  /** {@link #spec()} granting {@code NET_ADMIN} through its declared shape. */
+  private DeploymentDriver.ServiceSpec withNetAdmin() {
+    DeploymentDriver.ServiceSpec base = exposed(DeploymentDriver.Exposure.BOTH);
+    return new DeploymentDriver.ServiceSpec(
+        base.environmentId(),
+        base.environmentName(),
+        base.applicationId(),
+        base.applicationName(),
+        base.deploymentId(),
+        base.commitSha(),
+        base.version(),
+        base.deploymentName(),
+        base.wireAlias(),
+        base.networks(),
+        "registry.qits.dev.localhost:8080/qits/qits-edge:" + VERSION,
+        base.healthPath(),
+        base.healthCmd(),
+        base.availableOnEnv(),
+        base.updateOrder(),
+        base.publishMode(),
+        base.resources(),
+        base.volumes(),
+        base.stopGracePeriod(),
+        new DeclaredShape(List.of(), List.of(), List.of(), List.of("NET_ADMIN")),
+        base.renamedFrom(),
+        base.takesOverPredecessor(),
+        base.exposure());
+  }
+
+  @Test
+  void aGrantedCapabilityIsAddedOnTheCreate() {
+    List<String> argv =
+        driver().buildCreateArgv(withNetAdmin(), "dev-qits-gateway", List.of("qits-net"));
+
+    int at = argv.indexOf("--cap-add");
+    assertTrue(at > 0, argv.toString());
+    assertEquals("NET_ADMIN", argv.get(at + 1));
+    assertEquals(1, argv.stream().filter("--cap-add"::equals).count());
+    assertEquals(
+        "registry.qits.dev.localhost:8080/qits/qits-edge:" + VERSION,
+        argv.get(argv.size() - 1),
+        "the variant's image, whatever the application is called");
+  }
+
+  @Test
+  void aGrantedCapabilityIsRestatedOnTheUpdateBecauseCapAddIsIdempotent() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script(SwarmDeploymentDriver.SPEC_CAPABILITIES_FORMAT, result(0, "CAP_NET_ADMIN\n"));
+
+    List<String> argv = driver.buildUpdateArgv(withNetAdmin(), "dev-qits-gateway");
+
+    int at = argv.indexOf("--cap-add");
+    assertTrue(at > 0, argv.toString());
+    assertEquals("NET_ADMIN", argv.get(at + 1));
+    assertFalse(argv.contains("--cap-drop"), argv.toString());
+  }
+
+  @Test
+  void aServiceThatGrantsNoCapabilityIsGivenNoFlagAndAnUndeclaredOneIsNeverDropped() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script(SwarmDeploymentDriver.SPEC_CAPABILITIES_FORMAT, result(0, "CAP_NET_ADMIN\n"));
+
+    List<String> update = driver.buildUpdateArgv(spec(), "dev-qits-gateway");
+    List<String> create = driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
+
+    assertFalse(update.contains("--cap-add"), update.toString());
+    assertFalse(update.contains("--cap-drop"), "a removal is logged, never performed");
+    assertFalse(create.contains("--cap-add"), create.toString());
+  }
+
+  @Test
+  void aCapabilityOutsideTheClosedListIsRefusedAtTheArgv() {
+    DeploymentDriver.ServiceSpec base = withNetAdmin();
+    DeploymentDriver.ServiceSpec forged =
+        new DeploymentDriver.ServiceSpec(
+            base.environmentId(), base.environmentName(), base.applicationId(),
+            base.applicationName(), base.deploymentId(), base.commitSha(), base.version(),
+            base.deploymentName(), base.wireAlias(), base.networks(), base.imageRef(),
+            base.healthPath(), base.healthCmd(), base.availableOnEnv(), base.updateOrder(),
+            base.publishMode(), base.resources(), base.volumes(), base.stopGracePeriod(),
+            new DeclaredShape(List.of(), List.of(), List.of(), List.of("SYS_ADMIN")),
+            base.renamedFrom(), base.takesOverPredecessor(), base.exposure());
+
+    assertThrows(
+        ServiceExtras.Refused.class,
+        () -> driver().buildCreateArgv(forged, "dev-qits-gateway", List.of("qits-net")));
+  }
+
   private static final class ScriptedCli implements SwarmDeploymentDriver.Cli {
 
     final List<List<String>> calls = Collections.synchronizedList(new ArrayList<>());

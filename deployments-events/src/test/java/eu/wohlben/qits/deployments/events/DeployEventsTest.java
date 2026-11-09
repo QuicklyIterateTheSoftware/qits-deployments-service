@@ -324,4 +324,29 @@ class DeployEventsTest {
 
     assertEquals("public", CanonicalJson.payloadTo(recorded, DeploymentActive.class).exposure());
   }
+
+  @Test
+  void aMainDeploymentNamesNoVariantAndAVariantNamesItself() {
+    assertFalse(CanonicalJson.payload(anActive()).contains("variant"));
+    assertFalse(CanonicalJson.payload(aFailed()).contains("variant"));
+
+    DeploymentActive active =
+        new DeploymentActive(
+            "d-6", "qits-edge-private", "env-1", "dev", VERSION, SHA, "run-6",
+            "dev-qits-edge-private", FINISHED, null, null, List.of(), List.of(), "both", "private");
+    DeploymentFailed failed =
+        new DeploymentFailed(
+            "d-7", "qits-edge-private", "env-1", "dev", VERSION, SHA, "run-6", "FAILED",
+            "variant private unusable", FINISHED, "private");
+
+    String activePayload = CanonicalJson.payload(active);
+    assertTrue(activePayload.contains("\"variant\":\"private\""), activePayload);
+    assertTrue(activePayload.contains("\"exposure\":\"both\""), activePayload);
+    assertTrue(CanonicalJson.payload(failed).contains("\"variant\":\"private\""));
+    assertEquals(
+        "private", CanonicalJson.payloadTo(activePayload, DeploymentActive.class).variant());
+    assertEquals(
+        "private",
+        CanonicalJson.payloadTo(CanonicalJson.payload(failed), DeploymentFailed.class).variant());
+  }
 }

@@ -13,7 +13,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * The strict reader of {@code .config/qits/deployments.yml}. Twenty-two scalar keys, no nesting, no
+ * The strict reader of {@code .config/qits/deployments.yml}. Twenty-five scalar keys, no nesting, no
  * YAML lists — so this is a line reader rather than a YAML library, and being one is what makes every
  * rejection a sentence naming the file and the line.
  *
@@ -32,6 +32,9 @@ import java.util.regex.Pattern;
  * update_order: start-first            # default | stop-first for anything single-writer
  * publish_mode: host                   # default | ingress for a port the routing mesh holds
  * exposure: public                     # default | private (qits-private only) | both (the two)
+ * cap_add: NET_ADMIN                   # extra Linux capabilities, no CAP_ prefix; NET_ADMIN only
+ * image: qits-edge                     # the image pulled, qits/<image>:<version>; default the app
+ * variants: private                    # main file only: also deploy .config/qits/deployments.<v>.yml
  * stop_grace_period: 10m               # default 30s; SIGTERM to SIGKILL, for long transfers
  * routes: /artifacts,/v2               # optional public path prefixes, in navigation order
  * upstream_port: 8080                  # default; the service port behind every route
@@ -196,6 +199,23 @@ import java.util.regex.Pattern;
  * network on an update — so the deployer recreates a service whose live networks differ from its
  * class, once, and never its own.
  *
+ * <p><b>{@code image}, {@code cap_add} and {@code variants} deploy one image as a second
+ * application</b> (qits-1976). {@code image} names the image the deploy pulls — {@code
+ * qits/<image>:<version>} — and defaults to the application name, so every file today pulls exactly
+ * what it pulled; it takes the application's charset, one docker repository path segment. {@code
+ * cap_add} grants Linux capabilities beyond docker's default set, spelled without the {@code CAP_}
+ * prefix ({@code ^[A-Z][A-Z_]*$}) and drawn from a closed list that holds {@code NET_ADMIN} alone —
+ * so the key cannot hand out {@code SYS_ADMIN} by accident; it reaches the create and the update
+ * as {@code --cap-add}, and dropping one is logged rather than performed. {@code variants} is a
+ * list of names ({@code ^[a-z][a-z0-9-]{0,30}$}): for each, the deployer also reads {@code
+ * .config/qits/deployments.<name>.yml} at the same tag and deploys it as an application of its
+ * own, from the same release. A variant file must declare an {@code application} distinct from the
+ * main one, may declare neither {@code variants} nor {@code renamed_from}, and its {@code image}
+ * defaults to the MAIN file's — see {@link #checkVariant}. The private edge is the first: qits-edge's
+ * main file says {@code variants: private}, and {@code deployments.private.yml} declares {@code
+ * application: qits-edge-private}, {@code image: qits-edge}, {@code exposure: both} and {@code
+ * cap_add: NET_ADMIN}.
+ *
  * <p><b>{@code update_order} is the one key an orchestrator reads rather than this component.</b>
  * {@code start-first} overlaps the successor with the predecessor, which is what makes a rollback
  * lossless; {@code stop-first} is the opt-out for an application that cannot be two processes at
@@ -353,6 +373,22 @@ public final class DeploymentSpecParser {
   private static final String PUBLISH_MODE = "publish_mode";
   private static final String STOP_GRACE_PERIOD = "stop_grace_period";
   private static final String EXPOSURE = "exposure";
+  private static final String CAP_ADD = "cap_add";
+  private static final String IMAGE = "image";
+  private static final String VARIANTS = "variants";
+
+  /**
+   * The capabilities {@code cap_add} may grant. Closed, and one word long on purpose: every entry
+   * is a privilege a repository's own review hands its container, and {@code NET_ADMIN} is the one
+   * the platform has a reason for — wireguard-go in the private edge.
+   */
+  public static final Set<String> ALLOWED_CAPABILITIES = Set.of("NET_ADMIN");
+
+  /** A capability as {@code cap_add} spells it: docker's name without the {@code CAP_} prefix. */
+  private static final Pattern CAPABILITY = Pattern.compile("[A-Z][A-Z_]*");
+
+  /** A variant's name — the {@code <name>} of {@code deployments.<name>.yml}. */
+  private static final Pattern VARIANT_NAME = Pattern.compile("[a-z][a-z0-9-]{0,30}");
 
   /**
    * One whole number per unit, units descending and each at most once — {@code 1h}, {@code 9m30s},
@@ -455,7 +491,21 @@ public final class DeploymentSpecParser {
    * and a line there, in the same commit.
    */
   private static final Set<String> SHARED_VOLUMES =
-      new LinkedHashSet<>(List.of("qits_shared_dot_claude", "qits_shared_m2", "qits_shared_pnpm"));
+      new LinkedHashSet<>(
+          List.of(
+              "qits_shared_dot_claude",
+              "qits_shared_m2",
+              "qits_shared_pnpm",
+              "qits-edge-letsencrypt"));
+
+  /**
+   * Shared volumes another application OWNS — its own {@code private:} volume, named in full — that
+   * a second application may mount only read-only (qits-1976). {@code qits-edge-letsencrypt} is the
+   * public edge's ACME account and certificates, which the private edge serves from without ever
+   * ordering: two writers on one account directory is the duplicate-certificate limit spent twice.
+   * Read-only is enforced here, because a write from the second holder is exactly that failure.
+   */
+  private static final Set<String> READ_ONLY_SHARED_VOLUMES = Set.of("qits-edge-letsencrypt");
 
   /** The one option a mount may carry — {@link ServiceExtras.Mount}'s grammar, and no more. */
   private static final String READ_ONLY = "ro";
@@ -482,6 +532,9 @@ public final class DeploymentSpecParser {
     DeploymentDriver.UpdateOrder updateOrder = DeploymentDriver.UpdateOrder.START_FIRST;
     DeploymentDriver.PublishMode publishMode = DeploymentDriver.PublishMode.HOST;
     DeploymentDriver.Exposure exposure = DeploymentDriver.Exposure.PUBLIC;
+    List<String> capAdd = List.of();
+    String image = null;
+    List<String> variants = List.of();
     Duration stopGracePeriod = DeploymentDriver.DEFAULT_STOP_GRACE_PERIOD;
     List<String> routes = List.of();
     int upstreamPort = DEFAULT_UPSTREAM_PORT;
@@ -531,6 +584,9 @@ public final class DeploymentSpecParser {
         case UPDATE_ORDER -> updateOrder = updateOrder(value, source, lineNumber);
         case PUBLISH_MODE -> publishMode = publishMode(value, source, lineNumber);
         case EXPOSURE -> exposure = exposure(value, source, lineNumber);
+        case CAP_ADD -> capAdd = capAdd(value, source, lineNumber);
+        case IMAGE -> image = image(value, source, lineNumber);
+        case VARIANTS -> variants = variants(value, source, lineNumber);
         case STOP_GRACE_PERIOD -> stopGracePeriod = stopGracePeriod(value, source, lineNumber);
         case ROUTES -> routes = routes(value, source, lineNumber);
         case UPSTREAM_PORT -> upstreamPort = upstreamPort(value, source, lineNumber);
@@ -575,6 +631,12 @@ public final class DeploymentSpecParser {
                     + PUBLISH_MODE
                     + ", "
                     + EXPOSURE
+                    + ", "
+                    + CAP_ADD
+                    + ", "
+                    + IMAGE
+                    + ", "
+                    + VARIANTS
                     + ", "
                     + STOP_GRACE_PERIOD
                     + ", "
@@ -702,8 +764,153 @@ public final class DeploymentSpecParser {
         application,
         renamedFrom,
         stopGracePeriod,
-        new DeclaredShape(binds, publishes, aliases),
-        exposure);
+        new DeclaredShape(binds, publishes, aliases, capAdd),
+        exposure,
+        image,
+        variants);
+  }
+
+  /**
+   * The rules a VARIANT file is held to beyond the grammar, which only the caller can ask — this
+   * parser never knows which file it is reading, nor which application the main file deploys as.
+   *
+   * <ul>
+   *   <li>it must declare {@code application}, and not the main one's: a variant IS a second
+   *       application, and one that named the main application would deploy over it;
+   *   <li>it may not declare {@code variants} — a variant of a variant is a chain nothing reads;
+   *   <li>it may not declare {@code renamed_from} — a rename cutover retires a predecessor, and a
+   *       variant has none to retire.
+   * </ul>
+   *
+   * @param variant the name in the main file's {@code variants:}
+   * @param mainApplication the application the MAIN file deploys as
+   * @throws SpecException naming the file and the rule
+   */
+  public static void checkVariant(
+      DeploymentSpec spec, String variant, String mainApplication, String source) {
+    if (spec.application() == null) {
+      throw new SpecException(
+          source
+              + ": a variant file must declare `"
+              + APPLICATION
+              + "` — variant `"
+              + variant
+              + "` is an application of its own, beside "
+              + mainApplication);
+    }
+    if (spec.application().equals(mainApplication)) {
+      throw new SpecException(
+          source
+              + ": `"
+              + APPLICATION
+              + ": "
+              + spec.application()
+              + "` is the main file's own application — variant `"
+              + variant
+              + "` would deploy over it. Name a distinct one.");
+    }
+    if (!spec.variants().isEmpty()) {
+      throw new SpecException(
+          source + ": `" + VARIANTS + "` belongs in the main deployments.yml, never in a variant");
+    }
+    if (spec.renamedFrom() != null) {
+      throw new SpecException(
+          source
+              + ": `"
+              + RENAMED_FROM
+              + "` is not allowed in a variant file — a variant has no predecessor to retire");
+    }
+  }
+
+  /**
+   * {@code cap_add}: capabilities by docker's name without the {@code CAP_} prefix, comma-separated,
+   * each out of {@link #ALLOWED_CAPABILITIES}. A {@code CAP_}-prefixed spelling is refused with the
+   * spelling to use, a repeated one as a duplicate, and anything outside the list by naming it.
+   */
+  private static List<String> capAdd(String value, String source, int line) {
+    List<String> declared = new ArrayList<>();
+    for (String candidate : value.split(",", -1)) {
+      String capability = candidate.strip();
+      if (capability.isBlank()) {
+        throw error(source, line, "`" + CAP_ADD + "` has a blank entry");
+      }
+      if (capability.startsWith("CAP_")) {
+        throw error(
+            source,
+            line,
+            "`"
+                + CAP_ADD
+                + "` names a capability without its `CAP_` prefix — write `"
+                + capability.substring(4)
+                + "`, got: "
+                + capability);
+      }
+      if (!CAPABILITY.matcher(capability).matches()) {
+        throw error(
+            source,
+            line,
+            "`" + CAP_ADD + "` entries are upper-case capability names like NET_ADMIN, got: "
+                + capability);
+      }
+      if (!ALLOWED_CAPABILITIES.contains(capability)) {
+        throw error(
+            source,
+            line,
+            "`"
+                + CAP_ADD
+                + "` may grant "
+                + String.join(", ", new java.util.TreeSet<>(ALLOWED_CAPABILITIES))
+                + " and nothing else, got: "
+                + capability);
+      }
+      if (declared.contains(capability)) {
+        throw error(source, line, "`" + CAP_ADD + "` names `" + capability + "` twice");
+      }
+      declared.add(capability);
+    }
+    return List.copyOf(declared);
+  }
+
+  /** {@code image}: one docker repository path segment, the application's own charset. */
+  private static String image(String value, String source, int line) {
+    try {
+      return PdIdentifiers.requireName(value, IMAGE);
+    } catch (RuntimeException e) {
+      throw error(
+          source,
+          line,
+          "`"
+              + IMAGE
+              + "` is one lowercase image name — letters, digits and inner dashes, at most 63"
+              + " characters — because it is the path segment of qits/<image>:<version>. Got: "
+              + value);
+    }
+  }
+
+  /** {@code variants}: names, comma-separated, each {@link #VARIANT_NAME}, none twice. */
+  private static List<String> variants(String value, String source, int line) {
+    List<String> declared = new ArrayList<>();
+    for (String candidate : value.split(",", -1)) {
+      String variant = candidate.strip();
+      if (variant.isBlank()) {
+        throw error(source, line, "`" + VARIANTS + "` has a blank entry");
+      }
+      if (!VARIANT_NAME.matcher(variant).matches()) {
+        throw error(
+            source,
+            line,
+            "`"
+                + VARIANTS
+                + "` names are a lowercase letter, then lowercase letters, digits and dashes, at"
+                + " most 31 characters — the <name> of deployments.<name>.yml — got: "
+                + variant);
+      }
+      if (declared.contains(variant)) {
+        throw error(source, line, "`" + VARIANTS + "` names `" + variant + "` twice");
+      }
+      declared.add(variant);
+    }
+    return List.copyOf(declared);
   }
 
   /**
@@ -1366,6 +1573,24 @@ public final class DeploymentSpecParser {
             line,
             "`" + parts[3] + "` is not a `" + VOLUMES + "` option here — only `" + READ_ONLY
                 + "` is");
+      }
+      if (shared && READ_ONLY_SHARED_VOLUMES.contains(name) && parts.length != 4) {
+        throw error(
+            source,
+            line,
+            "`"
+                + VOLUMES
+                + "` may mount `"
+                + name
+                + "` only read-only — it is another application's own volume — so write `"
+                + SHARED
+                + ":"
+                + name
+                + ":"
+                + parts[2]
+                + ":"
+                + READ_ONLY
+                + "`");
       }
       // The scope is part of the key: `private:m2` and `shared:qits_shared_m2` are two volumes and
       // not one, whatever the segment after the colon happens to spell.

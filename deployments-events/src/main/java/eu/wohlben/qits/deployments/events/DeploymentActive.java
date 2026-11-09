@@ -43,6 +43,12 @@ import java.util.UUID;
  * here becomes. An edge stores a frame outside its own class as an empty snapshot, so a move from
  * public to private withdraws the vhost from the public edge rather than leaving it stale.
  *
+ * <p><b>{@code variant} says which of a release's deployments this is</b> (qits-1976): null for the
+ * main deployment, the variant's name ({@code private}) for one a {@code variants:} entry put live
+ * from the same image and release. A consumer that follows a RELEASE — qits-projects finalizing one
+ * — reads a non-null variant as "not the release's own deployment". It goes last, after {@code
+ * exposure}, and is absent from the payload when null.
+ *
  * <p>{@code occurredAt} is {@code finishedAt}, the value the cutover bookkeeping wrote on the row.
  * The predecessor it decommissioned announces nothing: a deployment being replaced is this event
  * seen from the other side, and a consumer that wants "what is live" reads the newest event per
@@ -66,7 +72,8 @@ public record DeploymentActive(
     String apiDocsPath,
     List<NavigationEntry> navigation,
     List<DeploymentEndpoint> endpoints,
-    String exposure)
+    String exposure,
+    String variant)
     implements QitsEvent {
 
   /** What a frame that names no exposure means: every frame recorded before the field existed. */
@@ -185,6 +192,41 @@ public record DeploymentActive(
       List<DeploymentEndpoint> endpoints,
       String exposure) {
     this(
+        deploymentId,
+        applicationName,
+        environmentId,
+        environmentName,
+        version,
+        commitSha,
+        runId,
+        containerName,
+        finishedAt,
+        browserHost,
+        apiDocsPath,
+        navigation,
+        endpoints,
+        exposure,
+        null);
+  }
+
+  /** The publisher's whole constructor: the exposure class and, for a variant, its name. */
+  public DeploymentActive(
+      String deploymentId,
+      String applicationName,
+      String environmentId,
+      String environmentName,
+      String version,
+      String commitSha,
+      String runId,
+      String containerName,
+      Instant finishedAt,
+      String browserHost,
+      String apiDocsPath,
+      List<NavigationEntry> navigation,
+      List<DeploymentEndpoint> endpoints,
+      String exposure,
+      String variant) {
+    this(
         null,
         deploymentId,
         applicationName,
@@ -199,7 +241,8 @@ public record DeploymentActive(
         apiDocsPath,
         navigation,
         endpoints,
-        exposure);
+        exposure,
+        variant);
   }
 
   /** The shape before {@code exposure}, identity included: the class is {@code public}. */
@@ -233,6 +276,7 @@ public record DeploymentActive(
         apiDocsPath,
         navigation,
         endpoints,
+        null,
         null);
   }
 

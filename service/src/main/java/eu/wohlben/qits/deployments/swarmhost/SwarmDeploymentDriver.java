@@ -5,6 +5,7 @@ import eu.wohlben.qits.deployments.deployments.control.DeployedIdentity;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentExtrasSource;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentIdentifiers;
+import eu.wohlben.qits.deployments.deployments.control.DeploymentSpecParser;
 import eu.wohlben.qits.deployments.deployments.control.ExtrasSnapshot;
 import eu.wohlben.qits.deployments.deployments.control.HealthGate;
 import eu.wohlben.qits.deployments.deployments.control.PdProcess;
@@ -236,6 +237,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * network's ID here, not its name</b> — the CLI resolves a name when it writes the spec — so
    * every reader matches a line against both a network's name and its ID ({@link #networkId}).
    */
+  static final String SPEC_CAPABILITIES_FORMAT =
+      "{{range .Spec.TaskTemplate.ContainerSpec.CapabilityAdd}}{{println .}}{{end}}";
+
   static final String SPEC_NETWORK_TARGETS_FORMAT =
       "{{range .Spec.TaskTemplate.Networks}}{{println .Target}}{{end}}";
 
@@ -1705,6 +1709,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // (qits-965). `--init` runs docker-init/tini as PID 1 instead, which reaps on every SIGCHLD.
     // Unconditional: there is no application here for which an unreaped grandchild is desired.
     argv.add("--init");
+    capabilityFlags(argv, spec);
     for (String label : labels(spec)) {
       argv.add("--label");
       argv.add(label);
@@ -2026,6 +2031,11 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // service created before this line shipped is still running its old PID 1, so the update has
     // to restate `--init` for an already-live service to converge onto a reaping one.
     argv.add("--init");
+    // Capabilities ARE restated, unlike the rest of the shape: `--cap-add` of a cap the service
+    // already holds is a no-op, so a cap a repository starts declaring reaches its live service
+    // here, without a recreate. A cap it STOPS declaring is not dropped — see `capabilityRemovals`.
+    capabilityFlags(argv, spec);
+    capabilityRemovals(spec, name);
     for (String variable : environment(spec)) {
       argv.add("--env-add");
       argv.add(variable);
@@ -2044,6 +2054,48 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     envRemovals(argv, name, extras);
     argv.add(name);
     return List.copyOf(argv);
+  }
+
+  /**
+   * {@code --cap-add <CAP>} per capability the repository's {@code cap_add:} grants, in its order.
+   * Re-checked against the parser's closed list at the last line before the argv, the health path's
+   * rule: a capability is a privilege, and nothing but the reviewed file may name one.
+   */
+  private void capabilityFlags(List<String> argv, ServiceSpec spec) {
+    for (String capability : spec.shape().capAdd()) {
+      if (!DeploymentSpecParser.ALLOWED_CAPABILITIES.contains(capability)) {
+        throw new ServiceExtras.Refused(
+            "cap_add: `" + capability + "` is not a capability this platform grants");
+      }
+      argv.add("--cap-add");
+      argv.add(capability);
+    }
+  }
+
+  /**
+   * A capability the live service holds that the spec no longer grants is LOGGED and kept, never
+   * dropped: {@code --cap-drop} is a second statement with its own review, and a deployment that
+   * silently took a privilege away from a running service is a failure nobody would trace to a
+   * deleted line. An inspect that cannot answer says nothing.
+   */
+  private void capabilityRemovals(ServiceSpec spec, String name) {
+    PdProcess.Result inspected =
+        run(
+            List.of(runtime, "service", "inspect", "--format", SPEC_CAPABILITIES_FORMAT, name),
+            INSPECT_TIMEOUT);
+    if (inspected.exitCode() != 0) {
+      return;
+    }
+    for (String live : lines(inspected.output())) {
+      String capability = live.startsWith("CAP_") ? live.substring(4) : live;
+      if (!spec.shape().capAdd().contains(capability)) {
+        LOG.warnf(
+            "%s holds the capability %s, which its spec no longer grants. It is NOT dropped: a"
+                + " deployment never removes a capability — `docker service update --cap-drop %s"
+                + " %s` by hand, or remove and redeploy the service",
+            name, live, capability, name);
+      }
+    }
   }
 
   /**

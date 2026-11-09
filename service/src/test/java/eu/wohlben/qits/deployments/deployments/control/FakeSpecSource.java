@@ -151,8 +151,53 @@ public class FakeSpecSource implements SpecSource {
     return reads.getOrDefault(applicationName, 0);
   }
 
+  /**
+   * A file at another path of the repository — a variant's {@code deployments.<name>.yml}
+   * (qits-1976). Keyed by application AND path, so the main file's script is untouched by it.
+   */
+  public void scriptAt(String applicationName, String path, DeploymentSpec spec) {
+    specs.put(key(applicationName, path), spec);
+  }
+
+  /** A file at another path that does not read, permanently. */
+  public void scriptFailureAt(String applicationName, String path, String message) {
+    failures.put(key(applicationName, path), message);
+    retryable.remove(key(applicationName, path));
+  }
+
+  /** No file at another path: the 404 arm, for a variant the main file names and nobody wrote. */
+  public void scriptNoSpecAt(String applicationName, String path) {
+    undeclared.add(key(applicationName, path));
+    specs.remove(key(applicationName, path));
+  }
+
+  /** How many times a file at another path was read. */
+  public int readsOf(String applicationName, String path) {
+    return reads.getOrDefault(key(applicationName, path), 0);
+  }
+
+  /** The main file keeps the bare application key every existing script uses. */
+  private static String key(String applicationName, String path) {
+    return SPEC_PATH.equals(path) ? applicationName : applicationName + "|" + path;
+  }
+
   @Override
-  public SpecRead read(RepositoryRef repository, String rev) {
+  public SpecRead read(RepositoryRef repository, String rev, String path) {
+    if (!SPEC_PATH.equals(path)) {
+      String key = key(repository.applicationName(), path);
+      reads.merge(key, 1, Integer::sum);
+      String failure = failures.get(key);
+      if (failure != null) {
+        throw new SpecException(failure, retryable.contains(key));
+      }
+      DeploymentSpec spec = specs.get(key);
+      if (spec == null || undeclared.contains(key)) {
+        // A path nobody scripted is a file the repository does not carry — never the defaults,
+        // which would deploy a variant nobody described.
+        return SpecRead.undeclared();
+      }
+      return new SpecRead(spec, RESOLVED_COMMIT);
+    }
     revs.put(repository.applicationName(), rev);
     refs.put(repository.applicationName(), repository);
     reads.merge(repository.applicationName(), 1, Integer::sum);

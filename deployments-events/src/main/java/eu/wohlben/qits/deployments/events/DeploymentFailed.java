@@ -49,7 +49,8 @@ public record DeploymentFailed(
     String runId,
     String status,
     String detail,
-    Instant finishedAt)
+    Instant finishedAt,
+    String variant)
     implements QitsEvent {
 
   public DeploymentFailed {
@@ -71,6 +72,38 @@ public record DeploymentFailed(
       String detail,
       Instant finishedAt) {
     this(
+        deploymentId,
+        applicationName,
+        environmentId,
+        environmentName,
+        version,
+        commitSha,
+        runId,
+        status,
+        detail,
+        finishedAt,
+        null);
+  }
+
+  /**
+   * The publisher's whole constructor: {@code variant} is null for a release's main deployment and
+   * the variant's name ({@code private}) for one a {@code variants:} entry asked for (qits-1976). It
+   * goes last and is absent from the payload when null, so a consumer that follows a release can
+   * tell a variant's failure from the release's own.
+   */
+  public DeploymentFailed(
+      String deploymentId,
+      String applicationName,
+      String environmentId,
+      String environmentName,
+      String version,
+      String commitSha,
+      String runId,
+      String status,
+      String detail,
+      Instant finishedAt,
+      String variant) {
+    this(
         null,
         deploymentId,
         applicationName,
@@ -81,7 +114,36 @@ public record DeploymentFailed(
         runId,
         status,
         detail,
-        finishedAt);
+        finishedAt,
+        variant);
+  }
+
+  /** The shape before {@code variant}, identity included: a release's main deployment. */
+  public DeploymentFailed(
+      UUID eventId,
+      String deploymentId,
+      String applicationName,
+      String environmentId,
+      String environmentName,
+      String version,
+      String commitSha,
+      String runId,
+      String status,
+      String detail,
+      Instant finishedAt) {
+    this(
+        eventId,
+        deploymentId,
+        applicationName,
+        environmentId,
+        environmentName,
+        version,
+        commitSha,
+        runId,
+        status,
+        detail,
+        finishedAt,
+        null);
   }
 
   @Override

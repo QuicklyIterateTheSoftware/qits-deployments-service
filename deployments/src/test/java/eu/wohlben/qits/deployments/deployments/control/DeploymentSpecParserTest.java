@@ -1228,4 +1228,147 @@ class DeploymentSpecParserTest {
   void theUnknownKeyMessageNamesExposure() {
     assertTrue(messageOf("exposures: public\n").contains("exposure,"));
   }
+
+  // --- image, cap_add and variants (qits-1976) ---------------------------------------------------
+
+  /** qits-edge's private variant, exactly as the edge page writes it. */
+  static final String EDGE_PRIVATE_VARIANT =
+      String.join(
+          "\n",
+          "application: qits-edge-private",
+          "image: qits-edge",
+          "exposure: both",
+          "cap_add: NET_ADMIN",
+          "publish_mode: host",
+          "publishes: 51820:51820/udp",
+          "volumes: private:wireguard:/work/.wireguard, shared:qits-edge-letsencrypt:/work/.letsencrypt:ro",
+          "health_cmd: curl -fsS http://localhost:80/q/health/ready || exit 1",
+          "resources: postgresql:edge:qits_edge_private, postgresql:eventstream:qits_edge_private_eventstream, idp:client",
+          "");
+
+  @Test
+  void theEdgesPrivateVariantParsesWithEveryKeyItNeeds() {
+    DeploymentSpec spec =
+        DeploymentSpecParser.parse(
+            EDGE_PRIVATE_VARIANT, ".config/qits/deployments.private.yml of qits-edge@abc1234");
+
+    assertEquals("qits-edge-private", spec.application());
+    assertEquals("qits-edge", spec.image());
+    assertEquals(DeploymentDriver.Exposure.BOTH, spec.exposure());
+    assertEquals(List.of("NET_ADMIN"), spec.shape().capAdd());
+    assertEquals(DeploymentDriver.PublishMode.HOST, spec.publishMode());
+    assertEquals(List.of("51820:51820/udp"), spec.shape().publishes());
+    assertEquals(
+        List.of(
+            new VolumeSpec(VolumeSpec.Scope.PRIVATE, "wireguard", "/work/.wireguard", false),
+            new VolumeSpec(
+                VolumeSpec.Scope.SHARED, "qits-edge-letsencrypt", "/work/.letsencrypt", true)),
+        spec.volumes());
+    assertEquals("curl -fsS http://localhost:80/q/health/ready || exit 1", spec.healthCmd());
+    assertNull(spec.healthPath());
+    assertEquals(
+        List.of(
+            new ResourceSpec("edge", "qits_edge_private"),
+            new ResourceSpec("eventstream", "qits_edge_private_eventstream"),
+            new ResourceSpec("idp", null, ResourceSpec.Type.IDP_CLIENT)),
+        spec.resources());
+    assertEquals(List.of(), spec.variants());
+    DeploymentSpecParser.checkVariant(spec, "private", "qits-edge", "deployments.private.yml");
+  }
+
+  @Test
+  void thePublicEdgesLetsencryptVolumeIsSharedReadOnlyOrNotAtAll() {
+    String message = messageOf("volumes: shared:qits-edge-letsencrypt:/work/.letsencrypt\n");
+    assertTrue(message.contains("only read-only"), message);
+  }
+
+  @Test
+  void anAbsentImageCapAddAndVariantsAreTheDefaults() {
+    DeploymentSpec spec = parse("");
+    assertNull(spec.image(), "the application's own name, resolved by the caller");
+    assertEquals(List.of(), spec.shape().capAdd());
+    assertEquals(List.of(), spec.variants());
+  }
+
+  @Test
+  void anImageIsOneLowercaseName() {
+    assertEquals("qits-edge", parse("image: qits-edge\n").image());
+    assertTrue(messageOf("image: qits/qits-edge\n").contains("`image`"));
+    assertTrue(messageOf("image: Qits-Edge\n").contains("`image`"));
+    assertTrue(messageOf("image: qits-edge:1.0\n").contains("`image`"));
+  }
+
+  @Test
+  void capAddGrantsNetAdminAndNothingElse() {
+    assertEquals(List.of("NET_ADMIN"), parse("cap_add: NET_ADMIN\n").shape().capAdd());
+
+    String prefixed = messageOf("cap_add: CAP_NET_ADMIN\n");
+    assertTrue(prefixed.contains("without its `CAP_` prefix"), prefixed);
+    assertTrue(prefixed.contains("write `NET_ADMIN`"), prefixed);
+    String other = messageOf("cap_add: SYS_ADMIN\n");
+    assertTrue(other.contains("may grant NET_ADMIN and nothing else"), other);
+    assertTrue(messageOf("cap_add: net_admin\n").contains("upper-case"));
+    assertTrue(messageOf("cap_add: NET_ADMIN, NET_ADMIN\n").contains("twice"));
+    assertTrue(messageOf("cap_add: NET_ADMIN,\n").contains("blank entry"));
+  }
+
+  @Test
+  void variantsAreNamesOnOneLine() {
+    assertEquals(List.of("private"), parse("variants: private\n").variants());
+    assertEquals(List.of("private", "eu-2"), parse("variants: private, eu-2\n").variants());
+
+    assertTrue(messageOf("variants: Private\n").contains("`variants` names"));
+    assertTrue(messageOf("variants: 2nd\n").contains("`variants` names"));
+    assertTrue(messageOf("variants: a.b\n").contains("`variants` names"));
+    assertTrue(messageOf("variants: " + "a".repeat(32) + "\n").contains("`variants` names"));
+    assertEquals(1, parse("variants: " + "a".repeat(31) + "\n").variants().size());
+    assertTrue(messageOf("variants: private, private\n").contains("twice"));
+    assertTrue(messageOf("variants: private,\n").contains("blank entry"));
+  }
+
+  @Test
+  void aVariantFileMustNameADistinctApplicationAndNoVariantsOrPredecessor() {
+    String source = "deployments.private.yml";
+    SpecException none =
+        assertThrows(
+            SpecException.class,
+            () -> DeploymentSpecParser.checkVariant(parse(""), "private", "qits-edge", source));
+    assertTrue(none.getMessage().contains("must declare `application`"), none.getMessage());
+
+    SpecException same =
+        assertThrows(
+            SpecException.class,
+            () ->
+                DeploymentSpecParser.checkVariant(
+                    parse("application: qits-edge\n"), "private", "qits-edge", source));
+    assertTrue(same.getMessage().contains("main file's own application"), same.getMessage());
+
+    SpecException nested =
+        assertThrows(
+            SpecException.class,
+            () ->
+                DeploymentSpecParser.checkVariant(
+                    parse("application: qits-edge-private\nvariants: again\n"),
+                    "private",
+                    "qits-edge",
+                    source));
+    assertTrue(nested.getMessage().contains("`variants` belongs in the main"), nested.getMessage());
+
+    SpecException renamed =
+        assertThrows(
+            SpecException.class,
+            () ->
+                DeploymentSpecParser.checkVariant(
+                    parse("application: qits-edge-private\nrenamed_from: qits-old\n"),
+                    "private",
+                    "qits-edge",
+                    source));
+    assertTrue(renamed.getMessage().contains("`renamed_from` is not allowed"), renamed.getMessage());
+  }
+
+  @Test
+  void theUnknownKeyMessageNamesTheThreeNewKeys() {
+    String message = messageOf("variant: private\n");
+    assertTrue(message.contains("cap_add, image, variants"), message);
+  }
 }
