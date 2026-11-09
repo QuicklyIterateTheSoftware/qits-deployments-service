@@ -81,6 +81,10 @@ health_cmd: pg_isready -U postgres   # instead of health_path; runs inside the c
 resources: postgresql:db             # a database of its own, injected as QITS_RESOURCE_DB_*
 update_order: start-first            # default | stop-first for anything that cannot overlap itself
 publish_mode: host                   # default | ingress for a port swarm's routing mesh holds
+exposure: public                     # default | private (qits-private only) | both (qits-net + qits-private)
+cap_add: NET_ADMIN                   # extra capabilities, no CAP_ prefix; NET_ADMIN is the only one granted
+image: qits-edge                     # the image pulled, qits/<image>:<version>; default: the application
+variants: private                    # main file only: also deploy .config/qits/deployments.<name>.yml
 stop_grace_period: 10m               # default 30s; SIGTERM-to-SIGKILL, e.g. 90s, 9m30s, at most 1h
 routes: /artifacts,/artifacts/api    # optional public path prefixes, ordered
 upstream_port: 8080                  # default; target port behind every declared route
@@ -97,6 +101,51 @@ provisioned database, the derived host label, the catalogue key, the extras fami
 does not notice. Two repositories claiming one application name is last-wins and this component
 cannot refuse it (these tables record an application name and no repository identity); changing the
 key on a live application is a decommission and a new application, not a rename.
+
+`exposure:` is which networks the service joins and which edge routes it (qits-1976). `public` —
+the default, and every file today — joins `qits-net` exactly as before; `private` joins only the
+encrypted `qits-private` overlay (`network create -d overlay --attachable --opt encrypted --subnet
+10.231.0.0/20 --label qits.platform.deployments.network=private qits-private`, made by the deployer
+the first time a service needs it), which only the private edge over the tunnel reaches; `both`
+joins the two. The wire alias is set on every network joined. `DeploymentActive.exposure` carries
+the class, and a frame without it reads as `public`. A live service whose networks differ from its
+class is removed and created again, once — never the deployer itself — and with no `exposure`
+declared a service on `qits-net` compares equal and is updated in place as always.
+
+`image:`, `cap_add:` and `variants:` deploy **one image as a second application** (qits-1976).
+`image:` names the image pulled (`qits/<image>:<version>`) and defaults to the application name, so
+every file today pulls what it always pulled. `cap_add:` grants Linux capabilities without the `CAP_`
+prefix, out of a closed list that is `NET_ADMIN` alone; it reaches `--cap-add` on the create and the
+update (idempotent), and a cap no longer declared is logged, never dropped. `variants:` — in the main
+`deployments.yml` only — names further files at the same tag, `.config/qits/deployments.<name>.yml`
+(`^[a-z][a-z0-9-]{0,30}$`), each deployed as an application of its own from the same release, version,
+commit and cause, into the same places as the main application (a new variant is registered beside
+it exactly as a first release registers an application). A variant file must declare an
+`application:` distinct from the main one, may declare neither `variants:` nor `renamed_from:`, and
+its `image:` defaults to the MAIN file's. A broken or missing variant file records its own failure
+and never stops the main deployment. `DeploymentActive.variant` and `DeploymentFailed.variant` are
+null for the main deployment and the variant's name otherwise. qits-edge's private edge is the first:
+
+```yaml
+# .config/qits/deployments.yml of qits-edge, beside its existing keys
+variants: private
+
+# .config/qits/deployments.private.yml
+application: qits-edge-private
+image: qits-edge
+exposure: both
+cap_add: NET_ADMIN
+publish_mode: host
+publishes: 51820:51820/udp
+volumes: private:wireguard:/work/.wireguard, shared:qits-edge-letsencrypt:/work/.letsencrypt:ro
+health_cmd: curl -fsS http://localhost:80/q/health/ready || exit 1
+resources: postgresql:edge:qits_edge_private, postgresql:eventstream:qits_edge_private_eventstream, idp:client
+```
+
+`shared:qits-edge-letsencrypt` is the public edge's own certificate volume, in the shared vocabulary
+for this one reader and **read-only only** — the private edge orders nothing and serves the same
+certificate. Retiring a variant is removing it from `variants:` and retiring its application through
+`POST /applications/{id}/retire`; nothing infers it from the file's absence.
 
 `deploy_branches` is **retired**: parsed, validated and acted on by nobody. Where a release lands is
 the environment rows' answer — the designated platform environment — and never the file's. The

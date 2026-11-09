@@ -756,8 +756,32 @@ public class DeployService implements ReleaseAnnouncements {
                     snapshot.browserHost(),
                     snapshot.apiDocsPath(),
                     snapshot.navigation(),
-                    snapshot.endpoints()),
+                    snapshot.endpoints(),
+                    liveExposure(row.containerName()).wire(),
+                    // A row records no variant; an adopted deployment is announced as the
+                    // application it is, which is all the edges read.
+                    null),
                 row.causationId()));
+  }
+
+  /**
+   * The exposure a row's live service is attached as, for the two announcements that have no
+   * {@link Plan} to read one off: the startup sweep's adoption, and a retirement's withdrawal. A row
+   * records no exposure, so the runtime is asked — and a runtime that cannot say answers {@code
+   * public}, which is what every frame recorded before the class existed means and what every
+   * service on the estate is until a repository declares otherwise. Never throws: an announcement
+   * must not be able to fail over a question about which edge it is for.
+   */
+  private DeploymentDriver.Exposure liveExposure(String serviceName) {
+    if (serviceName == null || serviceName.isBlank()) {
+      return DeploymentDriver.Exposure.PUBLIC;
+    }
+    try {
+      return driver.liveExposure(serviceName).orElse(DeploymentDriver.Exposure.PUBLIC);
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "Could not read the exposure of %s; announcing it public", serviceName);
+      return DeploymentDriver.Exposure.PUBLIC;
+    }
   }
 
   /**
@@ -1279,7 +1303,10 @@ public class DeployService implements ReleaseAnnouncements {
       String apiDocs,
       String renamedFrom,
       Duration stopGracePeriod,
-      DeclaredShape shape) {}
+      DeclaredShape shape,
+      DeploymentDriver.Exposure exposure,
+      String image,
+      String variant) {}
 
   /**
    * One software-release event, start to finish, on the worker thread: read what the repository
@@ -1384,6 +1411,184 @@ public class DeployService implements ReleaseAnnouncements {
       String commitSha,
       boolean declared,
       List<String> heldRows) {
+    deployReadSpec(
+        runId,
+        repository,
+        releasedName,
+        version,
+        packageName,
+        priority,
+        causationId,
+        door,
+        spec,
+        commitSha,
+        declared,
+        heldRows,
+        null,
+        null);
+    if (declared && !spec.variants().isEmpty()) {
+      deployVariants(
+          runId,
+          repository,
+          releasedName,
+          version,
+          packageName,
+          priority,
+          causationId,
+          door,
+          spec,
+          commitSha);
+    }
+  }
+
+  /**
+   * The VARIANTS a main file names in {@code variants:} — each one more application deployed from
+   * this same release (qits-1976). For each name the file {@link SpecSource#variantPath} is read at
+   * the same released tag, through the same seam, and deployed by {@link #deployReadSpec} exactly as
+   * the main file was: the same version, commit and cause, its own application name, and {@code
+   * image} defaulting to the MAIN file's — so one image is put live twice.
+   *
+   * <p><b>Same places, by the same path a first release takes.</b> A variant is registered through
+   * {@link #register} under its own application name, which links it into the entry tier beside the
+   * main application and upserts its catalogue row — a brand-new variant is registered exactly as a
+   * brand-new application's first release registers it, and a known one keeps the links it has.
+   *
+   * <p><b>A variant's failure is its own and never the main deployment's</b>, which has already
+   * run by the time this is reached. A variant file that cannot be read, is absent, does not parse,
+   * or breaks a variant rule ({@link DeploymentSpecParser#checkVariant}) is recorded {@code FAILED}
+   * on the places its application is registered in — and only logged for one never registered,
+   * exactly as an unreadable main file of an unregistered repository is. It is not held for a
+   * retry: the main release is what {@link #retrySpecReads} holds, and the next release reads the
+   * variant again.
+   */
+  private void deployVariants(
+      String runId,
+      RepositoryRef repository,
+      String releasedName,
+      String version,
+      String packageName,
+      String priority,
+      UUID causationId,
+      Door door,
+      DeploymentSpec main,
+      String commitSha) {
+    String mainApplication = applicationName(releasedName, main);
+    String mainImage = main.image() != null ? main.image() : mainApplication;
+    for (String variant : main.variants()) {
+      String path = SpecSource.variantPath(variant);
+      String source = path + " of " + mainApplication + "@" + version;
+      // Where a failure is recorded when the file names no usable application of its own: the
+      // name such a variant conventionally carries. Never the main application's.
+      String fallbackName = mainApplication + "-" + variant;
+      DeploymentSpec spec = null;
+      try {
+        SpecSource.SpecRead read = specs.read(repository, SpecSource.tagRev(version), path);
+        if (!read.declared()) {
+          throw new SpecException(
+              source + ": `variants:` names `" + variant + "` and the release carries no " + path);
+        }
+        spec = read.spec();
+        DeploymentSpecParser.checkVariant(spec, variant, mainApplication, source);
+      } catch (RuntimeException e) {
+        String name =
+            spec != null && spec.application() != null && !spec.application().equals(mainApplication)
+                ? spec.application()
+                : fallbackName;
+        recordVariantFailure(
+            runId, repository, name, variant, version, commitSha, packageName, priority,
+            causationId, e);
+        continue;
+      }
+      LOG.infof(
+          "%s@%s declares the variant %s, deployed as %s from the image %s",
+          mainApplication,
+          version,
+          variant,
+          spec.application(),
+          spec.image() != null ? spec.image() : mainImage);
+      try {
+        deployReadSpec(
+            runId,
+            repository,
+            spec.application(),
+            version,
+            packageName,
+            priority,
+            causationId,
+            door,
+            spec,
+            commitSha,
+            true,
+            List.of(),
+            variant,
+            mainImage);
+      } catch (RuntimeException e) {
+        LOG.errorf(e, "The variant %s of %s@%s failed unexpectedly", variant, mainApplication, version);
+      }
+    }
+  }
+
+  /**
+   * A variant whose file could not be used: {@code FAILED} rows, naming why, on the places its
+   * application is registered in. A variant never registered has no place and gets a WARN only —
+   * the unreadable-main-file stance, one application over.
+   */
+  private void recordVariantFailure(
+      String runId,
+      RepositoryRef repository,
+      String applicationName,
+      String variant,
+      String version,
+      String commitSha,
+      String packageName,
+      String priority,
+      UUID causationId,
+      RuntimeException cause) {
+    String failure = "[variant " + variant + " unusable: " + cause.getMessage() + "]";
+    LOG.warnf(
+        "The variant %s (%s@%s) was not deployed: %s",
+        variant, applicationName, version, cause.getMessage());
+    List<Target> places = alreadyRegistered(applicationName, variant);
+    if (places.isEmpty()) {
+      return;
+    }
+    List<Queued> queued =
+        queue(
+            new Release(
+                runId,
+                repository,
+                applicationName,
+                version,
+                commitSha,
+                packageName,
+                priority,
+                causationId),
+            places);
+    for (Queued row : queued) {
+      finish(row.deploymentId(), row.target(), PdDeploymentStatus.FAILED, failure);
+    }
+  }
+
+  /**
+   * {@link #deployReadSpec(String, RepositoryRef, String, String, String, String, UUID, Door,
+   * DeploymentSpec, String, boolean, List)} for one application — the main one ({@code variant}
+   * null) or a variant, whose {@code image} defaults to {@code defaultImage}.
+   */
+  private void deployReadSpec(
+      String runId,
+      RepositoryRef repository,
+      String releasedName,
+      String version,
+      String packageName,
+      String priority,
+      UUID causationId,
+      Door door,
+      DeploymentSpec spec,
+      String commitSha,
+      boolean declared,
+      List<String> heldRows,
+      String variant,
+      String defaultImage) {
     if (!declared && door == Door.RELEASE_EVENT) {
       refuseUndeclaredSpec(
           new Release(
@@ -1403,7 +1608,7 @@ public class DeployService implements ReleaseAnnouncements {
 
     List<Target> targets;
     try {
-      targets = register(applicationName, spec, causationId);
+      targets = register(applicationName, spec, causationId, variant, defaultImage);
     } catch (RuntimeException e) {
       // Registration is a local transaction, so this is a bug rather than an outage — and a bug
       // here is exactly the shape that once cost an hour of silence: a fire-and-forget sender,
@@ -1411,7 +1616,7 @@ public class DeployService implements ReleaseAnnouncements {
       // is already registered in.
       LOG.errorf(e, "Registration of %s@%s failed", applicationName, version);
       failure = "[registration failed: " + e.getMessage() + "]";
-      targets = alreadyRegistered(applicationName);
+      targets = alreadyRegistered(applicationName, variant);
     }
 
     List<Queued> queued =
@@ -1856,7 +2061,11 @@ public class DeployService implements ReleaseAnnouncements {
    * the union reads that link back and states it again rather than emptying it.
    */
   private List<Target> register(
-      String applicationName, DeploymentSpec spec, UUID causationId) {
+      String applicationName,
+      DeploymentSpec spec,
+      UUID causationId,
+      String variant,
+      String defaultImage) {
     if (!isDeployableName(applicationName)) {
       // The application name is the image path segment and the network alias, so it has to be a
       // dns label. A repository whose name is not one cannot be deployed by convention at all, and
@@ -1923,7 +2132,14 @@ public class DeployService implements ReleaseAnnouncements {
               spec.stopGracePeriod(),
               // binds/publishes/aliases as WRITTEN: the driver resolves ${QITS_ENVIRONMENT} in an
               // alias against the place it deploys into, which is where a refusal can end a row.
-              spec.shape()));
+              spec.shape(),
+              spec.exposure(),
+              // The image pulled: the file's `image:`, else — for a variant — the main file's, else
+              // the application's own name, which is every file today.
+              spec.image() != null
+                  ? spec.image()
+                  : defaultImage != null ? defaultImage : applicationName,
+              variant));
     }
     return List.copyOf(targets);
   }
@@ -2214,6 +2430,11 @@ public class DeployService implements ReleaseAnnouncements {
    * no container starts off one of them.
    */
   private List<Target> alreadyRegistered(String applicationName) {
+    return alreadyRegistered(applicationName, null);
+  }
+
+  /** {@link #alreadyRegistered(String)} for a variant's application, whose failures say so. */
+  private List<Target> alreadyRegistered(String applicationName, String variant) {
     Optional<LinkedService> known = findService(applicationName);
     if (known.isEmpty()) {
       return List.of();
@@ -2246,7 +2467,12 @@ public class DeployService implements ReleaseAnnouncements {
                 // ...and no grace period: nothing is stopped off one of them either.
                 null,
                 // ...and no declared shape: nothing is created off one of them at all.
-                null));
+                null,
+                // ...and no exposure of its own: what a failure row announces is a failure.
+                null,
+                // ...and no image: nothing is pulled off one of them.
+                null,
+                variant));
       }
     }
     return List.copyOf(targets);
@@ -2514,6 +2740,20 @@ public class DeployService implements ReleaseAnnouncements {
       return target.shape();
     }
 
+    DeploymentDriver.Exposure exposure() {
+      return target.exposure() == null ? DeploymentDriver.Exposure.PUBLIC : target.exposure();
+    }
+
+    /** The image this deploys — {@code image:}, a variant's main image, or the application. */
+    String image() {
+      return target.image() == null ? target.applicationName() : target.image();
+    }
+
+    /** Null for the main deployment, the variant's name otherwise. */
+    String variant() {
+      return target.variant();
+    }
+
     /**
      * The address peers dial this by, on every network it is on: {@code <environment>-<application>},
      * for every service there is. It is derived in one place because everything that has to agree on
@@ -2675,8 +2915,7 @@ public class DeployService implements ReleaseAnnouncements {
     // release pipeline published under. Never the commit — an image tagged with a sha is what the
     // retired build trigger pulled.
     String imageRef =
-        ImageRefs.imageRef(
-            resolvedRegistryHost, imageRepository, plan.applicationName(), plan.version());
+        ImageRefs.imageRef(resolvedRegistryHost, imageRepository, plan.image(), plan.version());
 
     // The registry having no image for a green build is an expected outcome (nothing may publish
     // this application yet) and gets its own state rather than a generic failure.
@@ -3179,7 +3418,8 @@ public class DeployService implements ReleaseAnnouncements {
         plan.stopGracePeriod(),
         plan.shape(),
         null,
-        false);
+        false,
+        plan.exposure());
   }
 
   /**
@@ -3432,7 +3672,10 @@ public class DeployService implements ReleaseAnnouncements {
             retirement.environmentId(),
             retirement.environmentName(),
             Instant.now(),
-            null);
+            null,
+            settled.service() != null
+                ? settled.service()
+                : PdNetworks.alias(retirement.environmentName(), predecessor));
       }
       String service = settled == null ? null : settled.service();
       if (service != null && !service.equals(retirement.successorService())) {
@@ -3618,7 +3861,9 @@ public class DeployService implements ReleaseAnnouncements {
         // The declared predecessor, from which the driver derives the old wire address as an
         // alias; null for every spec without `renamed_from`, which renders exactly what it did.
         plan.renamedFrom(),
-        takesOverPredecessor);
+        takesOverPredecessor,
+        // Which networks it joins — the flat one, the private one, or the two.
+        plan.exposure());
   }
 
   /**
@@ -3804,7 +4049,9 @@ public class DeployService implements ReleaseAnnouncements {
                     plan.browserHost(),
                     plan.apiDocsPath(),
                     plan.navigation(),
-                    plan.endpoints()),
+                    plan.endpoints(),
+                    plan.exposure().wire(),
+                    plan.variant()),
                 plan.cause()));
   }
 
@@ -3846,13 +4093,18 @@ public class DeployService implements ReleaseAnnouncements {
         plan.environmentId(),
         plan.environmentName(),
         finishedAt,
-        plan.cause());
+        plan.cause(),
+        PdNetworks.alias(plan.environmentName(), plan.renamedFrom()));
   }
 
   /**
    * The empty snapshot itself, for any retired application — the rename's predecessor above, and
    * an operator's successor-less retirement ({@link #retire}), which names the retired
    * application's own newest row and no cause: nothing on the bus asked for it, a person did.
+   *
+   * <p>{@code serviceName} is the retired service, still live when this is sent, and its exposure
+   * is what the frame carries — the last class it was served as — or {@code public} when the
+   * runtime cannot say. The snapshot is empty either way, so whichever edge reads it withdraws.
    */
   private void announceRetired(
       String deploymentId,
@@ -3860,7 +4112,9 @@ public class DeployService implements ReleaseAnnouncements {
       String environmentId,
       String environmentName,
       Instant finishedAt,
-      UUID cause) {
+      UUID cause,
+      String serviceName) {
+    String exposure = liveExposure(serviceName).wire();
     announce(
         deploymentId,
         announcer ->
@@ -3878,7 +4132,9 @@ public class DeployService implements ReleaseAnnouncements {
                     null,
                     null,
                     List.of(),
-                    List.of()),
+                    List.of(),
+                    exposure,
+                    null),
                 cause));
   }
 
@@ -3902,7 +4158,8 @@ public class DeployService implements ReleaseAnnouncements {
                     finished.runId(),
                     status.name(),
                     detail,
-                    finished.finishedAt()),
+                    finished.finishedAt(),
+                    target.variant()),
                 finished.cause()));
   }
 

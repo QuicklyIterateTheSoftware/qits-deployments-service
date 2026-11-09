@@ -21,6 +21,15 @@ public interface SpecSource {
   String SPEC_PATH = ".config/qits/deployments.yml";
 
   /**
+   * Where a VARIANT's file lives: {@code .config/qits/deployments.<name>.yml}, beside {@link
+   * #SPEC_PATH} at the same tag. A variant is one more application deployed from the same image and
+   * release — named in the main file's {@code variants:}, never discovered by listing the directory.
+   */
+  static String variantPath(String variant) {
+    return ".config/qits/deployments." + variant + ".yml";
+  }
+
+  /**
    * The rev a released version is read at — <b>fully qualified, and that is the point</b>.
    *
    * <p>The git host resolves a bare {@code 2026.903.113443} perfectly well, but a bare name is
@@ -53,7 +62,16 @@ public interface SpecSource {
    * @throws SpecException when the file exists but could not be fetched or understood — the
    *     deployment fails on it rather than guessing a topology
    */
-  SpecRead read(RepositoryRef repository, String rev);
+  default SpecRead read(RepositoryRef repository, String rev) {
+    return read(repository, rev, SPEC_PATH);
+  }
+
+  /**
+   * {@link #read(RepositoryRef, String)} for a file at another path of the same repository — a
+   * variant's {@link #variantPath}. The answers are the same three: the parsed file, {@link
+   * SpecRead#undeclared()} when it is absent at that rev, or a {@link SpecException}.
+   */
+  SpecRead read(RepositoryRef repository, String rev, String path);
 
   /**
    * A spec, and the commit the rev it was read at resolved to.
@@ -188,6 +206,18 @@ public interface SpecSource {
    * state, moving into the repository; while both sources are live the driver takes their union and
    * the declaration wins. See {@link DeclaredShape}.
    *
+   * <p>{@code exposure} is which networks the service joins and which edge routes it — {@link
+   * DeploymentDriver.Exposure#PUBLIC} unless the file says {@code private} or {@code both}, which
+   * is every file today. See {@link DeploymentDriver.Exposure}.
+   *
+   * <p>{@code image} is the image the deploy pulls, {@code qits/<image>:<version>} — null is "the
+   * application's own name", which is every file today. A variant's null means the MAIN file's
+   * image instead, resolved by {@code DeployService}, so one release's image is deployed twice.
+   *
+   * <p>{@code variants} names the further applications this release deploys from the same image,
+   * each described by its own {@link #variantPath} file at the same tag. Empty is every file today.
+   * Only the main file may name them.
+   *
    * <p><b>{@code deployBranches} is read and not used here</b>, and that is deliberate — see {@link
    * #deployBranches()}.
    */
@@ -209,10 +239,15 @@ public interface SpecSource {
       String application,
       String renamedFrom,
       Duration stopGracePeriod,
-      DeclaredShape shape) {
+      DeclaredShape shape,
+      DeploymentDriver.Exposure exposure,
+      String image,
+      List<String> variants) {
 
     /** A null list and an empty one are the same statement: the file named none. */
     public DeploymentSpec {
+      variants = variants == null ? List.of() : List.copyOf(variants);
+      exposure = exposure == null ? DeploymentDriver.Exposure.PUBLIC : exposure;
       shape = shape == null ? DeclaredShape.NONE : shape;
       deployBranches = deployBranches == null ? List.of() : List.copyOf(deployBranches);
       resources = resources == null ? List.of() : List.copyOf(resources);
@@ -224,6 +259,93 @@ public interface SpecSource {
           navigationEntries == null ? List.of() : List.copyOf(navigationEntries);
       stopGracePeriod =
           stopGracePeriod == null ? DeploymentDriver.DEFAULT_STOP_GRACE_PERIOD : stopGracePeriod;
+    }
+
+    /** The shape before {@code image} and {@code variants}: the application's own image, alone. */
+    public DeploymentSpec(
+        boolean availableOnEnv,
+        List<String> deployBranches,
+        String healthPath,
+        String healthCmd,
+        List<ResourceSpec> resources,
+        List<VolumeSpec> volumes,
+        DeploymentDriver.UpdateOrder updateOrder,
+        DeploymentDriver.PublishMode publishMode,
+        List<String> routes,
+        int upstreamPort,
+        String host,
+        boolean browserHostDeclared,
+        List<NavigationEntry> navigationEntries,
+        String apiDocs,
+        String application,
+        String renamedFrom,
+        Duration stopGracePeriod,
+        DeclaredShape shape,
+        DeploymentDriver.Exposure exposure) {
+      this(
+          availableOnEnv,
+          deployBranches,
+          healthPath,
+          healthCmd,
+          resources,
+          volumes,
+          updateOrder,
+          publishMode,
+          routes,
+          upstreamPort,
+          host,
+          browserHostDeclared,
+          navigationEntries,
+          apiDocs,
+          application,
+          renamedFrom,
+          stopGracePeriod,
+          shape,
+          exposure,
+          null,
+          null);
+    }
+
+    /** The shape before {@code exposure}: a file that names none is public, as every file is. */
+    public DeploymentSpec(
+        boolean availableOnEnv,
+        List<String> deployBranches,
+        String healthPath,
+        String healthCmd,
+        List<ResourceSpec> resources,
+        List<VolumeSpec> volumes,
+        DeploymentDriver.UpdateOrder updateOrder,
+        DeploymentDriver.PublishMode publishMode,
+        List<String> routes,
+        int upstreamPort,
+        String host,
+        boolean browserHostDeclared,
+        List<NavigationEntry> navigationEntries,
+        String apiDocs,
+        String application,
+        String renamedFrom,
+        Duration stopGracePeriod,
+        DeclaredShape shape) {
+      this(
+          availableOnEnv,
+          deployBranches,
+          healthPath,
+          healthCmd,
+          resources,
+          volumes,
+          updateOrder,
+          publishMode,
+          routes,
+          upstreamPort,
+          host,
+          browserHostDeclared,
+          navigationEntries,
+          apiDocs,
+          application,
+          renamedFrom,
+          stopGracePeriod,
+          shape,
+          null);
     }
 
     /**

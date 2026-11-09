@@ -107,6 +107,43 @@ public class PdSpecRetryTest {
   }
 
   @Test
+  public void aHeldReleaseThatAnswersDeploysItsVariantsToo() {
+    // qits-1976: the retry deploys a recovered release through the same door as the release event,
+    // so the variants its main file names follow it, read at the same tag.
+    String environmentId = createEnvironment("spec-held-variant");
+    specs.script(
+        "repo-held-variant",
+        DeploymentSpecParser.parse("variants: private\n", "deployments.yml of repo-held-variant"));
+    specs.scriptAt(
+        "repo-held-variant",
+        SpecSource.variantPath("private"),
+        DeploymentSpecParser.parse(
+            "application: repo-held-variant-private\n", "deployments.private.yml"));
+    postRelease("repo-held-variant", V_A);
+    awaitSettled(environmentId, 2);
+
+    specs.scriptRetryableFailure("repo-held-variant", "the git host answered 503");
+    postRelease("repo-held-variant", V_B);
+    awaitSettled(environmentId, 3);
+    int variantReads = specs.readsOf("repo-held-variant", SpecSource.variantPath("private"));
+
+    specs.recover("repo-held-variant");
+    tick();
+
+    List<Map<String, Object>> rows = awaitSettled(environmentId, 5);
+    assertEquals(
+        variantReads + 1, specs.readsOf("repo-held-variant", SpecSource.variantPath("private")));
+    assertTrue(
+        rows.stream()
+            .anyMatch(
+                row ->
+                    "repo-held-variant-private".equals(row.get("applicationName"))
+                        && V_B.equals(row.get("version"))
+                        && "ACTIVE".equals(row.get("status"))),
+        rows.toString());
+  }
+
+  @Test
   public void aHeldReleaseIsReadAgainEveryTickUntilItAnswers() {
     String environmentId = createEnvironment("spec-held-twice");
     postRelease("repo-held-twice", V_A);

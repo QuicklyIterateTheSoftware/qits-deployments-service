@@ -21,9 +21,18 @@ import java.util.Set;
  * publishes} are kept as written for the same reason, {@link #QITS_PORT_TOKEN} included: the host
  * HTTP port is an installation's choice, known to the deployer and not to the file, so the
  * substitution is {@link #publishesFor}'s.
+ *
+ * <p>{@code capAdd} is {@code cap_add:} — the Linux capabilities the container is granted beyond
+ * docker's default set, without the {@code CAP_} prefix and out of a closed list ({@code
+ * NET_ADMIN} alone today, for the private edge's userspace WireGuard). It has no extras twin. Unlike
+ * the other three it is rendered on the update too ({@code --cap-add} is idempotent), so a cap a
+ * repository starts declaring reaches its live service without a recreate.
  */
 public record DeclaredShape(
-    List<ServiceExtras.Mount> binds, List<String> publishes, List<String> aliases) {
+    List<ServiceExtras.Mount> binds,
+    List<String> publishes,
+    List<String> aliases,
+    List<String> capAdd) {
 
   /**
    * The one placeholder an alias may carry. Replaced by the deployment's environment name, so one
@@ -43,12 +52,20 @@ public record DeclaredShape(
   public static final String DOCKER_SOCKET = "/var/run/docker.sock";
 
   /** A file that declared none of the three — every file that exists today. */
-  public static final DeclaredShape NONE = new DeclaredShape(List.of(), List.of(), List.of());
+  public static final DeclaredShape NONE =
+      new DeclaredShape(List.of(), List.of(), List.of(), List.of());
 
   public DeclaredShape {
+    capAdd = capAdd == null ? List.of() : List.copyOf(capAdd);
     binds = binds == null ? List.of() : List.copyOf(binds);
     publishes = publishes == null ? List.of() : List.copyOf(publishes);
     aliases = aliases == null ? List.of() : List.copyOf(aliases);
+  }
+
+  /** The shape before {@code cap_add}: a file that grants no capability. */
+  public DeclaredShape(
+      List<ServiceExtras.Mount> binds, List<String> publishes, List<String> aliases) {
+    this(binds, publishes, aliases, List.of());
   }
 
   /**

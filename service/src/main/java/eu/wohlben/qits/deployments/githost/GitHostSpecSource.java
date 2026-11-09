@@ -134,9 +134,13 @@ public class GitHostSpecSource implements SpecSource {
   /** The header the git host answers every blob and tree read with: the resolved commit. */
   static final String COMMIT_SHA_HEADER = "Git-Commit-Sha";
 
+  /**
+   * Read {@code path} at {@code rev} — {@link #SPEC_PATH} for the ordinary read, a variant's {@link
+   * SpecSource#variantPath} beside it (qits-1976). One blob, one request, the same answers.
+   */
   @Override
-  public SpecRead read(RepositoryRef repository, String rev) {
-    String url = blobUrl(address(repository), rev, SPEC_PATH);
+  public SpecRead read(RepositoryRef repository, String rev, String path) {
+    String url = blobUrl(address(repository), rev, path);
     HttpResponse<String> response = get(url);
 
     if (response.statusCode() == 404) {
@@ -150,7 +154,7 @@ public class GitHostSpecSource implements SpecSource {
       // retryable 403 that held and then parked the release (qits-883).
       LOG.debugf(
           "%s carries no %s at %s — deploying with the defaults",
-          repository.applicationName(), SPEC_PATH, rev);
+          repository.applicationName(), path, rev);
       // No blob, so no commit: a 404 says nothing about where the rev points, and inventing a sha
       // here would put a commit on the row that nobody resolved. And no blob is reported AS no
       // blob — SpecRead.undeclared() carries the defaults and the fact that nothing declared them,
@@ -163,7 +167,7 @@ public class GitHostSpecSource implements SpecSource {
     }
     return new SpecRead(
         DeploymentSpecParser.parse(
-            response.body(), SPEC_PATH + " of " + repository.applicationName() + "@" + rev),
+            response.body(), path + " of " + repository.applicationName() + "@" + rev),
         commitShaOf(response));
   }
 

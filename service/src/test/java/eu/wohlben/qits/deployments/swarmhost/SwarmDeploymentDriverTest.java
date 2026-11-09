@@ -110,6 +110,8 @@ class SwarmDeploymentDriverTest {
     driver.healthStartPeriodSeconds = 60;
     driver.updateMonitorSeconds = 60;
     driver.flatNetwork = "qits-net";
+    driver.privateNetwork = "qits-private";
+    driver.privateNetworkSubnet = "10.231.0.0/20";
     driver.outputMaxChars = 65536;
     // The SHIPPED state: `qits.deployments.platform-domain` defaults to empty and SmallRye reads an
     // empty value as absent, so an installation that has not stated its domain hands the driver
@@ -3112,6 +3114,402 @@ class SwarmDeploymentDriverTest {
     assertEquals(
         DeploymentDriver.VolumeState.UNKNOWN, driver.volumeExists("bad,name=x").state());
     assertEquals(0, cli.count("volume ls"));
+  }
+
+  // --- exposure: the networks a service joins (qits-1976) --------------------------------------
+
+  /** {@link #spec()} with an exposure class of its own. */
+  private DeploymentDriver.ServiceSpec exposed(DeploymentDriver.Exposure exposure) {
+    DeploymentDriver.ServiceSpec base = spec();
+    return new DeploymentDriver.ServiceSpec(
+        base.environmentId(),
+        base.environmentName(),
+        base.applicationId(),
+        base.applicationName(),
+        base.deploymentId(),
+        base.commitSha(),
+        base.version(),
+        base.deploymentName(),
+        base.wireAlias(),
+        base.networks(),
+        base.imageRef(),
+        base.healthPath(),
+        base.healthCmd(),
+        base.availableOnEnv(),
+        base.updateOrder(),
+        base.publishMode(),
+        base.resources(),
+        base.volumes(),
+        base.stopGracePeriod(),
+        base.shape(),
+        base.renamedFrom(),
+        base.takesOverPredecessor(),
+        exposure);
+  }
+
+  private SwarmDeploymentDriver driverWithAnAlias() {
+    return driver(
+        Map.of(DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.aliases[0]", "registry.dev.localhost"));
+  }
+
+  @Test
+  void aSpecThatNamesNoExposureIsPublicAndJoinsTheFlatNetworkAlone() {
+    SwarmDeploymentDriver driver = driver();
+    DeploymentDriver.ServiceSpec spec = spec();
+
+    assertEquals(DeploymentDriver.Exposure.PUBLIC, spec.exposure(), "the default");
+    assertEquals(List.of("qits-net"), driver.collapse(spec));
+    List<String> argv = driver.buildCreateArgv(spec, "dev-qits-gateway", driver.collapse(spec));
+    assertEquals(List.of("--network", "qits-net"), networkArguments(argv), "byte for byte as before");
+  }
+
+  @Test
+  void aPublicServiceCarriesItsAliasesOnTheFlatNetwork() {
+    SwarmDeploymentDriver driver = driverWithAnAlias();
+    DeploymentDriver.ServiceSpec spec = exposed(DeploymentDriver.Exposure.PUBLIC);
+
+    List<String> argv = driver.buildCreateArgv(spec, "dev-qits-gateway", driver.collapse(spec));
+
+    assertEquals(
+        List.of("--network", "name=qits-net,alias=registry.dev.localhost"), networkArguments(argv));
+  }
+
+  @Test
+  void aPrivateServiceJoinsThePrivateOverlayAloneWithItsAliasesOnIt() {
+    SwarmDeploymentDriver driver = driverWithAnAlias();
+    DeploymentDriver.ServiceSpec spec = exposed(DeploymentDriver.Exposure.PRIVATE);
+
+    assertEquals(List.of("qits-private"), driver.collapse(spec));
+    List<String> argv = driver.buildCreateArgv(spec, "dev-qits-gateway", driver.collapse(spec));
+
+    assertEquals(
+        List.of("--network", "name=qits-private,alias=registry.dev.localhost"),
+        networkArguments(argv),
+        "never on qits-net, where the public edge could reach it");
+  }
+
+  @Test
+  void aServiceExposedBothWaysJoinsTheTwoWithTheAliasesOnEach() {
+    SwarmDeploymentDriver driver = driverWithAnAlias();
+    DeploymentDriver.ServiceSpec spec = exposed(DeploymentDriver.Exposure.BOTH);
+
+    assertEquals(List.of("qits-net", "qits-private"), driver.collapse(spec));
+    List<String> argv = driver.buildCreateArgv(spec, "dev-qits-gateway", driver.collapse(spec));
+
+    assertEquals(
+        List.of(
+            "--network",
+            "name=qits-net,alias=registry.dev.localhost",
+            "--network",
+            "name=qits-private,alias=registry.dev.localhost"),
+        networkArguments(argv));
+  }
+
+  @Test
+  void aBothServiceWithNoAliasesTakesTheShortFormOnEachNetwork() {
+    SwarmDeploymentDriver driver = driver();
+    DeploymentDriver.ServiceSpec spec = exposed(DeploymentDriver.Exposure.BOTH);
+
+    List<String> argv = driver.buildCreateArgv(spec, "dev-qits-gateway", driver.collapse(spec));
+
+    assertEquals(
+        List.of("--network", "qits-net", "--network", "qits-private"), networkArguments(argv));
+  }
+
+  @Test
+  void aliasesWithNoNetworkAtAllRefuseTheDeployment() {
+    SwarmDeploymentDriver driver = driverWithAnAlias();
+
+    assertThrows(
+        ServiceExtras.Refused.class,
+        () -> driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of()));
+  }
+
+  @Test
+  void thePrivateOverlayIsCreatedEncryptedAttachableAndOnItsFixedSubnet() {
+    List<String> argv =
+        driver()
+            .buildNetworkCreateArgv(
+                new DeploymentDriver.Network(
+                    "qits-private", null, DeploymentDriver.NetworkKind.BUNDLE, null));
+
+    assertEquals(
+        List.of(
+            "docker", "network", "create", "-d", "overlay", "--attachable", "--opt", "encrypted",
+            "--subnet", "10.231.0.0/20", "--label", "qits.platform.deployments.network=private",
+            "qits-private"),
+        argv);
+  }
+
+  @Test
+  void theFlatNetworksCreateArgvIsUnchanged() {
+    List<String> argv =
+        driver()
+            .buildNetworkCreateArgv(
+                new DeploymentDriver.Network(
+                    "qits-net", null, DeploymentDriver.NetworkKind.BUNDLE, null));
+
+    assertEquals(
+        List.of(
+            "docker", "network", "create", "-d", "overlay", "--attachable", "--label",
+            "qits.platform.deployments.network=bundle", "qits-net"),
+        argv);
+  }
+
+  @Test
+  void aPrivateDeploymentEnsuresThePrivateOverlayWhenItIsMissing() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script("network inspect qits-private", result(1, "Error: No such network: qits-private"));
+    cli.script("--format {{.ID}} dev-qits-gateway", result(1, "no such service"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+
+    driver.apply(exposed(DeploymentDriver.Exposure.PRIVATE));
+
+    List<String> created = cli.matching("network create");
+    assertTrue(created.contains("encrypted"), created.toString());
+    assertEquals("qits-private", created.get(created.size() - 1));
+    assertEquals(0, cli.count("network create -d overlay --attachable --label"), "no flat create");
+  }
+
+  /** A live service whose spec lists these network IDs, with qits-net and qits-private resolvable. */
+  private void scriptLiveNetworks(String liveTargets) {
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    cli.script("network inspect --format {{.ID}} qits-net", result(0, "flatnetid0000000000000001\n"));
+    cli.script(
+        "network inspect --format {{.ID}} qits-private", result(0, "privnetid0000000000000002\n"));
+    cli.script(SwarmDeploymentDriver.SPEC_NETWORK_TARGETS_FORMAT, result(0, liveTargets));
+  }
+
+  @Test
+  void aLiveServiceOnQitsNetThatDeclaresNoExposureIsUPDATEDANDNOTRECREATED() {
+    // THIS IS THE TEST THAT PROTECTS THE ESTATE — do not delete it. No repository declares an
+    // exposure, so every service is public, its collapse is exactly [qits-net], and its live spec
+    // names qits-net by ID (the daemon stores IDs, not names). Read as names alone, the live list
+    // would match nothing and every service on the platform would be recreated on its next
+    // deployment.
+    SwarmDeploymentDriver driver = driver();
+    scriptLiveNetworks("flatnetid0000000000000001\n");
+
+    DeploymentDriver.ApplyResult applied = driver.apply(spec());
+
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, applied.outcome());
+    assertTrue(cli.matching("service rm").isEmpty(), "nothing is recreated");
+    assertFalse(cli.matching("service update").isEmpty(), "the ordinary update path");
+    assertEquals(1, cli.count(SwarmDeploymentDriver.SPEC_NETWORK_TARGETS_FORMAT), "it was asked");
+  }
+
+  @Test
+  void aLiveServiceWhoseSpecNamesTheNetworkByNameMatchesToo() {
+    SwarmDeploymentDriver driver = driver();
+    scriptLiveNetworks("qits-net\n");
+
+    driver.apply(spec());
+
+    assertTrue(cli.matching("service rm").isEmpty());
+  }
+
+  @Test
+  void aNetworkThisDriverNeverAttachesDecidesNothing() {
+    // A leftover attachment (the plane's qits-platform, say) is nobody's statement: only the
+    // managed pair is compared, so it neither recreates the service nor hides a real drift.
+    SwarmDeploymentDriver driver = driver();
+    scriptLiveNetworks("flatnetid0000000000000001\nsomeothernetid00000000003\n");
+
+    driver.apply(spec());
+
+    assertTrue(cli.matching("service rm").isEmpty());
+  }
+
+  @Test
+  void aServiceMovedToPrivateIsRemovedAndCreatedOnThePrivateOverlay() {
+    SwarmDeploymentDriver driver = driver();
+    scriptLiveNetworks("flatnetid0000000000000001\n");
+
+    DeploymentDriver.ApplyResult applied = driver.apply(exposed(DeploymentDriver.Exposure.PRIVATE));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, applied.outcome());
+    assertEquals(List.of("docker", "service", "rm", "dev-qits-gateway"), cli.matching("service rm"));
+    assertTrue(cli.matching("service update").isEmpty(), "an update could never move a network");
+    List<String> created = cli.matching("service create");
+    assertEquals(List.of("--network", "qits-private"), networkArguments(created));
+  }
+
+  @Test
+  void aServiceMovedBackToPublicLeavesThePrivateOverlayByARecreate() {
+    // The other direction: a public service still on qits-private is a private upstream the public
+    // edge's side can reach. The volume and alias arms are one-directional; this one is not.
+    SwarmDeploymentDriver driver = driver();
+    scriptLiveNetworks("flatnetid0000000000000001\nprivnetid0000000000000002\n");
+
+    driver.apply(spec());
+
+    assertEquals(List.of("docker", "service", "rm", "dev-qits-gateway"), cli.matching("service rm"));
+    assertEquals(List.of("--network", "qits-net"), networkArguments(cli.matching("service create")));
+  }
+
+  @Test
+  void aBothServiceOnTheTwoIsAnOrdinaryUpdate() {
+    SwarmDeploymentDriver driver = driver();
+    scriptLiveNetworks("privnetid0000000000000002\nflatnetid0000000000000001\n");
+
+    driver.apply(exposed(DeploymentDriver.Exposure.BOTH));
+
+    assertTrue(cli.matching("service rm").isEmpty(), "order does not matter, membership does");
+  }
+
+  @Test
+  void aNetworkInspectThatCannotAnswerRecreatesNothing() {
+    SwarmDeploymentDriver driver = driver();
+    scriptLiveNetworks("flatnetid0000000000000001\n");
+    cli.script(SwarmDeploymentDriver.SPEC_NETWORK_TARGETS_FORMAT, result(1, "Error: daemon busy"));
+
+    driver.apply(exposed(DeploymentDriver.Exposure.PRIVATE));
+
+    assertTrue(cli.matching("service rm").isEmpty());
+  }
+
+  @Test
+  void anEmptyNetworkListOrAnUnresolvableNetworkRecreatesNothing() {
+    SwarmDeploymentDriver driver = driver();
+    scriptLiveNetworks("");
+    driver.apply(exposed(DeploymentDriver.Exposure.PRIVATE));
+    assertTrue(cli.matching("service rm").isEmpty(), "an empty answer is no answer");
+
+    SwarmDeploymentDriver unresolved = driver();
+    scriptLiveNetworks("flatnetid0000000000000001\n");
+    cli.script(
+        "network inspect --format {{.ID}} qits-private", result(1, "Error: No such network"));
+    unresolved.apply(exposed(DeploymentDriver.Exposure.PRIVATE));
+    assertTrue(cli.matching("service rm").isEmpty(), "a desired network it cannot resolve");
+
+    SwarmDeploymentDriver strangers = driver();
+    scriptLiveNetworks("idofsomethingelse00000004\n");
+    strangers.apply(exposed(DeploymentDriver.Exposure.PRIVATE));
+    assertTrue(cli.matching("service rm").isEmpty(), "no live line resolved to a managed network");
+  }
+
+  @Test
+  void aSelfUpdateIsNeverRecreatedOverItsNetworks() {
+    SwarmDeploymentDriver driver = driver();
+    driver.hostnameFile = hostnameFile("task-container-id");
+    cli.script("Config.Labels", result(0, "dev-qits-gateway"));
+    cli.script("--format {{.ID}}", result(0, "svc123"));
+    cli.script(
+        SwarmDeploymentDriver.SPEC_NETWORK_TARGETS_FORMAT, result(0, "flatnetid0000000000000001\n"));
+
+    DeploymentDriver.ApplyResult applied = driver.apply(exposed(DeploymentDriver.Exposure.PRIVATE));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.HANDED_OFF, applied.outcome());
+    assertTrue(cli.matching("service rm").isEmpty(), "never its own service");
+    assertEquals(0, cli.count(SwarmDeploymentDriver.SPEC_NETWORK_TARGETS_FORMAT));
+  }
+
+  @Test
+  void theLiveExposureIsReadOffTheManagedNetworks() {
+    SwarmDeploymentDriver driver = driver();
+    scriptLiveNetworks("flatnetid0000000000000001\n");
+    assertEquals(Optional.of(DeploymentDriver.Exposure.PUBLIC), driver.liveExposure("dev-qits-gateway"));
+
+    scriptLiveNetworks("privnetid0000000000000002\n");
+    assertEquals(
+        Optional.of(DeploymentDriver.Exposure.PRIVATE), driver.liveExposure("dev-qits-gateway"));
+
+    scriptLiveNetworks("flatnetid0000000000000001\nprivnetid0000000000000002\n");
+    assertEquals(Optional.of(DeploymentDriver.Exposure.BOTH), driver.liveExposure("dev-qits-gateway"));
+
+    scriptLiveNetworks("");
+    assertEquals(Optional.empty(), driver.liveExposure("dev-qits-gateway"), "cannot say");
+  }
+
+  // --- cap_add (qits-1976) ------------------------------------------------------------------------
+
+  /** {@link #spec()} granting {@code NET_ADMIN} through its declared shape. */
+  private DeploymentDriver.ServiceSpec withNetAdmin() {
+    DeploymentDriver.ServiceSpec base = exposed(DeploymentDriver.Exposure.BOTH);
+    return new DeploymentDriver.ServiceSpec(
+        base.environmentId(),
+        base.environmentName(),
+        base.applicationId(),
+        base.applicationName(),
+        base.deploymentId(),
+        base.commitSha(),
+        base.version(),
+        base.deploymentName(),
+        base.wireAlias(),
+        base.networks(),
+        "registry.qits.dev.localhost:8080/qits/qits-edge:" + VERSION,
+        base.healthPath(),
+        base.healthCmd(),
+        base.availableOnEnv(),
+        base.updateOrder(),
+        base.publishMode(),
+        base.resources(),
+        base.volumes(),
+        base.stopGracePeriod(),
+        new DeclaredShape(List.of(), List.of(), List.of(), List.of("NET_ADMIN")),
+        base.renamedFrom(),
+        base.takesOverPredecessor(),
+        base.exposure());
+  }
+
+  @Test
+  void aGrantedCapabilityIsAddedOnTheCreate() {
+    List<String> argv =
+        driver().buildCreateArgv(withNetAdmin(), "dev-qits-gateway", List.of("qits-net"));
+
+    int at = argv.indexOf("--cap-add");
+    assertTrue(at > 0, argv.toString());
+    assertEquals("NET_ADMIN", argv.get(at + 1));
+    assertEquals(1, argv.stream().filter("--cap-add"::equals).count());
+    assertEquals(
+        "registry.qits.dev.localhost:8080/qits/qits-edge:" + VERSION,
+        argv.get(argv.size() - 1),
+        "the variant's image, whatever the application is called");
+  }
+
+  @Test
+  void aGrantedCapabilityIsRestatedOnTheUpdateBecauseCapAddIsIdempotent() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script(SwarmDeploymentDriver.SPEC_CAPABILITIES_FORMAT, result(0, "CAP_NET_ADMIN\n"));
+
+    List<String> argv = driver.buildUpdateArgv(withNetAdmin(), "dev-qits-gateway");
+
+    int at = argv.indexOf("--cap-add");
+    assertTrue(at > 0, argv.toString());
+    assertEquals("NET_ADMIN", argv.get(at + 1));
+    assertFalse(argv.contains("--cap-drop"), argv.toString());
+  }
+
+  @Test
+  void aServiceThatGrantsNoCapabilityIsGivenNoFlagAndAnUndeclaredOneIsNeverDropped() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script(SwarmDeploymentDriver.SPEC_CAPABILITIES_FORMAT, result(0, "CAP_NET_ADMIN\n"));
+
+    List<String> update = driver.buildUpdateArgv(spec(), "dev-qits-gateway");
+    List<String> create = driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
+
+    assertFalse(update.contains("--cap-add"), update.toString());
+    assertFalse(update.contains("--cap-drop"), "a removal is logged, never performed");
+    assertFalse(create.contains("--cap-add"), create.toString());
+  }
+
+  @Test
+  void aCapabilityOutsideTheClosedListIsRefusedAtTheArgv() {
+    DeploymentDriver.ServiceSpec base = withNetAdmin();
+    DeploymentDriver.ServiceSpec forged =
+        new DeploymentDriver.ServiceSpec(
+            base.environmentId(), base.environmentName(), base.applicationId(),
+            base.applicationName(), base.deploymentId(), base.commitSha(), base.version(),
+            base.deploymentName(), base.wireAlias(), base.networks(), base.imageRef(),
+            base.healthPath(), base.healthCmd(), base.availableOnEnv(), base.updateOrder(),
+            base.publishMode(), base.resources(), base.volumes(), base.stopGracePeriod(),
+            new DeclaredShape(List.of(), List.of(), List.of(), List.of("SYS_ADMIN")),
+            base.renamedFrom(), base.takesOverPredecessor(), base.exposure());
+
+    assertThrows(
+        ServiceExtras.Refused.class,
+        () -> driver().buildCreateArgv(forged, "dev-qits-gateway", List.of("qits-net")));
   }
 
   private static final class ScriptedCli implements SwarmDeploymentDriver.Cli {

@@ -5,6 +5,7 @@ import eu.wohlben.qits.deployments.deployments.control.DeployedIdentity;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentExtrasSource;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentIdentifiers;
+import eu.wohlben.qits.deployments.deployments.control.DeploymentSpecParser;
 import eu.wohlben.qits.deployments.deployments.control.ExtrasSnapshot;
 import eu.wohlben.qits.deployments.deployments.control.HealthGate;
 import eu.wohlben.qits.deployments.deployments.control.PdProcess;
@@ -22,6 +23,7 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -231,6 +233,17 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       "{{range .Spec.TaskTemplate.Networks}}{{range .Aliases}}{{println .}}{{end}}{{end}}";
 
   /**
+   * The networks a live service's spec attaches it to, one per line. <b>The daemon stores the
+   * network's ID here, not its name</b> — the CLI resolves a name when it writes the spec — so
+   * every reader matches a line against both a network's name and its ID ({@link #networkId}).
+   */
+  static final String SPEC_CAPABILITIES_FORMAT =
+      "{{range .Spec.TaskTemplate.ContainerSpec.CapabilityAdd}}{{println .}}{{end}}";
+
+  static final String SPEC_NETWORK_TARGETS_FORMAT =
+      "{{range .Spec.TaskTemplate.Networks}}{{println .Target}}{{end}}";
+
+  /**
    * The DESIRED task count the service spec holds. Guarded by {@code if}, because a global-mode
    * service has no {@code Replicated} block at all and the template would print {@code <no value>}
    * — an empty answer is "this service has no replica count", which {@link #parseReplicas} reads as
@@ -429,6 +442,22 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   String flatNetwork;
 
   /**
+   * The encrypted overlay a {@code private} or {@code both} service joins — {@code qits-private}
+   * shipped. Created by {@link #ensureNetwork} the first time a service needs it, attachable so a
+   * host container can join it later, and {@code --opt encrypted} from birth because a swarm
+   * network cannot be switched to encrypted without detaching everything on it.
+   */
+  @ConfigProperty(name = "qits.deployments.swarm.private-network")
+  String privateNetwork;
+
+  /**
+   * The private overlay's subnet, fixed rather than drawn from docker's pool, because the private
+   * edge's allow-list names it. {@code 10.231.0.0/20} shipped.
+   */
+  @ConfigProperty(name = "qits.deployments.swarm.private-network.subnet")
+  String privateNetworkSubnet;
+
+  /**
    * The platform's one domain, handed to every container as {@link #DOMAIN_VARIABLE}. See that
    * constant for why it is one value rather than five composed spellings.
    *
@@ -561,7 +590,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // deployer's own succession out of it, exactly as above.
     String missingAlias =
         exists && !self && missingVolume == null ? missingDeclaredAlias(spec, target, networks) : null;
-    boolean recreate = missingVolume != null || missingAlias != null;
+    // ...and the networks themselves, for a service whose exposure class changed — see
+    // `networkDrift`. Asked last, and never for a self-update, exactly as the two above.
+    String drift =
+        exists && !self && missingVolume == null && missingAlias == null
+            ? networkDrift(target, networks)
+            : null;
+    boolean recreate = missingVolume != null || missingAlias != null || drift != null;
     boolean updating = exists && !recreate;
     List<String> argv;
     try {
@@ -578,7 +613,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       // exactly what this deployment is putting right — but the sentence is what a person reads
       // afterwards to know why a container they were looking at is gone. Removed after the argv is
       // built, like the seed twin below, so a REFUSED deployment changes nothing.
-      if (missingVolume != null) {
+      if (drift != null) {
+        LOG.warnf(
+            "Recreating service %s: %s. A service update states no networks, so the service is"
+                + " removed and created again on the networks its exposure names — its writable"
+                + " layer goes with it. It recreates once: afterwards the networks match.",
+            target, drift);
+      } else if (missingVolume != null) {
         LOG.warnf(
             "Recreating service %s: it declares the volume %s and the live service does not have it."
                 + " A service update cannot add a mount, so the service is removed and created"
@@ -1372,6 +1413,25 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * component at a time.
    */
   List<String> buildNetworkCreateArgv(Network spec) {
+    if (isPrivateNetwork(spec.name())) {
+      // The private overlay is the platform's, not an environment's or an application's, so it
+      // carries the one label that says what it is for. Encrypted at birth — see `privateNetwork` —
+      // and on a fixed subnet the private edge's allow-list names.
+      return List.of(
+          runtime,
+          "network",
+          "create",
+          "-d",
+          "overlay",
+          "--attachable",
+          "--opt",
+          "encrypted",
+          "--subnet",
+          privateNetworkSubnet.strip(),
+          "--label",
+          NETWORK_LABEL + "=private",
+          spec.name());
+    }
     List<String> argv =
         new ArrayList<>(List.of(runtime, "network", "create", "-d", "overlay", "--attachable"));
     argv.add("--label");
@@ -1649,6 +1709,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // (qits-965). `--init` runs docker-init/tini as PID 1 instead, which reaps on every SIGCHLD.
     // Unconditional: there is no application here for which an unreaped grandchild is desired.
     argv.add("--init");
+    capabilityFlags(argv, spec);
     for (String label : labels(spec)) {
       argv.add("--label");
       argv.add(label);
@@ -1849,23 +1910,27 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * them is what every service on this platform was created with, and a shape change with no
    * intent behind it is a diff a reader has to rule out.
    *
-   * <p><b>Only the flat network carries them.</b> An alias is an address, and the address has to be
-   * on the network the platform's names are resolved on — the one every service joins. {@code
-   * qits-platform} is the plane's own network and keeps the short form.
+   * <p><b>Every network the exposure attaches carries them</b> — the flat one, the private one, or
+   * the two for {@code both} (qits-1976). An alias is an address, and the address has to be on
+   * every network the service is reachable on. A network this driver does not manage keeps the
+   * short form; under swarm none reaches here, because {@link #collapse} drops them.
    *
-   * <p><b>Aliases with no flat network to hold them are a REFUSAL</b>, the publish-with-an-ip
+   * <p><b>Aliases with no network to hold them are a REFUSAL</b>, the publish-with-an-ip
    * stance: a name that was asked for and quietly not registered is a peer resolving nothing, and
    * that failure surfaces as somebody else's outage hours later.
    */
   private void networkFlags(List<String> argv, List<String> networks, List<String> aliases) {
-    String shared = flatNetwork == null ? "" : flatNetwork.strip();
+    List<String> managed = managedNetworks();
     boolean carried = false;
     for (String network : networks) {
       argv.add("--network");
-      if (aliases.isEmpty() || !network.equals(shared)) {
+      if (aliases.isEmpty() || !managed.contains(network)) {
         argv.add(network);
         continue;
       }
+      // EVERY attached managed network carries them — the flat one, the private one, or both: an
+      // address has to resolve wherever the service is reachable, and a `both` service is
+      // reachable on the two.
       StringBuilder attachment = new StringBuilder("name=").append(network);
       for (String alias : aliases) {
         attachment.append(",alias=").append(alias);
@@ -1877,10 +1942,12 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       throw new ServiceExtras.Refused(
           "aliases "
               + aliases
-              + " are declared, and this service joins no shared network to hold them: an alias is"
-              + " an address on qits.deployments.swarm.flat-network");
+              + " are declared, and this service joins no network to hold them: an alias is an"
+              + " address on qits.deployments.swarm.flat-network or"
+              + " qits.deployments.swarm.private-network");
     }
   }
+
 
   /**
    * Package-private for the argv test: the replace, which is this and nothing more.
@@ -1964,6 +2031,11 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // service created before this line shipped is still running its old PID 1, so the update has
     // to restate `--init` for an already-live service to converge onto a reaping one.
     argv.add("--init");
+    // Capabilities ARE restated, unlike the rest of the shape: `--cap-add` of a cap the service
+    // already holds is a no-op, so a cap a repository starts declaring reaches its live service
+    // here, without a recreate. A cap it STOPS declaring is not dropped — see `capabilityRemovals`.
+    capabilityFlags(argv, spec);
+    capabilityRemovals(spec, name);
     for (String variable : environment(spec)) {
       argv.add("--env-add");
       argv.add(variable);
@@ -1982,6 +2054,48 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     envRemovals(argv, name, extras);
     argv.add(name);
     return List.copyOf(argv);
+  }
+
+  /**
+   * {@code --cap-add <CAP>} per capability the repository's {@code cap_add:} grants, in its order.
+   * Re-checked against the parser's closed list at the last line before the argv, the health path's
+   * rule: a capability is a privilege, and nothing but the reviewed file may name one.
+   */
+  private void capabilityFlags(List<String> argv, ServiceSpec spec) {
+    for (String capability : spec.shape().capAdd()) {
+      if (!DeploymentSpecParser.ALLOWED_CAPABILITIES.contains(capability)) {
+        throw new ServiceExtras.Refused(
+            "cap_add: `" + capability + "` is not a capability this platform grants");
+      }
+      argv.add("--cap-add");
+      argv.add(capability);
+    }
+  }
+
+  /**
+   * A capability the live service holds that the spec no longer grants is LOGGED and kept, never
+   * dropped: {@code --cap-drop} is a second statement with its own review, and a deployment that
+   * silently took a privilege away from a running service is a failure nobody would trace to a
+   * deleted line. An inspect that cannot answer says nothing.
+   */
+  private void capabilityRemovals(ServiceSpec spec, String name) {
+    PdProcess.Result inspected =
+        run(
+            List.of(runtime, "service", "inspect", "--format", SPEC_CAPABILITIES_FORMAT, name),
+            INSPECT_TIMEOUT);
+    if (inspected.exitCode() != 0) {
+      return;
+    }
+    for (String live : lines(inspected.output())) {
+      String capability = live.startsWith("CAP_") ? live.substring(4) : live;
+      if (!spec.shape().capAdd().contains(capability)) {
+        LOG.warnf(
+            "%s holds the capability %s, which its spec no longer grants. It is NOT dropped: a"
+                + " deployment never removes a capability — `docker service update --cap-drop %s"
+                + " %s` by hand, or remove and redeploy the service",
+            name, live, capability, name);
+      }
+    }
   }
 
   /**
@@ -2556,11 +2670,18 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
 
   // --- reading swarm back ----------------------------------------------------------------------
 
-  /** The two overlays a service may be on, in declaration order. See the class javadoc. */
-  private List<String> collapse(ServiceSpec spec) {
+  /**
+   * The overlays a service is on, by its exposure: {@code public} the flat one, {@code private} the
+   * private one, {@code both} the flat one and then the private one. See the class javadoc.
+   */
+  List<String> collapse(ServiceSpec spec) {
     Set<String> networks = new LinkedHashSet<>();
-    if (flatNetwork != null && !flatNetwork.isBlank()) {
+    Exposure exposure = spec.exposure() == null ? Exposure.PUBLIC : spec.exposure();
+    if (exposure != Exposure.PRIVATE && flatNetwork != null && !flatNetwork.isBlank()) {
       networks.add(flatNetwork.strip());
+    }
+    if (exposure != Exposure.PUBLIC && privateNetwork != null && !privateNetwork.isBlank()) {
+      networks.add(privateNetwork.strip());
     }
     List<String> dropped =
         spec.networks().stream().filter(network -> !networks.contains(network)).toList();
@@ -2574,7 +2695,165 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   }
 
   private boolean collapsed(String network) {
-    return flatNetwork != null && flatNetwork.strip().equals(network);
+    return (flatNetwork != null && flatNetwork.strip().equals(network)) || isPrivateNetwork(network);
+  }
+
+  private boolean isPrivateNetwork(String network) {
+    return privateNetwork != null
+        && !privateNetwork.isBlank()
+        && privateNetwork.strip().equals(network);
+  }
+
+  /** The networks this driver attaches services to — the flat one and the private one, named. */
+  private List<String> managedNetworks() {
+    List<String> managed = new ArrayList<>();
+    if (flatNetwork != null && !flatNetwork.isBlank()) {
+      managed.add(flatNetwork.strip());
+    }
+    if (privateNetwork != null && !privateNetwork.isBlank()) {
+      managed.add(privateNetwork.strip());
+    }
+    return managed;
+  }
+
+  /**
+   * A network's ID as the daemon stores it in a service spec, or null when it cannot say — no such
+   * network, or an inspect that failed. Null is never a guess: every caller reads it as "cannot
+   * resolve" and decides nothing on it.
+   */
+  private String networkId(String network) {
+    PdProcess.Result inspected =
+        run(
+            List.of(runtime, "network", "inspect", "--format", "{{.ID}}", network),
+            INSPECT_TIMEOUT);
+    if (inspected.exitCode() != 0) {
+      return null;
+    }
+    String id = inspected.output() == null ? "" : inspected.output().strip();
+    return id.isEmpty() || id.contains("\n") ? null : id;
+  }
+
+  /**
+   * The managed networks the live service is attached to, by NAME — or empty when that cannot be
+   * established: the inspect failed, it printed nothing, or not one of its lines resolved to a
+   * managed network. A line that is neither managed network's name nor ID is another network
+   * altogether (one this driver never attaches) and is left out rather than counted against it.
+   */
+  private Optional<Set<String>> liveManagedNetworks(String service, Map<String, String> ids) {
+    PdProcess.Result inspected =
+        run(
+            List.of(runtime, "service", "inspect", "--format", SPEC_NETWORK_TARGETS_FORMAT, service),
+            INSPECT_TIMEOUT);
+    if (inspected.exitCode() != 0) {
+      LOG.warnf(
+          "Could not read the networks of %s, so nothing is recreated over them — the next"
+              + " deployment asks again: %s",
+          service, inspected.output());
+      return Optional.empty();
+    }
+    List<String> live = lines(inspected.output());
+    if (live.isEmpty()) {
+      return Optional.empty();
+    }
+    Set<String> attached = new LinkedHashSet<>();
+    for (String target : live) {
+      for (Map.Entry<String, String> managed : ids.entrySet()) {
+        if (target.equals(managed.getKey()) || target.equals(managed.getValue())) {
+          attached.add(managed.getKey());
+        }
+      }
+    }
+    return attached.isEmpty() ? Optional.empty() : Optional.of(attached);
+  }
+
+  /** Each managed network's ID, keyed by name — an unresolvable one maps to null. */
+  private Map<String, String> managedNetworkIds() {
+    Map<String, String> ids = new LinkedHashMap<>();
+    for (String network : managedNetworks()) {
+      ids.put(network, networkId(network));
+    }
+    return ids;
+  }
+
+  /**
+   * Why the live service's networks are not the ones its exposure names — or null, which is the
+   * answer on every deployment of a service whose class has not changed, and therefore on every
+   * deployment on the estate today.
+   *
+   * <p><b>Why this exists at all.</b> {@link #buildUpdateArgv} states no networks, and a service
+   * update cannot move one: swarm restates an attachment whole or not at all. So a repository that
+   * changes its {@code exposure:} reaches its running service by exactly one route — a {@code
+   * service rm} and a create — the volume and alias arms' route, for the third shape change a
+   * deployment performs for itself.
+   *
+   * <p><b>Both directions count, unlike those two</b>, because this is not a union a config source
+   * adds to: the membership of the two managed networks IS the exposure. A {@code public} service
+   * on {@code qits-private} is a private upstream the public edge can reach, and a {@code private}
+   * service still on {@code qits-net} is one the move did not move. Only the managed pair is
+   * compared — a network this driver never attaches is nobody's statement and decides nothing.
+   *
+   * <p><b>It is FAIL-SAFE, and that is what keeps the estate still.</b> Every service today
+   * declares no exposure, so it is {@code public}, so its desired membership is exactly {@code
+   * [qits-net]} — and its live one is too, which compares equal and recreates nothing. Every way
+   * the comparison could go wrong answers "no drift": an inspect that fails or prints nothing, a
+   * desired network whose ID cannot be resolved, a live list in which no line resolves to a managed
+   * network. The daemon stores network IDs rather than names in the spec, so a comparison of names
+   * alone would read every service as on no network at all; each line is matched against a managed
+   * network's name AND its ID.
+   *
+   * <p>Never asked for a self-update — {@link #apply} guards that, as for its siblings.
+   */
+  private String networkDrift(String service, List<String> desired) {
+    if (desired.isEmpty()) {
+      return null;
+    }
+    Map<String, String> ids = managedNetworkIds();
+    for (String network : desired) {
+      if (ids.get(network) == null) {
+        LOG.debugf(
+            "Could not resolve the network %s, so %s is not compared against it", network, service);
+        return null;
+      }
+    }
+    Optional<Set<String>> live = liveManagedNetworks(service, ids);
+    if (live.isEmpty()) {
+      return null;
+    }
+    Set<String> wanted = new LinkedHashSet<>(desired);
+    if (live.get().equals(wanted)) {
+      return null;
+    }
+    return "its exposure names the networks "
+        + wanted
+        + " and the live service is on "
+        + live.get();
+  }
+
+  /**
+   * The live service's exposure, off the managed networks it is attached to: the flat one alone is
+   * {@code public}, the private one alone {@code private}, the two {@code both}. Empty when that
+   * cannot be established, which the caller answers with {@code public}.
+   */
+  @Override
+  public Optional<Exposure> liveExposure(String name) {
+    try {
+      String service = resolveService(name);
+      if (service == null) {
+        return Optional.empty();
+      }
+      Optional<Set<String>> live = liveManagedNetworks(service, managedNetworkIds());
+      if (live.isEmpty()) {
+        return Optional.empty();
+      }
+      boolean flat = flatNetwork != null && live.get().contains(flatNetwork.strip());
+      boolean hidden = privateNetwork != null && live.get().contains(privateNetwork.strip());
+      if (flat && hidden) {
+        return Optional.of(Exposure.BOTH);
+      }
+      return Optional.of(hidden ? Exposure.PRIVATE : Exposure.PUBLIC);
+    } catch (RuntimeException e) {
+      return Optional.empty();
+    }
   }
 
   private boolean serviceExists(String name) {

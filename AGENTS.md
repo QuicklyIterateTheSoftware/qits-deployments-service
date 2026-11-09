@@ -734,6 +734,76 @@ cutover depends on the update order, and the parser's ceiling exists because of 
   `health-timeout-seconds` for a `stop-first` application — otherwise swarm's verdict becomes this
   process's timeout. That wait sits on the one deploy worker, which is why the key is capped.
 
+**`exposure` is the fourth such key** (qits-1976) — `public` (default, every file today), `private`
+or `both`, case-sensitive, anything else refused naming the three. It decides two things, both here:
+the networks (`SwarmDeploymentDriver.collapse`: `public` → `[qits-net]`, `private` →
+`[qits-private]`, `both` → `[qits-net, qits-private]`, the per-env and per-app `PdNetworks` names
+still dropped) and `DeploymentActive.exposure`, the class each edge filters its routes on. Five
+things about it, each easy to undo by accident:
+
+- **`qits-private` is made by the deployer, encrypted at birth.** `ensureNetwork` treats it as the
+  second collapsed network and `buildNetworkCreateArgv` gives it its own argv — `network create -d
+  overlay --attachable --opt encrypted --subnet 10.231.0.0/20 --label
+  qits.platform.deployments.network=private qits-private` (`qits.deployments.swarm.private-network`,
+  `…private-network.subnet`). A swarm network cannot be switched to encrypted later without
+  detaching everything on it, and the private edge's allow-list names the subnet. The flat
+  network's argv is byte-identical to before.
+- **Aliases ride EVERY attached managed network**, the flat one and the private one alike, because
+  an address has to resolve wherever the service is reachable. A network the driver does not manage
+  keeps the short form, and aliases with no managed network to hold them stay a refusal.
+- **A changed class is a `service rm` and a create** (`networkDrift`, beside `missingDeclaredVolume`
+  and `missingDeclaredAlias`, asked after both): an update states no networks. Unlike those two it
+  is **two-directional** — the membership of the managed pair IS the exposure, so a public service
+  still on `qits-private` is as wrong as a private one still on `qits-net`. Only the managed pair is
+  compared; a leftover attachment to any other network decides nothing. WARN first, never on a
+  self-update.
+- **It is fail-safe, and that is what keeps the estate still.** The live spec stores network **IDs**
+  in `Spec.TaskTemplate.Networks[].Target`, not names, so each line is matched against a managed
+  network's name AND its ID (`network inspect --format {{.ID}}`). A service inspect that fails or
+  prints nothing, a desired network whose ID cannot be resolved, or a live list in which no line
+  resolves to a managed network — each recreates nothing. With no `exposure` declared the collapse
+  is exactly `[qits-net]` and the live list resolves to exactly that, so nothing on the estate
+  recreates: `aLiveServiceOnQitsNetThatDeclaresNoExposureIsUPDATEDANDNOTRECREATED` holds it and is
+  named so nobody deletes it.
+- **The two announcements without a plan ask the runtime.** A row records no exposure, so the
+  startup sweep's adoption and a retirement's withdrawal frame read it off the live service
+  (`DeploymentDriver.liveExposure`), and answer `public` when the runtime cannot say — what every
+  frame recorded before the field existed means. The field is the record's LAST component, and a
+  null becomes `public` in the record itself.
+
+**`image`, `cap_add` and `variants` deploy one image as a second application** (qits-1976), and
+the private edge — `qits-edge-private` from qits-edge's own release — is what they are for. Six
+things about them, each easy to undo by accident:
+
+- **`image:` is the pulled image's path segment**, `qits/<image>:<version>` via
+  `ImageRefs.imageRef`, and its absence is the application name, so every file today is unchanged.
+  It is resolved once onto the `Target` (`register`), never re-derived from the application.
+- **`cap_add:` is a privilege and the list is closed** (`DeploymentSpecParser.ALLOWED_CAPABILITIES`,
+  `NET_ADMIN` alone), spelled without `CAP_` and re-checked at the argv. It lives in
+  `DeclaredShape.capAdd` and is the one shape value an UPDATE restates — `--cap-add` is idempotent —
+  so a cap reaches a live service without a recreate. A cap the live service holds and the spec no
+  longer grants is a WARN naming the hand `--cap-drop`, never performed.
+- **`variants:` is read off the MAIN file only**, and each name is one more blob read at the same tag
+  through the same `SpecSource` (`read(ref, rev, path)`, `SpecSource.variantPath`; `SPEC_PATH` stays
+  the two-argument default). `DeployService.deployVariants` runs after the main `deployReadSpec` on
+  both doors that reach it — the release itself and `retrySpecReads` — and deploys each variant
+  through `deployReadSpec` with the variant's application name and the same version, commit and
+  cause.
+- **A variant is registered the way a first release is**, by `register` under its own name, so it
+  lands in the entry tier beside the main application with a catalogue row and link of its own.
+  Rollback, redeploy and retirement are per application, as for any other.
+- **A variant's failure is its own.** Unreadable, absent, unparseable or breaking a variant rule
+  (`DeploymentSpecParser.checkVariant`: a distinct `application:`, no `variants:`, no
+  `renamed_from:`) is a `FAILED` row on the places its application is registered in — the file's
+  `application:` when it named a usable one, else `<main>-<variant>` — and a WARN only for one never
+  registered. It is not held for a retry; the main deployment has already run and is untouched.
+- **The events say which is which**: `DeploymentActive.variant` and `DeploymentFailed.variant`, the
+  last components, null for the main deployment. A release-following consumer reads non-null as "not
+  the release's own deployment". An adopted or retired frame names none (a row records no variant).
+  **Retirement is not inferred**: removing a name from `variants:` stops its deploys, and its
+  application is retired through the retire door — this schema records no link from a repository to
+  its variants, and guessing one from deployment history would retire applications nobody asked to.
+
 **`publish_mode` is the second such key** — `host` (default, today's behaviour byte for byte) or
 `ingress`, per repository. Host mode binds the port from inside the task, so two tasks cannot
 overlap and the service also needs `stop-first`; ingress hands the port to swarm's routing mesh,

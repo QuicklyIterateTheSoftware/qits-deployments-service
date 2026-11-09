@@ -36,6 +36,19 @@ import java.util.UUID;
  * documents no HTTP surface. Like the routes it is a path and never an origin — the edge composes
  * the authority around it.
  *
+ * <p><b>{@code exposure} is which edge may route this deployment</b>: {@code public}, {@code private}
+ * or {@code both}, the repository's {@code exposure:} key. It is the last component because a
+ * consumer reading the payload by name ignores what it does not know, and <b>a frame without it —
+ * every frame recorded before it existed — reads as {@code public}</b>, which is also what a null
+ * here becomes. An edge stores a frame outside its own class as an empty snapshot, so a move from
+ * public to private withdraws the vhost from the public edge rather than leaving it stale.
+ *
+ * <p><b>{@code variant} says which of a release's deployments this is</b> (qits-1976): null for the
+ * main deployment, the variant's name ({@code private}) for one a {@code variants:} entry put live
+ * from the same image and release. A consumer that follows a RELEASE — qits-projects finalizing one
+ * — reads a non-null variant as "not the release's own deployment". It goes last, after {@code
+ * exposure}, and is absent from the payload when null.
+ *
  * <p>{@code occurredAt} is {@code finishedAt}, the value the cutover bookkeeping wrote on the row.
  * The predecessor it decommissioned announces nothing: a deployment being replaced is this event
  * seen from the other side, and a consumer that wants "what is live" reads the newest event per
@@ -58,10 +71,16 @@ public record DeploymentActive(
     String browserHost,
     String apiDocsPath,
     List<NavigationEntry> navigation,
-    List<DeploymentEndpoint> endpoints)
+    List<DeploymentEndpoint> endpoints,
+    String exposure,
+    String variant)
     implements QitsEvent {
 
+  /** What a frame that names no exposure means: every frame recorded before the field existed. */
+  public static final String PUBLIC = "public";
+
   public DeploymentActive {
+    exposure = exposure == null || exposure.isBlank() ? PUBLIC : exposure;
     if (eventId == null) {
       eventId = UUID.randomUUID();
     }
@@ -140,6 +159,74 @@ public record DeploymentActive(
       List<NavigationEntry> navigation,
       List<DeploymentEndpoint> endpoints) {
     this(
+        deploymentId,
+        applicationName,
+        environmentId,
+        environmentName,
+        version,
+        commitSha,
+        runId,
+        containerName,
+        finishedAt,
+        browserHost,
+        apiDocsPath,
+        navigation,
+        endpoints,
+        null);
+  }
+
+  /** The publisher's constructor with the deployment's exposure class, {@code public} when null. */
+  public DeploymentActive(
+      String deploymentId,
+      String applicationName,
+      String environmentId,
+      String environmentName,
+      String version,
+      String commitSha,
+      String runId,
+      String containerName,
+      Instant finishedAt,
+      String browserHost,
+      String apiDocsPath,
+      List<NavigationEntry> navigation,
+      List<DeploymentEndpoint> endpoints,
+      String exposure) {
+    this(
+        deploymentId,
+        applicationName,
+        environmentId,
+        environmentName,
+        version,
+        commitSha,
+        runId,
+        containerName,
+        finishedAt,
+        browserHost,
+        apiDocsPath,
+        navigation,
+        endpoints,
+        exposure,
+        null);
+  }
+
+  /** The publisher's whole constructor: the exposure class and, for a variant, its name. */
+  public DeploymentActive(
+      String deploymentId,
+      String applicationName,
+      String environmentId,
+      String environmentName,
+      String version,
+      String commitSha,
+      String runId,
+      String containerName,
+      Instant finishedAt,
+      String browserHost,
+      String apiDocsPath,
+      List<NavigationEntry> navigation,
+      List<DeploymentEndpoint> endpoints,
+      String exposure,
+      String variant) {
+    this(
         null,
         deploymentId,
         applicationName,
@@ -153,7 +240,44 @@ public record DeploymentActive(
         browserHost,
         apiDocsPath,
         navigation,
-        endpoints);
+        endpoints,
+        exposure,
+        variant);
+  }
+
+  /** The shape before {@code exposure}, identity included: the class is {@code public}. */
+  public DeploymentActive(
+      UUID eventId,
+      String deploymentId,
+      String applicationName,
+      String environmentId,
+      String environmentName,
+      String version,
+      String commitSha,
+      String runId,
+      String containerName,
+      Instant finishedAt,
+      String browserHost,
+      String apiDocsPath,
+      List<NavigationEntry> navigation,
+      List<DeploymentEndpoint> endpoints) {
+    this(
+        eventId,
+        deploymentId,
+        applicationName,
+        environmentId,
+        environmentName,
+        version,
+        commitSha,
+        runId,
+        containerName,
+        finishedAt,
+        browserHost,
+        apiDocsPath,
+        navigation,
+        endpoints,
+        null,
+        null);
   }
 
   @Override
