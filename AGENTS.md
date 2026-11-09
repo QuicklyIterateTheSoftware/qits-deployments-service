@@ -2812,7 +2812,8 @@ Maven dependencies, never gitlinks.
 exactly that element. The per-repository upstream steps (`ci-event-upstream-auth-core.yml`,
 `ci-event-upstream-eventstream.yml`) are gone: qits-maintenance's `dependency-bump` release-request
 automation rewrites the property and commits it onto `maintenance/automations/dependency-bump/<request
-id>`, parented on a release request's fold. A second spelling of either version anywhere would be
+id>`, parented on a release request's fold; a source pushed with rewritten history drops that branch and
+the bump regenerates on the new fold (qits-1971). A second spelling of either version anywhere would be
 left behind. A bump lands on a branch and not on main on purpose: a library release is not a
 decision to redeploy the deployer.
 
