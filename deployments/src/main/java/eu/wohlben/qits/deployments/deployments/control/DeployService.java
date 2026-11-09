@@ -756,8 +756,29 @@ public class DeployService implements ReleaseAnnouncements {
                     snapshot.browserHost(),
                     snapshot.apiDocsPath(),
                     snapshot.navigation(),
-                    snapshot.endpoints()),
+                    snapshot.endpoints(),
+                    liveExposure(row.containerName()).wire()),
                 row.causationId()));
+  }
+
+  /**
+   * The exposure a row's live service is attached as, for the two announcements that have no
+   * {@link Plan} to read one off: the startup sweep's adoption, and a retirement's withdrawal. A row
+   * records no exposure, so the runtime is asked — and a runtime that cannot say answers {@code
+   * public}, which is what every frame recorded before the class existed means and what every
+   * service on the estate is until a repository declares otherwise. Never throws: an announcement
+   * must not be able to fail over a question about which edge it is for.
+   */
+  private DeploymentDriver.Exposure liveExposure(String serviceName) {
+    if (serviceName == null || serviceName.isBlank()) {
+      return DeploymentDriver.Exposure.PUBLIC;
+    }
+    try {
+      return driver.liveExposure(serviceName).orElse(DeploymentDriver.Exposure.PUBLIC);
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "Could not read the exposure of %s; announcing it public", serviceName);
+      return DeploymentDriver.Exposure.PUBLIC;
+    }
   }
 
   /**
@@ -1279,7 +1300,8 @@ public class DeployService implements ReleaseAnnouncements {
       String apiDocs,
       String renamedFrom,
       Duration stopGracePeriod,
-      DeclaredShape shape) {}
+      DeclaredShape shape,
+      DeploymentDriver.Exposure exposure) {}
 
   /**
    * One software-release event, start to finish, on the worker thread: read what the repository
@@ -1923,7 +1945,8 @@ public class DeployService implements ReleaseAnnouncements {
               spec.stopGracePeriod(),
               // binds/publishes/aliases as WRITTEN: the driver resolves ${QITS_ENVIRONMENT} in an
               // alias against the place it deploys into, which is where a refusal can end a row.
-              spec.shape()));
+              spec.shape(),
+              spec.exposure()));
     }
     return List.copyOf(targets);
   }
@@ -2246,6 +2269,8 @@ public class DeployService implements ReleaseAnnouncements {
                 // ...and no grace period: nothing is stopped off one of them either.
                 null,
                 // ...and no declared shape: nothing is created off one of them at all.
+                null,
+                // ...and no exposure of its own: what a failure row announces is a failure.
                 null));
       }
     }
@@ -2512,6 +2537,10 @@ public class DeployService implements ReleaseAnnouncements {
     /** The repository's {@code binds}/{@code publishes}/{@code aliases}, or null with no spec. */
     DeclaredShape shape() {
       return target.shape();
+    }
+
+    DeploymentDriver.Exposure exposure() {
+      return target.exposure() == null ? DeploymentDriver.Exposure.PUBLIC : target.exposure();
     }
 
     /**
@@ -3179,7 +3208,8 @@ public class DeployService implements ReleaseAnnouncements {
         plan.stopGracePeriod(),
         plan.shape(),
         null,
-        false);
+        false,
+        plan.exposure());
   }
 
   /**
@@ -3432,7 +3462,10 @@ public class DeployService implements ReleaseAnnouncements {
             retirement.environmentId(),
             retirement.environmentName(),
             Instant.now(),
-            null);
+            null,
+            settled.service() != null
+                ? settled.service()
+                : PdNetworks.alias(retirement.environmentName(), predecessor));
       }
       String service = settled == null ? null : settled.service();
       if (service != null && !service.equals(retirement.successorService())) {
@@ -3618,7 +3651,9 @@ public class DeployService implements ReleaseAnnouncements {
         // The declared predecessor, from which the driver derives the old wire address as an
         // alias; null for every spec without `renamed_from`, which renders exactly what it did.
         plan.renamedFrom(),
-        takesOverPredecessor);
+        takesOverPredecessor,
+        // Which networks it joins — the flat one, the private one, or the two.
+        plan.exposure());
   }
 
   /**
@@ -3804,7 +3839,8 @@ public class DeployService implements ReleaseAnnouncements {
                     plan.browserHost(),
                     plan.apiDocsPath(),
                     plan.navigation(),
-                    plan.endpoints()),
+                    plan.endpoints(),
+                    plan.exposure().wire()),
                 plan.cause()));
   }
 
@@ -3846,13 +3882,18 @@ public class DeployService implements ReleaseAnnouncements {
         plan.environmentId(),
         plan.environmentName(),
         finishedAt,
-        plan.cause());
+        plan.cause(),
+        PdNetworks.alias(plan.environmentName(), plan.renamedFrom()));
   }
 
   /**
    * The empty snapshot itself, for any retired application — the rename's predecessor above, and
    * an operator's successor-less retirement ({@link #retire}), which names the retired
    * application's own newest row and no cause: nothing on the bus asked for it, a person did.
+   *
+   * <p>{@code serviceName} is the retired service, still live when this is sent, and its exposure
+   * is what the frame carries — the last class it was served as — or {@code public} when the
+   * runtime cannot say. The snapshot is empty either way, so whichever edge reads it withdraws.
    */
   private void announceRetired(
       String deploymentId,
@@ -3860,7 +3901,9 @@ public class DeployService implements ReleaseAnnouncements {
       String environmentId,
       String environmentName,
       Instant finishedAt,
-      UUID cause) {
+      UUID cause,
+      String serviceName) {
+    String exposure = liveExposure(serviceName).wire();
     announce(
         deploymentId,
         announcer ->
@@ -3878,7 +3921,8 @@ public class DeployService implements ReleaseAnnouncements {
                     null,
                     null,
                     List.of(),
-                    List.of()),
+                    List.of(),
+                    exposure),
                 cause));
   }
 

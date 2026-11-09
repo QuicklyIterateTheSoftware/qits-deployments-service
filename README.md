@@ -81,6 +81,7 @@ health_cmd: pg_isready -U postgres   # instead of health_path; runs inside the c
 resources: postgresql:db             # a database of its own, injected as QITS_RESOURCE_DB_*
 update_order: start-first            # default | stop-first for anything that cannot overlap itself
 publish_mode: host                   # default | ingress for a port swarm's routing mesh holds
+exposure: public                     # default | private (qits-private only) | both (qits-net + qits-private)
 stop_grace_period: 10m               # default 30s; SIGTERM-to-SIGKILL, e.g. 90s, 9m30s, at most 1h
 routes: /artifacts,/artifacts/api    # optional public path prefixes, ordered
 upstream_port: 8080                  # default; target port behind every declared route
@@ -97,6 +98,16 @@ provisioned database, the derived host label, the catalogue key, the extras fami
 does not notice. Two repositories claiming one application name is last-wins and this component
 cannot refuse it (these tables record an application name and no repository identity); changing the
 key on a live application is a decommission and a new application, not a rename.
+
+`exposure:` is which networks the service joins and which edge routes it (qits-1976). `public` —
+the default, and every file today — joins `qits-net` exactly as before; `private` joins only the
+encrypted `qits-private` overlay (`network create -d overlay --attachable --opt encrypted --subnet
+10.231.0.0/20 --label qits.platform.deployments.network=private qits-private`, made by the deployer
+the first time a service needs it), which only the private edge over the tunnel reaches; `both`
+joins the two. The wire alias is set on every network joined. `DeploymentActive.exposure` carries
+the class, and a frame without it reads as `public`. A live service whose networks differ from its
+class is removed and created again, once — never the deployer itself — and with no `exposure`
+declared a service on `qits-net` compares equal and is updated in place as always.
 
 `deploy_branches` is **retired**: parsed, validated and acted on by nobody. Where a release lands is
 the environment rows' answer — the designated platform environment — and never the file's. The

@@ -155,6 +155,36 @@ public class PdSwarmDeployFlowTest {
   }
 
   @Test
+  public void aPrivateRepositoryReachesTheDriverPrivateAndAnnouncesItSo() {
+    // qits-1976, end to end: `exposure: private` is read from the spec, carried through the target
+    // and the plan to the orchestrator, and published on DeploymentActive — the field each edge
+    // filters its routes on.
+    String environmentId = createEnvironment("swarm-private");
+    specs.script(
+        "repo-swarm-private",
+        DeploymentSpecParser.parse("exposure: private\n", "deployments.yml of repo-swarm-private"));
+
+    postRelease("run-private", "repo-swarm-private");
+    awaitSettled(environmentId, 1);
+
+    assertEquals(DeploymentDriver.Exposure.PRIVATE, fake.applied().get(0).exposure());
+    OutboxEvent active = only("DeploymentActive");
+    assertTrue(active.payload.contains("\"exposure\":\"private\""), active.payload);
+  }
+
+  @Test
+  public void aRepositoryThatNamesNoExposureIsAnnouncedPublic() {
+    String environmentId = createEnvironment("swarm-public");
+
+    postRelease("run-public", "repo-swarm-public");
+    awaitSettled(environmentId, 1);
+
+    assertEquals(DeploymentDriver.Exposure.PUBLIC, fake.applied().get(0).exposure());
+    OutboxEvent active = only("DeploymentActive");
+    assertTrue(active.payload.contains("\"exposure\":\"public\""), active.payload);
+  }
+
+  @Test
   public void aStopFirstRepositoryWithALongGraceIsGivenTheGraceOnTopOfTheHealthTimeout() {
     // qits-1170, end to end: stop_grace_period is read from the repository's spec, carried through
     // the target and the plan, and handed to the orchestrator. Under stop-first swarm waits the

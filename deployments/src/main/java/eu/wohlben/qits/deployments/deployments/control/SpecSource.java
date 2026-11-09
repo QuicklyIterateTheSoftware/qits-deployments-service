@@ -188,6 +188,10 @@ public interface SpecSource {
    * state, moving into the repository; while both sources are live the driver takes their union and
    * the declaration wins. See {@link DeclaredShape}.
    *
+   * <p>{@code exposure} is which networks the service joins and which edge routes it — {@link
+   * DeploymentDriver.Exposure#PUBLIC} unless the file says {@code private} or {@code both}, which
+   * is every file today. See {@link DeploymentDriver.Exposure}.
+   *
    * <p><b>{@code deployBranches} is read and not used here</b>, and that is deliberate — see {@link
    * #deployBranches()}.
    */
@@ -209,10 +213,12 @@ public interface SpecSource {
       String application,
       String renamedFrom,
       Duration stopGracePeriod,
-      DeclaredShape shape) {
+      DeclaredShape shape,
+      DeploymentDriver.Exposure exposure) {
 
     /** A null list and an empty one are the same statement: the file named none. */
     public DeploymentSpec {
+      exposure = exposure == null ? DeploymentDriver.Exposure.PUBLIC : exposure;
       shape = shape == null ? DeclaredShape.NONE : shape;
       deployBranches = deployBranches == null ? List.of() : List.copyOf(deployBranches);
       resources = resources == null ? List.of() : List.copyOf(resources);
@@ -224,6 +230,48 @@ public interface SpecSource {
           navigationEntries == null ? List.of() : List.copyOf(navigationEntries);
       stopGracePeriod =
           stopGracePeriod == null ? DeploymentDriver.DEFAULT_STOP_GRACE_PERIOD : stopGracePeriod;
+    }
+
+    /** The shape before {@code exposure}: a file that names none is public, as every file is. */
+    public DeploymentSpec(
+        boolean availableOnEnv,
+        List<String> deployBranches,
+        String healthPath,
+        String healthCmd,
+        List<ResourceSpec> resources,
+        List<VolumeSpec> volumes,
+        DeploymentDriver.UpdateOrder updateOrder,
+        DeploymentDriver.PublishMode publishMode,
+        List<String> routes,
+        int upstreamPort,
+        String host,
+        boolean browserHostDeclared,
+        List<NavigationEntry> navigationEntries,
+        String apiDocs,
+        String application,
+        String renamedFrom,
+        Duration stopGracePeriod,
+        DeclaredShape shape) {
+      this(
+          availableOnEnv,
+          deployBranches,
+          healthPath,
+          healthCmd,
+          resources,
+          volumes,
+          updateOrder,
+          publishMode,
+          routes,
+          upstreamPort,
+          host,
+          browserHostDeclared,
+          navigationEntries,
+          apiDocs,
+          application,
+          renamedFrom,
+          stopGracePeriod,
+          shape,
+          null);
     }
 
     /**

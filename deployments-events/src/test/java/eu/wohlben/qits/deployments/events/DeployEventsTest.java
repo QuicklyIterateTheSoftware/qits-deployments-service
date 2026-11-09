@@ -290,4 +290,38 @@ class DeployEventsTest {
     // that this successful deployment removed all routes. The wire must say the latter explicitly.
     assertTrue(payload.contains("\"endpoints\":[]"), payload);
   }
+
+  // --- exposure (qits-1976) ----------------------------------------------------------------------
+
+  @Test
+  void anActiveEventThatNamesNoExposureIsPublicOnTheWire() {
+    String payload = CanonicalJson.payload(anActive());
+    assertTrue(payload.contains("\"exposure\":\"public\""), payload);
+    assertEquals(DeploymentActive.PUBLIC, anActive().exposure());
+  }
+
+  @Test
+  void theExposureRidesTheActiveEventAndRoundTrips() {
+    DeploymentActive hidden =
+        new DeploymentActive(
+            "d-5", "qits-stt", "env-1", "dev", VERSION, SHA, "run-5", "dev-qits-stt", FINISHED,
+            null, null, List.of(), List.of(), "private");
+
+    String payload = CanonicalJson.payload(hidden);
+
+    assertTrue(payload.contains("\"exposure\":\"private\""), payload);
+    assertEquals(
+        "private", CanonicalJson.payloadTo(payload, DeploymentActive.class).exposure());
+  }
+
+  @Test
+  void aFrameRecordedBeforeTheFieldExistedReadsAsPublic() {
+    // Every frame on the log before this epic: no `exposure` key at all.
+    String recorded =
+        CanonicalJson.payload(anActive()).replace(",\"exposure\":\"public\"", "")
+            .replace("\"exposure\":\"public\",", "");
+    assertFalse(recorded.contains("exposure"), recorded);
+
+    assertEquals("public", CanonicalJson.payloadTo(recorded, DeploymentActive.class).exposure());
+  }
 }

@@ -134,6 +134,10 @@ public class PdDeployPublishTest {
     assertTrue(active.payload.contains("\"containerName\":\"" + containerName + "\""),
         active.payload);
     assertFalse(queued.payload.contains("containerName"), queued.payload);
+    // qits-1976: a repository that names no exposure is announced public — the class each edge
+    // filters on, and what every frame recorded before the field existed reads as.
+    assertTrue(active.payload.contains("\"exposure\":\"public\""), active.payload);
+    assertFalse(queued.payload.contains("exposure"), queued.payload);
 
     // The lifecycle in the log's own order: queued, then started, then live.
     assertTrue(queued.occurredAt.compareTo(started.occurredAt) <= 0, "queued before started");

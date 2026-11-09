@@ -1186,4 +1186,46 @@ class DeploymentSpecParserTest {
     assertTrue(message.contains("publishes"), message);
     assertTrue(message.contains("aliases"), message);
   }
+
+  // --- exposure (qits-1976) ----------------------------------------------------------------------
+
+  @Test
+  void anAbsentExposureIsPublicWhichIsEveryFileToday() {
+    assertEquals(DeploymentDriver.Exposure.PUBLIC, parse("").exposure());
+    assertEquals(
+        DeploymentDriver.Exposure.PUBLIC, parse("health_path: /q/health/ready\n").exposure());
+    assertEquals(DeploymentDriver.Exposure.PUBLIC, DeploymentSpec.DEFAULTS.exposure());
+  }
+
+  @Test
+  void eachExposureValueParsesInTheSpellingTheEventCarries() {
+    assertEquals(DeploymentDriver.Exposure.PUBLIC, parse("exposure: public\n").exposure());
+    assertEquals(DeploymentDriver.Exposure.PRIVATE, parse("exposure: private\n").exposure());
+    assertEquals(DeploymentDriver.Exposure.BOTH, parse("exposure: both\n").exposure());
+    assertEquals("public", DeploymentDriver.Exposure.PUBLIC.wire());
+    assertEquals("private", DeploymentDriver.Exposure.PRIVATE.wire());
+    assertEquals("both", DeploymentDriver.Exposure.BOTH.wire());
+  }
+
+  @Test
+  void aBadExposureIsRefusedNamingTheThreeAndCaseCounts() {
+    // A typo read as `public` would put an application meant for the tunnel alone on the public
+    // edge, so it is a refusal rather than a default.
+    String message = messageOf("exposure: internal\n");
+    assertTrue(message.contains("`exposure` must be `public`, `private` or `both`"), message);
+    assertTrue(message.contains("internal"), message);
+    assertTrue(messageOf("exposure: Private\n").contains("`exposure`"));
+    assertTrue(messageOf("exposure:\n").contains("`exposure`"));
+  }
+
+  @Test
+  void aDuplicateExposureIsRefused() {
+    String message = messageOf("exposure: public\nexposure: private\n");
+    assertTrue(message.contains("duplicate key `exposure`"), message);
+  }
+
+  @Test
+  void theUnknownKeyMessageNamesExposure() {
+    assertTrue(messageOf("exposures: public\n").contains("exposure,"));
+  }
 }

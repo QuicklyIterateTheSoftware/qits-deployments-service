@@ -13,7 +13,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * The strict reader of {@code .config/qits/deployments.yml}. Twenty-one scalar keys, no nesting, no
+ * The strict reader of {@code .config/qits/deployments.yml}. Twenty-two scalar keys, no nesting, no
  * YAML lists — so this is a line reader rather than a YAML library, and being one is what makes every
  * rejection a sentence naming the file and the line.
  *
@@ -31,6 +31,7 @@ import java.util.regex.Pattern;
  * aliases: registry.${QITS_ENVIRONMENT}.localhost   # extra names on the shared network
  * update_order: start-first            # default | stop-first for anything single-writer
  * publish_mode: host                   # default | ingress for a port the routing mesh holds
+ * exposure: public                     # default | private (qits-private only) | both (the two)
  * stop_grace_period: 10m               # default 30s; SIGTERM to SIGKILL, for long transfers
  * routes: /artifacts,/v2               # optional public path prefixes, in navigation order
  * upstream_port: 8080                  # default; the service port behind every route
@@ -184,6 +185,16 @@ import java.util.regex.Pattern;
  * It reaches the orchestrator as {@code mode=} on the publish, and it means nothing at all to an
  * application that publishes no port. It does <b>not</b> touch {@code update_order}: the two are
  * independent statements and this component derives neither from the other.
+ *
+ * <p><b>{@code exposure} is which networks the service joins, and which edge routes it.</b> {@code
+ * public} (the default, and every file today) joins the flat {@code qits-net} exactly as before;
+ * {@code private} joins the encrypted {@code qits-private} overlay only, so only the private edge
+ * over the tunnel can reach it; {@code both} joins the two. The wire alias is set on every network
+ * joined, and the class rides {@code DeploymentActive.exposure}, which is what each edge filters
+ * its routes on. The values are case-sensitive and anything else is refused, naming the three. A
+ * change of class on a live service is a {@code service rm} and a create — swarm restates no
+ * network on an update — so the deployer recreates a service whose live networks differ from its
+ * class, once, and never its own.
  *
  * <p><b>{@code update_order} is the one key an orchestrator reads rather than this component.</b>
  * {@code start-first} overlaps the successor with the predecessor, which is what makes a rollback
@@ -341,6 +352,7 @@ public final class DeploymentSpecParser {
   private static final String UPDATE_ORDER = "update_order";
   private static final String PUBLISH_MODE = "publish_mode";
   private static final String STOP_GRACE_PERIOD = "stop_grace_period";
+  private static final String EXPOSURE = "exposure";
 
   /**
    * One whole number per unit, units descending and each at most once — {@code 1h}, {@code 9m30s},
@@ -469,6 +481,7 @@ public final class DeploymentSpecParser {
     List<String> aliases = List.of();
     DeploymentDriver.UpdateOrder updateOrder = DeploymentDriver.UpdateOrder.START_FIRST;
     DeploymentDriver.PublishMode publishMode = DeploymentDriver.PublishMode.HOST;
+    DeploymentDriver.Exposure exposure = DeploymentDriver.Exposure.PUBLIC;
     Duration stopGracePeriod = DeploymentDriver.DEFAULT_STOP_GRACE_PERIOD;
     List<String> routes = List.of();
     int upstreamPort = DEFAULT_UPSTREAM_PORT;
@@ -517,6 +530,7 @@ public final class DeploymentSpecParser {
         case ALIASES -> aliases = aliases(value, source, lineNumber);
         case UPDATE_ORDER -> updateOrder = updateOrder(value, source, lineNumber);
         case PUBLISH_MODE -> publishMode = publishMode(value, source, lineNumber);
+        case EXPOSURE -> exposure = exposure(value, source, lineNumber);
         case STOP_GRACE_PERIOD -> stopGracePeriod = stopGracePeriod(value, source, lineNumber);
         case ROUTES -> routes = routes(value, source, lineNumber);
         case UPSTREAM_PORT -> upstreamPort = upstreamPort(value, source, lineNumber);
@@ -559,6 +573,8 @@ public final class DeploymentSpecParser {
                     + UPDATE_ORDER
                     + ", "
                     + PUBLISH_MODE
+                    + ", "
+                    + EXPOSURE
                     + ", "
                     + STOP_GRACE_PERIOD
                     + ", "
@@ -686,7 +702,8 @@ public final class DeploymentSpecParser {
         application,
         renamedFrom,
         stopGracePeriod,
-        new DeclaredShape(binds, publishes, aliases));
+        new DeclaredShape(binds, publishes, aliases),
+        exposure);
   }
 
   /**
@@ -1027,6 +1044,34 @@ public final class DeploymentSpecParser {
             + DeploymentDriver.PublishMode.HOST.spelling()
             + "` or `"
             + DeploymentDriver.PublishMode.INGRESS.spelling()
+            + "`, got: "
+            + value);
+  }
+
+  /**
+   * Which networks the service joins and which edge routes it. Three values, case-sensitive, in
+   * the spelling {@link DeploymentDriver.Exposure#wire()} puts on the event.
+   *
+   * <p>Refused rather than defaulted, like every other value here — and more sharply: a typo read
+   * as {@code public} would put an application meant for the tunnel alone on the public edge.
+   */
+  private static DeploymentDriver.Exposure exposure(String value, String source, int line) {
+    for (DeploymentDriver.Exposure candidate : DeploymentDriver.Exposure.values()) {
+      if (candidate.wire().equals(value)) {
+        return candidate;
+      }
+    }
+    throw error(
+        source,
+        line,
+        "`"
+            + EXPOSURE
+            + "` must be `"
+            + DeploymentDriver.Exposure.PUBLIC.wire()
+            + "`, `"
+            + DeploymentDriver.Exposure.PRIVATE.wire()
+            + "` or `"
+            + DeploymentDriver.Exposure.BOTH.wire()
             + "`, got: "
             + value);
   }

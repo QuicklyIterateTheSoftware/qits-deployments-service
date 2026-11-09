@@ -365,6 +365,18 @@ public interface DeploymentDriver {
   Optional<RunningImage> runningImage(String name);
 
   /**
+   * Which {@link Exposure} the live service of this name is attached as, read off its networks — or
+   * empty when the runtime cannot say (no such service, an inspect that failed, a network it cannot
+   * resolve, or a driver that does not know). The startup sweep's adoption announces a deployment
+   * from a row, and a row records no exposure; this is where the adopted frame learns one. Empty is
+   * answered with {@link Exposure#PUBLIC} by the caller, which is what every frame recorded before
+   * the class existed means.
+   */
+  default Optional<Exposure> liveExposure(String name) {
+    return Optional.empty();
+  }
+
+  /**
    * Whether {@code name} is the service this deployer itself runs as — the case {@link #apply}
    * answers {@link ApplyOutcome#HANDED_OFF} for. Asked by a rename cutover before anything moves,
    * because renaming the deployer is the one rename the deployer cannot perform on itself: it would
@@ -573,10 +585,12 @@ public interface DeploymentDriver {
       Duration stopGracePeriod,
       DeclaredShape shape,
       String renamedFrom,
-      boolean takesOverPredecessor) {
+      boolean takesOverPredecessor,
+      Exposure exposure) {
 
     /** Null lists and empty ones are the same statement: this application declared none. */
     public ServiceSpec {
+      exposure = exposure == null ? Exposure.PUBLIC : exposure;
       shape = shape == null ? DeclaredShape.NONE : shape;
       networks = networks == null ? List.of() : List.copyOf(networks);
       resources = resources == null ? List.of() : List.copyOf(resources);
@@ -584,6 +598,56 @@ public interface DeploymentDriver {
       updateOrder = updateOrder == null ? UpdateOrder.START_FIRST : updateOrder;
       publishMode = publishMode == null ? PublishMode.HOST : publishMode;
       stopGracePeriod = stopGracePeriod == null ? DEFAULT_STOP_GRACE_PERIOD : stopGracePeriod;
+    }
+
+    /** The shape before {@code exposure}: a spec that names none is {@link Exposure#PUBLIC}. */
+    public ServiceSpec(
+        String environmentId,
+        String environmentName,
+        String applicationId,
+        String applicationName,
+        String deploymentId,
+        String commitSha,
+        String version,
+        String deploymentName,
+        String wireAlias,
+        List<String> networks,
+        String imageRef,
+        String healthPath,
+        String healthCmd,
+        boolean availableOnEnv,
+        UpdateOrder updateOrder,
+        PublishMode publishMode,
+        List<ResourceBinding> resources,
+        List<VolumeMount> volumes,
+        Duration stopGracePeriod,
+        DeclaredShape shape,
+        String renamedFrom,
+        boolean takesOverPredecessor) {
+      this(
+          environmentId,
+          environmentName,
+          applicationId,
+          applicationName,
+          deploymentId,
+          commitSha,
+          version,
+          deploymentName,
+          wireAlias,
+          networks,
+          imageRef,
+          healthPath,
+          healthCmd,
+          availableOnEnv,
+          updateOrder,
+          publishMode,
+          resources,
+          volumes,
+          stopGracePeriod,
+          shape,
+          renamedFrom,
+          takesOverPredecessor,
+          Exposure.PUBLIC);
     }
 
     /** The shape before {@code renamed_from} reached the driver: no predecessor to answer for. */
@@ -790,6 +854,34 @@ public interface DeploymentDriver {
 
     /** The spelling in {@code .config/qits/deployments.yml}, and docker's own: {@code host}/{@code ingress}. */
     public String spelling() {
+      return name().toLowerCase(java.util.Locale.ROOT);
+    }
+  }
+
+  /**
+   * Which networks a service joins, and which edge serves it — {@code exposure} in the repository's
+   * spec, and the default is {@code public} because that is every service on the estate today.
+   *
+   * <ul>
+   *   <li><b>{@code public}</b> joins the flat {@code qits-net} only, exactly as every service
+   *       always has. The public edge routes it.
+   *   <li><b>{@code private}</b> joins the encrypted {@code qits-private} overlay only. Only the
+   *       private edge, reached over the tunnel, routes it.
+   *   <li><b>{@code both}</b> joins the two. The private edge itself is the first: it needs
+   *       {@code qits-net} for egress and {@code qits-private} to reach private upstreams.
+   * </ul>
+   *
+   * <p>The wire alias is set on every network the service joins, so its address resolves wherever
+   * it is reachable. The class rides {@code DeploymentActive.exposure} as {@link #wire()}, and a
+   * frame without the field reads as {@code public}.
+   */
+  enum Exposure {
+    PUBLIC,
+    PRIVATE,
+    BOTH;
+
+    /** The spelling in {@code .config/qits/deployments.yml} and on the wire. */
+    public String wire() {
       return name().toLowerCase(java.util.Locale.ROOT);
     }
   }
