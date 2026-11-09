@@ -3,6 +3,10 @@ package eu.wohlben.qits.deployments.contracts;
 import static io.restassured.RestAssured.given;
 
 import eu.wohlben.qits.deployments.api.SuiteBearers;
+import eu.wohlben.qits.deployments.deployments.control.ArtifactPurge;
+import eu.wohlben.qits.deployments.deployments.control.DeployService;
+import eu.wohlben.qits.deployments.deployments.control.DeploymentDriver;
+import eu.wohlben.qits.deployments.deployments.control.FakeArtifactPurge;
 import eu.wohlben.qits.deployments.deployments.control.FakeDeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.FakeSpecSource;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource;
@@ -49,6 +53,24 @@ public class ProviderStates {
   public static final String AN_APPLICATION_HOLDING_A_SERVICE_CLIENT =
       "an application holding a service client";
 
+  /** Named by qits-platform-access-monorepo's {@code DeploymentsContract} (qits-1924). */
+  public static final String AN_APPLICATION_WITH_SETTINGS =
+      "an application with settings in an environment";
+
+  /** Named by qits-platform-access-monorepo's {@code DeploymentsContract} (qits-1924). */
+  public static final String AN_APPLICATION_WITH_CHANGED_SETTINGS =
+      "an application whose settings changed since its deployment";
+
+  public static final String A_DEPLOYMENT_REQUEST = "a deployment request that deployed";
+  public static final String AN_APPLICATION_RUNNING = "an application running in an environment";
+  public static final String AN_APPLICATION_WITH_A_FAILED_DEPLOYMENT =
+      "an application whose only deployment failed";
+  public static final String A_DECOMMISSIONED_APPLICATION =
+      "an application decommissioned with its artifacts purged";
+  public static final String A_SERVICE_LINKED_INTO_AN_ENVIRONMENT =
+      "a service linked into an environment";
+  public static final String AN_ENVIRONMENT_TO_TEAR_DOWN = "an environment to tear down";
+
   /**
    * The machine gate is on: a bearer no idp issued answers 401. Only {@code
    * MachineGuardEnforcedProfile} runs the service gated, so only {@link
@@ -66,6 +88,12 @@ public class ProviderStates {
   /** The released version the deployed states ship. */
   static final String VERSION = "2026.101.120000";
 
+  /** The plain setting the settings state seeds; its {@code key} param. */
+  static final String PLAIN_SETTING = "LOG_LEVEL";
+
+  /** What the orchestrator double answers the failed-deployment states' release with. */
+  static final String CONVERGENCE_FAILURE = "task exited with code 1 before it went healthy";
+
   /** The version the rollback state ships second, so {@link #VERSION} is its rollback target. */
   static final String NEXT_VERSION = "2026.102.120000";
 
@@ -82,9 +110,14 @@ public class ProviderStates {
 
   @Inject FakeDeploymentDriver driver;
   @Inject FakeSpecSource specs;
+  @Inject FakeArtifactPurge artifacts;
+  @Inject DeployService deployService;
 
   private final Map<String, Supplier<Setup>> states = new LinkedHashMap<>();
   private final List<String> removable = Collections.synchronizedList(new ArrayList<>());
+
+  /** Catalogue services a state registered by hand: clean-up deletes them. */
+  private final List<String> removableServices = Collections.synchronizedList(new ArrayList<>());
 
   /** Environments a release was announced into: clean-up waits for their deployments to finish. */
   private final List<String> settling = Collections.synchronizedList(new ArrayList<>());
@@ -98,6 +131,14 @@ public class ProviderStates {
     states.put(AN_APPLICATION_WITH_A_ROLLBACK, this::anApplicationWithARollback);
     states.put(AN_APPLICATION_HOLDING_A_SERVICE_CLIENT, this::anApplicationHoldingAServiceClient);
     states.put(THE_MACHINE_GATE_IS_ON, this::theMachineGateIsOn);
+    states.put(AN_APPLICATION_WITH_SETTINGS, this::anApplicationWithSettings);
+    states.put(AN_APPLICATION_WITH_CHANGED_SETTINGS, this::anApplicationWithChangedSettings);
+    states.put(A_DEPLOYMENT_REQUEST, this::aDeploymentRequest);
+    states.put(AN_APPLICATION_RUNNING, this::anApplicationRunning);
+    states.put(AN_APPLICATION_WITH_A_FAILED_DEPLOYMENT, this::anApplicationWithAFailedDeployment);
+    states.put(A_DECOMMISSIONED_APPLICATION, this::aDecommissionedApplication);
+    states.put(A_SERVICE_LINKED_INTO_AN_ENVIRONMENT, this::aServiceLinkedIntoAnEnvironment);
+    states.put(AN_ENVIRONMENT_TO_TEAR_DOWN, this::anEnvironmentToTearDown);
   }
 
   /** Every state name this provider answers for. */
@@ -131,6 +172,9 @@ public class ProviderStates {
       settling.clear();
     }
     announced.forEach(ProviderStates::drain);
+    // A scale, a restart or a retirement an interaction queued runs on the deploy worker: let it
+    // finish here, so it cannot act on the fakes while the next state seeds.
+    awaitIdle();
     List<String> ids;
     synchronized (removable) {
       ids = List.copyOf(removable);
@@ -140,6 +184,16 @@ public class ProviderStates {
       given()
           .header("Authorization", SuiteBearers.platform())
           .when().delete("/deployments/api/environments/" + id);
+    }
+    List<String> services;
+    synchronized (removableServices) {
+      services = List.copyOf(removableServices);
+      removableServices.clear();
+    }
+    for (String name : services) {
+      given()
+          .header("Authorization", SuiteBearers.platform())
+          .when().delete("/deployments/api/services/" + name);
     }
   }
 
@@ -283,6 +337,243 @@ public class ProviderStates {
   /** Nothing seeded: what this state stands for is the profile, not a row. */
   private Setup theMachineGateIsOn() {
     return new Setup(Map.of(), List.of());
+  }
+
+  /**
+   * One application deployed ACTIVE in a designated environment, holding two settings there: a
+   * plain one ({@link #PLAIN_SETTING}, the {@code key} param) and a secret one. {@code
+   * environment} is the environment's NAME, which is how the settings doors address a place.
+   */
+  private Setup anApplicationWithSettings() {
+    driver.reset();
+    String token = token();
+    String environment = "contract-" + token;
+    String environmentId = createEnvironment(environment, true);
+    String application = "contract-app-" + token;
+    release(application, VERSION);
+    settle(environmentId, 1);
+    putSetting(application, environment, PLAIN_SETTING, "info", false);
+    putSetting(application, environment, "API_TOKEN", "contract-secret-value", true);
+    Map<String, String> params = new TreeMap<>();
+    params.put("application", application);
+    params.put("environment", environment);
+    params.put("key", PLAIN_SETTING);
+    return new Setup(params, List.of(token));
+  }
+
+  /**
+   * One application deployed ACTIVE with three settings, whose live service carries exactly those
+   * three; then one setting is added, one changed and one removed. The preview answers one of
+   * each, and one unchanged.
+   *
+   * <p>The live environment is scripted on the suite's orchestrator double under the deployment
+   * row's own service name — the name the preview inspects — because the double runs nothing.
+   */
+  private Setup anApplicationWithChangedSettings() {
+    driver.reset();
+    String token = token();
+    String environment = "contract-" + token;
+    String environmentId = createEnvironment(environment, true);
+    String application = "contract-app-" + token;
+    putSetting(application, environment, "GREETING", "hello", false);
+    putSetting(application, environment, PLAIN_SETTING, "info", false);
+    putSetting(application, environment, "LEGACY_FLAG", "on", false);
+    release(application, VERSION);
+    settle(environmentId, 1);
+    driver.scriptLiveEnvironment(
+        containerNameOf(environmentId),
+        List.of("GREETING=hello", PLAIN_SETTING + "=info", "LEGACY_FLAG=on"));
+    putSetting(application, environment, "NEW_FLAG", "off", false);
+    putSetting(application, environment, PLAIN_SETTING, "debug", false);
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when()
+        .delete("/deployments/api/settings/" + application + "/" + environment + "/LEGACY_FLAG")
+        .then()
+        .statusCode(204);
+    Map<String, String> params = new TreeMap<>();
+    params.put("application", application);
+    params.put("environment", environment);
+    return new Setup(params, List.of(token));
+  }
+
+  /** One release deployed ACTIVE; {@code id} is the deployment request that deployed it. */
+  private Setup aDeploymentRequest() {
+    driver.reset();
+    String token = token();
+    String environmentId = createEnvironment("contract-" + token, true);
+    String application = "contract-app-" + token;
+    release(application, VERSION);
+    settle(environmentId, 1);
+    List<String> ids =
+        given()
+            .header("Authorization", SuiteBearers.operator())
+            .queryParam("repoId", application)
+            .queryParam("version", VERSION)
+            .when()
+            .get("/deployments/api/deployment-requests")
+            .then()
+            .statusCode(200)
+            .extract()
+            .jsonPath()
+            .getList("deploymentRequests.id");
+    if (ids.size() != 1) {
+      throw new IllegalStateException("expected one deployment request, got " + ids);
+    }
+    Map<String, String> params = new TreeMap<>();
+    params.put("applicationName", application);
+    params.put("environmentId", environmentId);
+    params.put("id", ids.get(0));
+    return new Setup(params, List.of(token));
+  }
+
+  /**
+   * One application deployed ACTIVE in a designated environment: its service runs, so the
+   * operator's levers (scale, restart, retire) are accepted. {@code applicationId} is the
+   * {@code <environmentId>:<name>} key the levers take. A lever only queues; clean-up waits for the
+   * deploy worker to finish it.
+   */
+  private Setup anApplicationRunning() {
+    driver.reset();
+    String token = token();
+    String environmentId = createEnvironment("contract-" + token, true);
+    String application = "contract-app-" + token;
+    release(application, VERSION);
+    settle(environmentId, 1);
+    Map<String, String> params = new TreeMap<>();
+    params.put("applicationId", environmentId + ":" + application);
+    params.put("applicationName", application);
+    params.put("environmentId", environmentId);
+    return new Setup(params, List.of(token));
+  }
+
+  /**
+   * One application whose only release failed — the orchestrator never saw its service converge —
+   * so nothing is deployed and a decommission is allowed; qits-artifacts (the suite's double) holds
+   * one published image of it, which the decommission's purge reports removed.
+   */
+  private Setup anApplicationWithAFailedDeployment() {
+    driver.reset();
+    String token = token();
+    String environmentId = createEnvironment("contract-" + token, true);
+    String application = "contract-app-" + token;
+    failedRelease(environmentId, application);
+    Map<String, String> params = new TreeMap<>();
+    params.put("applicationId", environmentId + ":" + application);
+    params.put("applicationName", application);
+    params.put("environmentId", environmentId);
+    return new Setup(params, List.of(token));
+  }
+
+  /** {@link #anApplicationWithAFailedDeployment}, then decommissioned once: one PURGED run. */
+  private Setup aDecommissionedApplication() {
+    Setup failed = anApplicationWithAFailedDeployment();
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when()
+        .post("/deployments/api/applications/" + failed.params().get("applicationId") + "/decommission")
+        .then()
+        .statusCode(200);
+    return failed;
+  }
+
+  /**
+   * One environment, not designated, and one catalogue service registered by hand and linked into
+   * it. Both are torn down afterwards.
+   */
+  private Setup aServiceLinkedIntoAnEnvironment() {
+    String token = token();
+    String environmentId = createEnvironment("contract-" + token, false);
+    removable.add(environmentId);
+    String service = "contract-svc-" + token;
+    removableServices.add(service);
+    given()
+        .header("Authorization", SuiteBearers.platform())
+        .contentType(ContentType.JSON)
+        .body(
+            Map.of(
+                "availableOnEnv", false,
+                "healthPath", "/q/health",
+                "environmentIds", List.of(environmentId)))
+        .when()
+        .put("/deployments/api/services/" + service)
+        .then()
+        .statusCode(201);
+    Map<String, String> params = new TreeMap<>();
+    params.put("environmentId", environmentId);
+    params.put("serviceName", service);
+    return new Setup(params, List.of(token));
+  }
+
+  /** One environment, not designated, holding nothing: it can be torn down. */
+  private Setup anEnvironmentToTearDown() {
+    String token = token();
+    String id = createEnvironment("contract-" + token, false);
+    removable.add(id);
+    Map<String, String> params = new TreeMap<>();
+    params.put("environmentId", id);
+    return new Setup(params, List.of(token));
+  }
+
+  /**
+   * Announces a release the orchestrator double answers as failed, waits for its row to end
+   * FAILED, and publishes one image of the application on the artifacts double.
+   */
+  private void failedRelease(String environmentId, String application) {
+    driver.scriptConvergence(DeploymentDriver.Convergence.failed(CONVERGENCE_FAILURE));
+    artifacts.publish(
+        application,
+        List.of(
+            new ArtifactPurge.RemovedArtifact(
+                "oci", "oci", "qits/" + application, List.of(VERSION))));
+    release(application, VERSION);
+    long deadline = System.currentTimeMillis() + 15_000;
+    while (System.currentTimeMillis() < deadline) {
+      List<String> statuses = statuses(environmentId);
+      if (statuses.equals(List.of("FAILED"))) {
+        awaitIdle();
+        driver.scriptConvergence(DeploymentDriver.Convergence.converged(List.of()));
+        return;
+      }
+      pause(environmentId);
+    }
+    throw new IllegalStateException(
+        "the release into " + environmentId + " never failed: " + statuses(environmentId));
+  }
+
+  private static void putSetting(
+      String application, String environment, String key, String value, boolean secret) {
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .contentType(ContentType.JSON)
+        .body(Map.of("value", value, "secret", secret))
+        .when()
+        .put("/deployments/api/settings/" + application + "/" + environment + "/" + key)
+        .then()
+        .statusCode(200);
+  }
+
+  /** The service name the environment's newest deployment row recorded. */
+  private static String containerNameOf(String environmentId) {
+    return given()
+        .header("Authorization", SuiteBearers.operator())
+        .when()
+        .get("/deployments/api/deployments?environmentId=" + environmentId)
+        .then()
+        .statusCode(200)
+        .extract()
+        .path("deployments[0].containerName");
+  }
+
+  private void awaitIdle() {
+    try {
+      deployService.awaitIdle();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException("interrupted while the deploy worker drained", e);
+    } catch (Exception e) {
+      throw new IllegalStateException("the deploy worker did not drain", e);
+    }
   }
 
   private static void release(String application, String version) {

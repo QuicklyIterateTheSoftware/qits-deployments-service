@@ -1,0 +1,8 @@
+{
+  "applicationId": "00000000-0000-4000-8000-000000000001:contract-app-00000001",
+  "applicationName": "contract-app-00000001",
+  "environmentId": "00000000-0000-4000-8000-000000000001",
+  "serviceName": "contract-00000001-contract-app-00000001",
+  "deploymentId": "00000000-0000-4000-8000-000000000002",
+  "replicas": 1
+}

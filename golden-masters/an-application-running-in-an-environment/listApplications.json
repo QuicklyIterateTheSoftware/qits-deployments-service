@@ -1,0 +1,15 @@
+{
+  "applications": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001:contract-app-00000001",
+      "repoId": "contract-app-00000001",
+      "name": "contract-app-00000001",
+      "environmentId": "00000000-0000-4000-8000-000000000001",
+      "environmentName": "contract-00000001",
+      "availableOnEnv": false,
+      "branch": null,
+      "healthPath": "/contract-app-00000001/q/health/ready",
+      "createdAt": "2026-01-01T00:00:00Z"
+    }
+  ]
+}

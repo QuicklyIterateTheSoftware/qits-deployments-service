@@ -3,6 +3,47 @@
   "provider": "qits-deployments",
   "states": [
     {
+      "name": "a deployment request that deployed",
+      "slug": "a-deployment-request-that-deployed",
+      "params": {
+        "applicationName": "contract-app-00000001",
+        "environmentId": "00000000-0000-4000-8000-000000000001",
+        "id": "00000000-0000-4000-8000-000000000002"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getDeploymentRequest",
+          "method": "GET",
+          "path": "/deployments/api/deployment-requests/{id}",
+          "status": 200,
+          "file": "a-deployment-request-that-deployed/getDeploymentRequest.json",
+          "frozen": {
+            "ids": [
+              "$.deploymentRequest.id",
+              "$.deploymentRequest.environmentId",
+              "$.deploymentRequest.deploymentId",
+              "$.deployment.id"
+            ],
+            "instants": [
+              "$.deploymentRequest.createdAt",
+              "$.deploymentRequest.gateSettledAt",
+              "$.deployment.createdAt",
+              "$.deployment.finishedAt"
+            ],
+            "strings": [
+              "$.deploymentRequest.applicationName",
+              "$.deploymentRequest.repoId",
+              "$.deployment.applicationId",
+              "$.deployment.applicationName",
+              "$.deployment.containerName"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "a released version of a deployable repository",
       "slug": "a-released-version-of-a-deployable-repository",
       "params": {
@@ -31,6 +72,127 @@
             "ids": [],
             "instants": [],
             "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a service linked into an environment",
+      "slug": "a-service-linked-into-an-environment",
+      "params": {
+        "environmentId": "00000000-0000-4000-8000-000000000001",
+        "serviceName": "contract-svc-00000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "deleteService",
+          "method": "DELETE",
+          "path": "/deployments/api/services/{serviceName}",
+          "status": 204,
+          "file": "a-service-linked-into-an-environment/deleteService.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "listEnvironmentLinks",
+          "method": "GET",
+          "path": "/deployments/api/environments/{environmentId}/links",
+          "status": 200,
+          "file": "a-service-linked-into-an-environment/listEnvironmentLinks.json",
+          "frozen": {
+            "ids": [
+              "$.services[*].id"
+            ],
+            "instants": [],
+            "strings": [
+              "$.services[*].name"
+            ],
+            "listFilteredTo": "$.services"
+          }
+        },
+        {
+          "operationId": "listServices",
+          "method": "GET",
+          "path": "/deployments/api/services",
+          "status": 200,
+          "file": "a-service-linked-into-an-environment/listServices.json",
+          "frozen": {
+            "ids": [
+              "$.services[*].id",
+              "$.services[*].environmentIds[*]"
+            ],
+            "instants": [
+              "$.services[*].createdAt"
+            ],
+            "strings": [
+              "$.services[*].name"
+            ],
+            "listFilteredTo": "$.services"
+          }
+        },
+        {
+          "operationId": "upsertService",
+          "method": "PUT",
+          "path": "/deployments/api/services/{serviceName}",
+          "body": {
+            "availableOnEnv": true,
+            "healthPath": "/q/health",
+            "environmentIds": [
+              "{environmentId}"
+            ]
+          },
+          "status": 200,
+          "file": "a-service-linked-into-an-environment/upsertService.json",
+          "frozen": {
+            "ids": [
+              "$.service.id",
+              "$.service.environmentIds[*]"
+            ],
+            "instants": [
+              "$.service.createdAt"
+            ],
+            "strings": [
+              "$.service.name"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "an application decommissioned with its artifacts purged",
+      "slug": "an-application-decommissioned-with-its-artifacts-purged",
+      "params": {
+        "applicationId": "00000000-0000-4000-8000-000000000001:contract-app-00000001",
+        "applicationName": "contract-app-00000001",
+        "environmentId": "00000000-0000-4000-8000-000000000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listDecommissions",
+          "method": "GET",
+          "path": "/deployments/api/applications/{applicationId}/decommissions",
+          "status": 200,
+          "file": "an-application-decommissioned-with-its-artifacts-purged/listDecommissions.json",
+          "frozen": {
+            "ids": [
+              "$.decommissions[*].id",
+              "$.decommissions[*].environmentId"
+            ],
+            "instants": [
+              "$.decommissions[*].decommissionedAt"
+            ],
+            "strings": [
+              "$.decommissions[*].applicationName",
+              "$.decommissions[*].removed[*].name"
+            ],
             "listFilteredTo": null
           }
         }
@@ -147,6 +309,104 @@
       ]
     },
     {
+      "name": "an application running in an environment",
+      "slug": "an-application-running-in-an-environment",
+      "params": {
+        "applicationId": "00000000-0000-4000-8000-000000000001:contract-app-00000001",
+        "applicationName": "contract-app-00000001",
+        "environmentId": "00000000-0000-4000-8000-000000000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listApplications",
+          "method": "GET",
+          "path": "/deployments/api/applications",
+          "status": 200,
+          "file": "an-application-running-in-an-environment/listApplications.json",
+          "frozen": {
+            "ids": [
+              "$.applications[*].environmentId"
+            ],
+            "instants": [
+              "$.applications[*].createdAt"
+            ],
+            "strings": [
+              "$.applications[*].id",
+              "$.applications[*].repoId",
+              "$.applications[*].name",
+              "$.applications[*].environmentName",
+              "$.applications[*].healthPath"
+            ],
+            "listFilteredTo": "$.applications"
+          }
+        },
+        {
+          "operationId": "restartApplication",
+          "method": "POST",
+          "path": "/deployments/api/applications/{applicationId}/restart",
+          "status": 202,
+          "file": "an-application-running-in-an-environment/restartApplication.json",
+          "frozen": {
+            "ids": [
+              "$.environmentId",
+              "$.deploymentId"
+            ],
+            "instants": [],
+            "strings": [
+              "$.applicationId",
+              "$.applicationName",
+              "$.serviceName"
+            ],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "retireApplication",
+          "method": "POST",
+          "path": "/deployments/api/applications/{applicationId}/retire",
+          "status": 202,
+          "file": "an-application-running-in-an-environment/retireApplication.json",
+          "frozen": {
+            "ids": [
+              "$.environmentId",
+              "$.deploymentId"
+            ],
+            "instants": [],
+            "strings": [
+              "$.applicationId",
+              "$.applicationName",
+              "$.serviceName"
+            ],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "scaleApplication",
+          "method": "POST",
+          "path": "/deployments/api/applications/{applicationId}/scale",
+          "body": {
+            "replicas": 1
+          },
+          "status": 202,
+          "file": "an-application-running-in-an-environment/scaleApplication.json",
+          "frozen": {
+            "ids": [
+              "$.environmentId",
+              "$.deploymentId"
+            ],
+            "instants": [],
+            "strings": [
+              "$.applicationId",
+              "$.applicationName",
+              "$.serviceName"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "an application serving with a rollback version",
       "slug": "an-application-serving-with-a-rollback-version",
       "params": {
@@ -168,6 +428,136 @@
               "$.pins[*].applicationName"
             ],
             "listFilteredTo": "$.pins"
+          }
+        }
+      ]
+    },
+    {
+      "name": "an application whose only deployment failed",
+      "slug": "an-application-whose-only-deployment-failed",
+      "params": {
+        "applicationId": "00000000-0000-4000-8000-000000000001:contract-app-00000001",
+        "applicationName": "contract-app-00000001",
+        "environmentId": "00000000-0000-4000-8000-000000000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "decommissionApplication",
+          "method": "POST",
+          "path": "/deployments/api/applications/{applicationId}/decommission",
+          "body": {},
+          "status": 200,
+          "file": "an-application-whose-only-deployment-failed/decommissionApplication.json",
+          "frozen": {
+            "ids": [
+              "$.environmentId",
+              "$.currentDeploymentId",
+              "$.decommissionedIds[*]"
+            ],
+            "instants": [],
+            "strings": [
+              "$.applicationId",
+              "$.applicationName",
+              "$.removedArtifacts[*].name"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "an application whose settings changed since its deployment",
+      "slug": "an-application-whose-settings-changed-since-its-deployment",
+      "params": {
+        "application": "contract-app-00000001",
+        "environment": "contract-00000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "previewSettings",
+          "method": "GET",
+          "path": "/deployments/api/settings/preview/{application}/{environment}",
+          "status": 200,
+          "file": "an-application-whose-settings-changed-since-its-deployment/previewSettings.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [
+              "$.application",
+              "$.environment"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "an application with settings in an environment",
+      "slug": "an-application-with-settings-in-an-environment",
+      "params": {
+        "application": "contract-app-00000001",
+        "environment": "contract-00000001",
+        "key": "LOG_LEVEL"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "deleteSetting",
+          "method": "DELETE",
+          "path": "/deployments/api/settings/{application}/{environment}/{key}",
+          "status": 204,
+          "file": "an-application-with-settings-in-an-environment/deleteSetting.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "listSettings",
+          "method": "GET",
+          "path": "/deployments/api/settings",
+          "query": {
+            "application": "{application}",
+            "environment": "{environment}"
+          },
+          "status": 200,
+          "file": "an-application-with-settings-in-an-environment/listSettings.json",
+          "frozen": {
+            "ids": [],
+            "instants": [
+              "$.settings[*].updatedAt"
+            ],
+            "strings": [
+              "$.settings[*].application",
+              "$.settings[*].environment"
+            ],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "putSetting",
+          "method": "PUT",
+          "path": "/deployments/api/settings/{application}/{environment}/{key}",
+          "body": {
+            "value": "debug",
+            "secret": false
+          },
+          "status": 200,
+          "file": "an-application-with-settings-in-an-environment/putSetting.json",
+          "frozen": {
+            "ids": [],
+            "instants": [
+              "$.updatedAt"
+            ],
+            "strings": [
+              "$.application",
+              "$.environment"
+            ],
+            "listFilteredTo": null
           }
         }
       ]
@@ -218,6 +608,29 @@
               "$.environments[*].network"
             ],
             "listFilteredTo": "$.environments"
+          }
+        }
+      ]
+    },
+    {
+      "name": "an environment to tear down",
+      "slug": "an-environment-to-tear-down",
+      "params": {
+        "environmentId": "00000000-0000-4000-8000-000000000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "deleteEnvironment",
+          "method": "DELETE",
+          "path": "/deployments/api/environments/{environmentId}",
+          "status": 204,
+          "file": "an-environment-to-tear-down/deleteEnvironment.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
           }
         }
       ]

@@ -1,0 +1,29 @@
+{
+  "application": "contract-app-00000001",
+  "environment": "contract-00000001",
+  "extrasIncluded": false,
+  "added": [
+    {
+      "key": "NEW_FLAG",
+      "value": "off",
+      "secret": false
+    }
+  ],
+  "removed": [
+    {
+      "key": "LEGACY_FLAG",
+      "value": "on",
+      "secret": false
+    }
+  ],
+  "changed": [
+    {
+      "key": "LOG_LEVEL",
+      "from": "info",
+      "to": "debug",
+      "secret": false
+    }
+  ],
+  "kept": [],
+  "unchanged": 1
+}

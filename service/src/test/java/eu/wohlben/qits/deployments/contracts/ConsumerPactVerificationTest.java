@@ -157,4 +157,44 @@ class ConsumerPactVerificationTest {
   Map<String, String> anApplicationHoldingAServiceClient() {
     return states.params(ProviderStates.AN_APPLICATION_HOLDING_A_SERVICE_CLIENT);
   }
+
+  @State(ProviderStates.AN_APPLICATION_WITH_SETTINGS)
+  Map<String, String> anApplicationWithSettings() {
+    return states.params(ProviderStates.AN_APPLICATION_WITH_SETTINGS);
+  }
+
+  @State(ProviderStates.AN_APPLICATION_WITH_CHANGED_SETTINGS)
+  Map<String, String> anApplicationWithChangedSettings() {
+    return states.params(ProviderStates.AN_APPLICATION_WITH_CHANGED_SETTINGS);
+  }
+
+  @State(ProviderStates.A_DEPLOYMENT_REQUEST)
+  Map<String, String> aDeploymentRequest() {
+    return states.params(ProviderStates.A_DEPLOYMENT_REQUEST);
+  }
+
+  @State(ProviderStates.AN_APPLICATION_RUNNING)
+  Map<String, String> anApplicationRunning() {
+    return states.params(ProviderStates.AN_APPLICATION_RUNNING);
+  }
+
+  @State(ProviderStates.AN_APPLICATION_WITH_A_FAILED_DEPLOYMENT)
+  Map<String, String> anApplicationWithAFailedDeployment() {
+    return states.params(ProviderStates.AN_APPLICATION_WITH_A_FAILED_DEPLOYMENT);
+  }
+
+  @State(ProviderStates.A_DECOMMISSIONED_APPLICATION)
+  Map<String, String> aDecommissionedApplication() {
+    return states.params(ProviderStates.A_DECOMMISSIONED_APPLICATION);
+  }
+
+  @State(ProviderStates.A_SERVICE_LINKED_INTO_AN_ENVIRONMENT)
+  Map<String, String> aServiceLinkedIntoAnEnvironment() {
+    return states.params(ProviderStates.A_SERVICE_LINKED_INTO_AN_ENVIRONMENT);
+  }
+
+  @State(ProviderStates.AN_ENVIRONMENT_TO_TEAR_DOWN)
+  Map<String, String> anEnvironmentToTearDown() {
+    return states.params(ProviderStates.AN_ENVIRONMENT_TO_TEAR_DOWN);
+  }
 }
