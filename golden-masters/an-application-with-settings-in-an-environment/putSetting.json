@@ -1,0 +1,9 @@
+{
+  "application": "contract-app-00000001",
+  "environment": "contract-00000001",
+  "key": "LOG_LEVEL",
+  "value": "debug",
+  "secret": false,
+  "updatedAt": "2026-01-01T00:00:00Z",
+  "updatedBy": "an-operator"
+}

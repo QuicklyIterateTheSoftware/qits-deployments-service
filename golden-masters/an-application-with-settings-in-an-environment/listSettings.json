@@ -1,0 +1,22 @@
+{
+  "settings": [
+    {
+      "application": "contract-app-00000001",
+      "environment": "contract-00000001",
+      "key": "API_TOKEN",
+      "value": null,
+      "secret": true,
+      "updatedAt": "2026-01-01T00:00:00Z",
+      "updatedBy": "an-operator"
+    },
+    {
+      "application": "contract-app-00000001",
+      "environment": "contract-00000001",
+      "key": "LOG_LEVEL",
+      "value": "info",
+      "secret": false,
+      "updatedAt": "2026-01-01T00:00:00Z",
+      "updatedBy": "an-operator"
+    }
+  ]
+}

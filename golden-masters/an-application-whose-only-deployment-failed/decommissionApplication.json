@@ -1,0 +1,20 @@
+{
+  "applicationId": "00000000-0000-4000-8000-000000000001:contract-app-00000001",
+  "applicationName": "contract-app-00000001",
+  "environmentId": "00000000-0000-4000-8000-000000000001",
+  "currentDeploymentId": "00000000-0000-4000-8000-000000000002",
+  "previousStatus": "FAILED",
+  "decommissionedIds": [
+    "00000000-0000-4000-8000-000000000002"
+  ],
+  "removedArtifacts": [
+    {
+      "type": "oci",
+      "repository": "oci",
+      "name": "qits/contract-app-00000001",
+      "versions": [
+        "2026.101.120000"
+      ]
+    }
+  ]
+}
