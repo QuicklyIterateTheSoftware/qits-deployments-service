@@ -437,7 +437,8 @@ public class BuildDeploymentIT {
     operatorRead(UPDATED_SLUG);
     ReportAssertions.assertDeclaredEdge(
         CATEGORY, UPDATED_SLUG, NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
-    ReportAssertions.assertEdgeCount(CATEGORY, UPDATED_SLUG, 12);
+    // One more than the create: the drift check's question about qits-private (epic qits-1976).
+    ReportAssertions.assertEdgeCount(CATEGORY, UPDATED_SLUG, 13);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY,
         UPDATED_SLUG,

@@ -305,7 +305,7 @@ public final class StorySwarm {
         label("service ps " + service, "0"));
   }
 
-  /** …and the eight a replace asks, which differ from the create in three places and only three. */
+  /** …and the nine a replace asks: the create's, less the create, plus the live env and the drift check's overlay. */
   public static List<String> updateCalls(String service, String application, String sha) {
     return List.of(
         label("pull " + image(StoryTarget.imageRef(application, sha)), "0"),
@@ -317,6 +317,9 @@ public final class StorySwarm {
         // this argv can state a REMOVAL as well as an addition.
         label("service env " + service, "0"),
         label("service inspect " + seedTwin(service), "1"),
+        // The network-drift check (epic qits-1976) resolves both managed overlays, so it can tell a
+        // service on the wrong one; the private overlay does not exist until something private asks.
+        label("network inspect qits-private", "1"),
         label("service update " + service, "0"),
         // …and the verdict is read off UpdateStatus, matched against when this process issued it.
         label("service update-status " + service, "0"));
