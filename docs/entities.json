@@ -520,7 +520,7 @@
           "type" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$Upsert",
           "kind" : "assembler",
           "via" : null,
-          "site" : "DeployService.register(String, DeploymentSpec, UUID)"
+          "site" : "DeployService.register(String, DeploymentSpec, UUID, String, String)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$UpsertResult",
@@ -822,7 +822,7 @@
           "type" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$Upsert",
           "kind" : "via",
           "via" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$LinkedService",
-          "site" : "DeployService.register(String, DeploymentSpec, UUID)"
+          "site" : "DeployService.register(String, DeploymentSpec, UUID, String, String)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$UpsertResult",
