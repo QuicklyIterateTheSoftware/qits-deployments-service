@@ -2808,12 +2808,13 @@ for that reason. Shared auth comes from the platform
 Maven repository as `qits-auth-core`, and the event bus client as `qits-eventstream` — ordinary
 Maven dependencies, never gitlinks.
 
-**Both are version-pinned by a property in the root pom, one line each**, because a release train
-step rewrites exactly that element: `.config/qits/ci-event-upstream-auth-core.yml` and
-`.config/qits/ci-event-upstream-eventstream.yml` each `sed` one `<…version>` and force-push the
-result onto a maintenance branch. A second spelling of either version anywhere would be left
-behind. A bump lands on a branch and not on main on purpose: a library release is not a decision to
-redeploy the deployer.
+**Both are version-pinned by a property in the root pom, one line each**, because the bump rewrites
+exactly that element. The per-repository upstream steps (`ci-event-upstream-auth-core.yml`,
+`ci-event-upstream-eventstream.yml`) are gone: qits-maintenance's `dependency-bump` release-request
+automation rewrites the property and commits it onto `maintenance/automations/dependency-bump/<request
+id>`, parented on a release request's fold. A second spelling of either version anywhere would be
+left behind. A bump lands on a branch and not on main on purpose: a library release is not a
+decision to redeploy the deployer.
 
 **`qits-eventstream` sits in all four modules now**, and only `service/` uses it for the bus: the
 domain modules take it for the causation persistence trio and `deployments-events` for `QitsEvent`
