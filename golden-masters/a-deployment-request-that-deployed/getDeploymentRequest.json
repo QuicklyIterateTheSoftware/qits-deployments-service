@@ -2,6 +2,7 @@
   "deploymentRequest": {
     "id": "00000000-0000-4000-8000-000000000002",
     "applicationName": "contract-app-00000001",
+    "variant": null,
     "version": "2026.101.120000",
     "environmentId": "00000000-0000-4000-8000-000000000001",
     "packageName": null,

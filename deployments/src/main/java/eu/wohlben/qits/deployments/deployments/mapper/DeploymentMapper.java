@@ -60,6 +60,7 @@ public class DeploymentMapper {
     return new PdDeploymentRequestDto(
         request.id,
         request.applicationName,
+        request.variant,
         request.version,
         request.environmentId,
         request.packageName,

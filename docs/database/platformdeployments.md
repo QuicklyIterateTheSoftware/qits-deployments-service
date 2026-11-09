@@ -58,6 +58,7 @@ erDiagram
     enum quality_gate "not null"
     string repo_id
     long seq
+    string variant "length 64"
     string version "not null, length 64"
   }
   %% pd_environment: eu.wohlben.qits.deployments.environments.entity.PdEnvironment (environments)

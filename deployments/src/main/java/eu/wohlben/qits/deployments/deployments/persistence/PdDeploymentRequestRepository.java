@@ -76,9 +76,15 @@ public class PdDeploymentRequestRepository
    * <p>More than one row is an ordinary answer rather than a surprise: one version is asked for once
    * per place, and a redeploy of the same version writes a second request. Newest first, so the
    * first result is the one a reader means.
+   *
+   * <p><b>The main application's rows only</b>: a release whose spec names {@code variants:} also
+   * writes rows for each variant's application under the same pair, and those are not the release's
+   * own deployment (qits-1976). They are found by their application name instead.
    */
-  public List<PdDeploymentRequest> listByRepoAndVersionNewestFirst(String repoId, String version) {
-    return list("repoId = ?1 and version = ?2 order by seq desc", repoId, version);
+  public List<PdDeploymentRequest> listMainByRepoAndVersionNewestFirst(
+      String repoId, String version) {
+    return list(
+        "repoId = ?1 and version = ?2 and variant is null order by seq desc", repoId, version);
   }
 
   /**

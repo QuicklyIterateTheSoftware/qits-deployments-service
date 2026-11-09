@@ -108,6 +108,16 @@ public class PdDeploymentRequest extends PanacheEntityBase implements CausedRow 
   @Column(length = 32)
   public String priority;
 
+  /**
+   * The variant this request deploys ({@code private} for {@code qits-edge-private}), or null for
+   * the main application of the release (qits-1976). One release of a repository with {@code
+   * variants:} writes rows for several applications under one {@code (repoId, version)}; this is
+   * what tells the release's own deployment apart from its variants', so the by-release listing can
+   * leave the variants out.
+   */
+  @Column(length = 64)
+  public String variant;
+
   /** The repository the release came from, in the git host's own storage key. Resolved by nobody. */
   @Column(name = "repo_id")
   public String repoId;

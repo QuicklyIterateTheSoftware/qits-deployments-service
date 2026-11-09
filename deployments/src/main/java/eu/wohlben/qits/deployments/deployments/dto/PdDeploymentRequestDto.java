@@ -34,6 +34,11 @@ import java.time.Instant;
  * it — the deploy worker is FIFO. Null is a complete answer and the common one: the release stated
  * none, which is every release cut before the field existed. A client renders a badge or nothing.
  *
+ * <p><b>{@code variant} names the variant this request deploys</b> ({@code private} for {@code
+ * qits-edge-private}), and is null for a release's main application — every request but a
+ * variant's, and every one written before variants existed (qits-1976). A release's own listing
+ * ({@code ?repoId=&version=}) carries only the null ones.
+ *
  * <p><b>{@code deploymentStatus} is the one field here that is not this row's own</b> — it is
  * joined from the deployment {@code deploymentId} names, and it is on the request because the
  * question a reader asks of a request spans both rows: "is the platform still doing something about
@@ -45,6 +50,7 @@ import java.time.Instant;
 public record PdDeploymentRequestDto(
     String id,
     String applicationName,
+    String variant,
     String version,
     String environmentId,
     String packageName,

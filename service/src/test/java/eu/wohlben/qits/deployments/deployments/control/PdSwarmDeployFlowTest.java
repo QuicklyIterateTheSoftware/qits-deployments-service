@@ -243,6 +243,45 @@ public class PdSwarmDeployFlowTest {
   }
 
   @Test
+  public void aReleasesOwnRequestsLeaveOutItsVariants() {
+    // qits-1984: qits-projects reads ?repoId=&version= as this release's OWN deployment and takes
+    // the newest row — the variant deploys after the main application, so it must not be there.
+    // It stays on its own application's listing, naming the variant it is.
+    String environmentId = createEnvironment("swarm-variant-requests");
+    specs.script(
+        "repo-swarm-req",
+        DeploymentSpecParser.parse("variants: private\n", "deployments.yml of repo-swarm-req"));
+    specs.scriptAt(
+        "repo-swarm-req",
+        SpecSource.variantPath("private"),
+        DeploymentSpecParser.parse(
+            "application: repo-swarm-req-private\n", "deployments.private.yml of repo-swarm-req"));
+
+    postRelease("run-variant-requests", "repo-swarm-req");
+    awaitSettled(environmentId, 2);
+
+    List<Map<String, Object>> release = requests("repoId=repo-swarm-req&version=" + VERSION);
+    assertEquals(1, release.size(), release.toString());
+    assertEquals("repo-swarm-req", release.get(0).get("applicationName"));
+    assertNull(release.get(0).get("variant"));
+
+    List<Map<String, Object>> variant =
+        requests("environmentId=" + environmentId + "&applicationName=repo-swarm-req-private");
+    assertEquals(1, variant.size(), variant.toString());
+    assertEquals("private", variant.get(0).get("variant"));
+    assertEquals("repo-swarm-req", variant.get(0).get("repoId"));
+    assertEquals(VERSION, variant.get(0).get("version"));
+
+    assertEquals(
+        List.of("repo-swarm-req", "repo-swarm-req-private"),
+        requests("environmentId=" + environmentId).stream()
+            .map(row -> (String) row.get("applicationName"))
+            .sorted()
+            .toList(),
+        "the tier's listing still carries both");
+  }
+
+  @Test
   public void aBrokenVariantFileNeverStopsTheMainDeployment() {
     String environmentId = createEnvironment("swarm-variant-broken");
     specs.script(
@@ -305,6 +344,16 @@ public class PdSwarmDeployFlowTest {
         "the main application deployed both times");
     OutboxEvent failure = only("DeploymentFailed");
     assertTrue(failure.payload.contains("\"variant\":\"private\""), failure.payload);
+    // The failed variant's request is its own, and never the release's verdict (qits-1984).
+    List<Map<String, Object>> release = requests("repoId=repo-swarm-later&version=" + VERSION);
+    assertEquals(2, release.size(), release.toString());
+    assertTrue(
+        release.stream().allMatch(row -> "repo-swarm-later".equals(row.get("applicationName"))),
+        release.toString());
+    List<Map<String, Object>> variant =
+        requests("environmentId=" + environmentId + "&applicationName=repo-swarm-later-private");
+    assertEquals(2, variant.size(), variant.toString());
+    assertTrue(variant.stream().allMatch(row -> "private".equals(row.get("variant"))));
   }
 
   @Test
@@ -437,6 +486,18 @@ public class PdSwarmDeployFlowTest {
         .post("/deployments/api/events/software-released")
         .then()
         .statusCode(202);
+  }
+
+  private List<Map<String, Object>> requests(String query) {
+    return given()
+        .header("Authorization", SuiteBearers.operator())
+        .when()
+        .get("/deployments/api/deployment-requests?" + query)
+        .then()
+        .statusCode(200)
+        .extract()
+        .jsonPath()
+        .getList("deploymentRequests");
   }
 
   private List<Map<String, Object>> deployments(String environmentId) {

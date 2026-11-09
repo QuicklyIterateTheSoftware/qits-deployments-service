@@ -211,6 +211,8 @@ components:
           type: string
         applicationName:
           type: string
+        variant:
+          type: string
         version:
           type: string
         environmentId:
@@ -1332,4 +1334,4 @@ paths:
         - qits:system
 info:
   title: qits-platform-deployments API
-  version: 2026.1031.45509
+  version: 2026.1109.182422

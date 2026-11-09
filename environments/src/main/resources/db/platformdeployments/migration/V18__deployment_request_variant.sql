@@ -1,0 +1,16 @@
+-- WHICH APPLICATION OF A RELEASE A REQUEST IS FOR (qits-1976).
+--
+-- A repository whose deployments.yml names `variants:` deploys one release as more than one
+-- application: `qits-edge-service` releases `qits-edge` and, from deployments.private.yml at the
+-- same tag, `qits-edge-private` — same repo_id, same version. Every request row of that release
+-- therefore answered `?repoId=&version=`, and qits-projects reads that listing as "this release's
+-- own deployment", taking the newest row: a variant that deployed after the main application, or
+-- failed, decided the release's verdict.
+--
+-- The variant's NAME, null for the main application. Null is every request written before this
+-- column existed, which is right: there were no variants before, so every one of them was a main
+-- application's. No backfill, no default, and no index — the release listing filters on it only
+-- after (repo_id, version) has already narrowed the rows to one release.
+--
+-- LENGTH 64 is the application name's width; a variant name is a suffix of one.
+alter table pd_deployment_request add column variant varchar(64);

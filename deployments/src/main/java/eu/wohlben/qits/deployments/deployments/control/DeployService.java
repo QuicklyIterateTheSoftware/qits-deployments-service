@@ -2515,6 +2515,9 @@ public class DeployService implements ReleaseAnnouncements {
                   for (Target target : targets) {
                     PdDeploymentRequest request =
                         persistRequest(release, target.applicationName(), target.environmentId());
+                    // Null for the main application; a variant's name otherwise — what keeps a
+                    // variant's rows out of the release's own listing (qits-1976).
+                    request.variant = target.variant();
                     Gate verdict = gate(release, target);
                     request.qualityGate = verdict.state();
                     request.gateDetail = verdict.detail();
@@ -4253,9 +4256,14 @@ public class DeployService implements ReleaseAnnouncements {
    *
    * <p>Empty is a real and common answer: a library or an SPA releases a version that deploys
    * nothing at all, and there is no request row for it anywhere.
+   *
+   * <p><b>A release's variants are left out</b> (qits-1976). The far side reads this listing as the
+   * release's OWN deployment and takes its newest row, so a variant that deployed after the main
+   * application, or failed, would decide the release's verdict. A variant's requests stay on every
+   * other listing — its application's, its tier's and its project's.
    */
   public List<RequestWithDeployment> deploymentRequestsByRelease(String repoId, String version) {
-    return withDeployments(requests.listByRepoAndVersionNewestFirst(repoId, version));
+    return withDeployments(requests.listMainByRepoAndVersionNewestFirst(repoId, version));
   }
 
   /** One request by its own id, with the deployment it produced. Empty for an id nothing wrote. */
