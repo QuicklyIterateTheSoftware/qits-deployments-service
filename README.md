@@ -83,6 +83,7 @@ update_order: start-first            # default | stop-first for anything that ca
 publish_mode: host                   # default | ingress for a port swarm's routing mesh holds
 exposure: public                     # default | private (qits-private only) | both (qits-net + qits-private)
 cap_add: NET_ADMIN                   # extra capabilities, no CAP_ prefix; NET_ADMIN is the only one granted
+sysctls: net.ipv4.ip_forward=0       # kernel parameters as <name>=<value>; only forwarding OFF can be set
 image: qits-edge                     # the image pulled, qits/<image>:<version>; default: the application
 variants: private                    # main file only: also deploy .config/qits/deployments.<name>.yml
 stop_grace_period: 10m               # default 30s; SIGTERM-to-SIGKILL, e.g. 90s, 9m30s, at most 1h
@@ -116,7 +117,14 @@ declared a service on `qits-net` compares equal and is updated in place as alway
 `image:` names the image pulled (`qits/<image>:<version>`) and defaults to the application name, so
 every file today pulls what it always pulled. `cap_add:` grants Linux capabilities without the `CAP_`
 prefix, out of a closed list that is `NET_ADMIN` alone; it reaches `--cap-add` on the create and the
-update (idempotent), and a cap no longer declared is logged, never dropped. `variants:` — in the main
+update (idempotent), and a cap no longer declared is logged, never dropped. `sysctls:` sets kernel parameters in the container's network namespace, comma-separated
+`<name>=<value>` pairs out of a closed list that only turns forwarding off —
+`net.ipv4.ip_forward=0`, `net.ipv4.conf.all.forwarding=0`, `net.ipv6.conf.all.forwarding=0` — because
+a container reads the host's `ip_forward=1` with `/proc/sys` read-only, and a userspace WireGuard
+device in it would otherwise have the kernel route tunnel peers around the edge. It reaches
+`--sysctl` on the create and `--sysctl-add` on the update (idempotent); a pair no longer declared is
+left on the live service, neither removed nor inspected for (`--sysctl-rm` by hand, or a recreate).
+`variants:` — in the main
 `deployments.yml` only — names further files at the same tag, `.config/qits/deployments.<name>.yml`
 (`^[a-z][a-z0-9-]{0,30}$`), each deployed as an application of its own from the same release, version,
 commit and cause, into the same places as the main application (a new variant is registered beside
@@ -135,6 +143,7 @@ application: qits-edge-private
 image: qits-edge
 exposure: both
 cap_add: NET_ADMIN
+sysctls: net.ipv4.ip_forward=0, net.ipv4.conf.all.forwarding=0, net.ipv6.conf.all.forwarding=0
 publish_mode: host
 publishes: 51820:51820/udp
 volumes: private:wireguard:/work/.wireguard, shared:qits-edge-letsencrypt:/work/.letsencrypt:ro

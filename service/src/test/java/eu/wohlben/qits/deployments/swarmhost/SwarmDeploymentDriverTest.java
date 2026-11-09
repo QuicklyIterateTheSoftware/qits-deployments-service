@@ -3584,6 +3584,81 @@ class SwarmDeploymentDriverTest {
         () -> driver().buildCreateArgv(forged, "dev-qits-gateway", List.of("qits-net")));
   }
 
+  // --- sysctls (qits-1976) ------------------------------------------------------------------------
+
+  private static final List<String> FORWARDING_OFF =
+      List.of(
+          "net.ipv4.ip_forward=0", "net.ipv4.conf.all.forwarding=0", "net.ipv6.conf.all.forwarding=0");
+
+  /** {@link #withNetAdmin()} also setting {@code sysctls}. */
+  private DeploymentDriver.ServiceSpec withSysctls(List<String> sysctls) {
+    DeploymentDriver.ServiceSpec base = withNetAdmin();
+    return new DeploymentDriver.ServiceSpec(
+        base.environmentId(), base.environmentName(), base.applicationId(),
+        base.applicationName(), base.deploymentId(), base.commitSha(), base.version(),
+        base.deploymentName(), base.wireAlias(), base.networks(), base.imageRef(),
+        base.healthPath(), base.healthCmd(), base.availableOnEnv(), base.updateOrder(),
+        base.publishMode(), base.resources(), base.volumes(), base.stopGracePeriod(),
+        new DeclaredShape(List.of(), List.of(), List.of(), List.of("NET_ADMIN"), sysctls),
+        base.renamedFrom(), base.takesOverPredecessor(), base.exposure());
+  }
+
+  /** The values following each occurrence of {@code flag}, in order. */
+  private static List<String> valuesOf(List<String> argv, String flag) {
+    List<String> values = new ArrayList<>();
+    for (int i = 0; i < argv.size() - 1; i++) {
+      if (flag.equals(argv.get(i))) {
+        values.add(argv.get(i + 1));
+      }
+    }
+    return values;
+  }
+
+  @Test
+  void declaredSysctlsAreSetOnTheCreate() {
+    List<String> argv =
+        driver()
+            .buildCreateArgv(withSysctls(FORWARDING_OFF), "dev-qits-gateway", List.of("qits-net"));
+
+    assertEquals(FORWARDING_OFF, valuesOf(argv, "--sysctl"));
+    assertFalse(argv.contains("--sysctl-add"), argv.toString());
+  }
+
+  @Test
+  void declaredSysctlsAreRestatedOnTheUpdateBecauseSysctlAddIsIdempotent() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script(SwarmDeploymentDriver.SPEC_CAPABILITIES_FORMAT, result(0, "CAP_NET_ADMIN\n"));
+
+    List<String> argv = driver.buildUpdateArgv(withSysctls(FORWARDING_OFF), "dev-qits-gateway");
+
+    assertEquals(FORWARDING_OFF, valuesOf(argv, "--sysctl-add"));
+    assertFalse(argv.contains("--sysctl"), argv.toString());
+    assertFalse(argv.contains("--sysctl-rm"), argv.toString());
+  }
+
+  @Test
+  void aServiceThatSetsNoSysctlIsGivenNoSysctlFlag() {
+    SwarmDeploymentDriver driver = driver();
+
+    List<String> create = driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
+    List<String> update = driver.buildUpdateArgv(spec(), "dev-qits-gateway");
+
+    for (List<String> argv : List.of(create, update)) {
+      assertTrue(argv.stream().noneMatch(arg -> arg.startsWith("--sysctl")), argv.toString());
+    }
+  }
+
+  @Test
+  void aSysctlOutsideTheClosedListIsRefusedAtTheArgv() {
+    DeploymentDriver.ServiceSpec forged = withSysctls(List.of("net.ipv4.ip_forward=1"));
+
+    assertThrows(
+        ServiceExtras.Refused.class,
+        () -> driver().buildCreateArgv(forged, "dev-qits-gateway", List.of("qits-net")));
+    assertThrows(
+        ServiceExtras.Refused.class, () -> driver().buildUpdateArgv(forged, "dev-qits-gateway"));
+  }
+
   private static final class ScriptedCli implements SwarmDeploymentDriver.Cli {
 
     final List<List<String>> calls = Collections.synchronizedList(new ArrayList<>());

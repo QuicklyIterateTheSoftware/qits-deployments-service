@@ -1371,4 +1371,92 @@ class DeploymentSpecParserTest {
     String message = messageOf("variant: private\n");
     assertTrue(message.contains("cap_add, image, variants"), message);
   }
+
+  // --- sysctls (qits-1976) ------------------------------------------------------------------------
+
+  /** qits-edge's private variant with forwarding turned off, as the edge release writes it. */
+  static final String EDGE_PRIVATE_VARIANT_WITH_SYSCTLS =
+      String.join(
+          "\n",
+          "application: qits-edge-private",
+          "image: qits-edge",
+          "exposure: both",
+          "resources: postgresql:edge:qits_edge_private, postgresql:eventstream:qits_edge_private_eventstream, idp:client",
+          "health_cmd: curl -fsS http://localhost:80/q/health/ready || exit 1",
+          "publish_mode: host",
+          "update_order: stop-first",
+          "cap_add: NET_ADMIN",
+          "sysctls: net.ipv4.ip_forward=0, net.ipv4.conf.all.forwarding=0, net.ipv6.conf.all.forwarding=0",
+          "publishes: 47812:47812/udp",
+          "volumes: private:wireguard:/work/.wireguard, shared:qits-edge-letsencrypt:/work/.letsencrypt:ro",
+          "stop_grace_period: 10m",
+          "");
+
+  @Test
+  void theEdgesPrivateVariantWithForwardingOffParses() {
+    DeploymentSpec spec =
+        DeploymentSpecParser.parse(
+            EDGE_PRIVATE_VARIANT_WITH_SYSCTLS,
+            ".config/qits/deployments.private.yml of qits-edge@abc1234");
+
+    assertEquals("qits-edge-private", spec.application());
+    assertEquals("qits-edge", spec.image());
+    assertEquals(DeploymentDriver.Exposure.BOTH, spec.exposure());
+    assertEquals(List.of("NET_ADMIN"), spec.shape().capAdd());
+    assertEquals(
+        List.of(
+            "net.ipv4.ip_forward=0",
+            "net.ipv4.conf.all.forwarding=0",
+            "net.ipv6.conf.all.forwarding=0"),
+        spec.shape().sysctls());
+    assertEquals(List.of("47812:47812/udp"), spec.shape().publishes());
+    assertEquals(DeploymentDriver.UpdateOrder.STOP_FIRST, spec.updateOrder());
+    assertEquals(Duration.ofMinutes(10), spec.stopGracePeriod());
+    DeploymentSpecParser.checkVariant(spec, "private", "qits-edge", "deployments.private.yml");
+  }
+
+  @Test
+  void eachAllowedSysctlIsAcceptedAlone() {
+    for (String pair :
+        List.of(
+            "net.ipv4.ip_forward=0",
+            "net.ipv4.conf.all.forwarding=0",
+            "net.ipv6.conf.all.forwarding=0")) {
+      assertEquals(List.of(pair), parse("sysctls: " + pair + "\n").shape().sysctls(), pair);
+    }
+    assertEquals(
+        List.of("net.ipv4.ip_forward=0"),
+        parse("sysctls: net.ipv4.ip_forward = 0\n").shape().sysctls(),
+        "spaces around `=` are dropped");
+  }
+
+  @Test
+  void anAbsentSysctlsIsNone() {
+    assertEquals(List.of(), parse("").shape().sysctls());
+    assertEquals(DeclaredShape.NONE, parse("").shape());
+  }
+
+  @Test
+  void sysctlsSetOnlyForwardingOffAndNothingElse() {
+    String on = messageOf("sysctls: net.ipv4.ip_forward=1\n");
+    assertTrue(on.contains("may set"), on);
+    assertTrue(
+        on.contains(
+            "net.ipv4.conf.all.forwarding=0, net.ipv4.ip_forward=0, net.ipv6.conf.all.forwarding=0"),
+        on);
+    assertTrue(messageOf("sysctls: kernel.shmmax=0\n").contains("nothing else"));
+    assertTrue(messageOf("sysctls: net.ipv4.ip_forward\n").contains("`<name>=<value>`"));
+    assertTrue(messageOf("sysctls: =0\n").contains("`<name>=<value>`"));
+    assertTrue(messageOf("sysctls: net.ipv4.ip_forward=\n").contains("`<name>=<value>`"));
+    assertTrue(
+        messageOf("sysctls: net.ipv4.ip_forward=0, net.ipv4.ip_forward=0\n").contains("twice"));
+    assertTrue(messageOf("sysctls: net.ipv4.ip_forward=0,\n").contains("blank entry"));
+    assertTrue(messageOf("sysctls:\n").contains("blank entry"));
+  }
+
+  @Test
+  void theUnknownKeyMessageNamesSysctls() {
+    String message = messageOf("sysctl: net.ipv4.ip_forward=0\n");
+    assertTrue(message.contains("sysctls"), message);
+  }
 }

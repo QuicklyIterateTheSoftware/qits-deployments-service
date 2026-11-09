@@ -33,6 +33,7 @@ import java.util.regex.Pattern;
  * publish_mode: host                   # default | ingress for a port the routing mesh holds
  * exposure: public                     # default | private (qits-private only) | both (the two)
  * cap_add: NET_ADMIN                   # extra Linux capabilities, no CAP_ prefix; NET_ADMIN only
+ * sysctls: net.ipv4.ip_forward=0       # kernel parameters, &lt;name&gt;=&lt;value&gt;; forwarding OFF only
  * image: qits-edge                     # the image pulled, qits/<image>:<version>; default the app
  * variants: private                    # main file only: also deploy .config/qits/deployments.<v>.yml
  * stop_grace_period: 10m               # default 30s; SIGTERM to SIGKILL, for long transfers
@@ -216,6 +217,18 @@ import java.util.regex.Pattern;
  * application: qits-edge-private}, {@code image: qits-edge}, {@code exposure: both} and {@code
  * cap_add: NET_ADMIN}.
  *
+ * <p><b>{@code sysctls} sets kernel parameters in the container's network namespace</b>
+ * (qits-1976), as comma-separated {@code <name>=<value>} pairs drawn from a closed list, {@link
+ * #ALLOWED_SYSCTLS}: {@code net.ipv4.ip_forward=0}, {@code net.ipv4.conf.all.forwarding=0} and
+ * {@code net.ipv6.conf.all.forwarding=0}. Only turning forwarding OFF can be declared. A docker
+ * container reads {@code ip_forward=1} copied from the host and cannot change it ({@code /proc/sys}
+ * is read-only), so a container holding a userspace WireGuard device would have the kernel forward
+ * a tunnel peer's packets out to the platform overlays, around the edge; the private edge declares
+ * all three. Each pair reaches the create as {@code --sysctl} and the update as {@code
+ * --sysctl-add} (idempotent). A pair the file STOPS declaring is left on the live service — the
+ * update neither removes it nor inspects for it — so turning one back on is a hand {@code
+ * --sysctl-rm} or a recreate. Allowed in a variant file like any other key.
+ *
  * <p><b>{@code update_order} is the one key an orchestrator reads rather than this component.</b>
  * {@code start-first} overlaps the successor with the predecessor, which is what makes a rollback
  * lossless; {@code stop-first} is the opt-out for an application that cannot be two processes at
@@ -374,6 +387,7 @@ public final class DeploymentSpecParser {
   private static final String STOP_GRACE_PERIOD = "stop_grace_period";
   private static final String EXPOSURE = "exposure";
   private static final String CAP_ADD = "cap_add";
+  private static final String SYSCTLS = "sysctls";
   private static final String IMAGE = "image";
   private static final String VARIANTS = "variants";
 
@@ -383,6 +397,17 @@ public final class DeploymentSpecParser {
    * the platform has a reason for — wireguard-go in the private edge.
    */
   public static final Set<String> ALLOWED_CAPABILITIES = Set.of("NET_ADMIN");
+
+  /**
+   * The {@code <name>=<value>} pairs {@code sysctls} may set. Closed, and every entry turns
+   * forwarding OFF: a sysctl that turned it on, or any other kernel knob, would be a privilege no
+   * review here has granted.
+   */
+  public static final Set<String> ALLOWED_SYSCTLS =
+      Set.of(
+          "net.ipv4.ip_forward=0",
+          "net.ipv4.conf.all.forwarding=0",
+          "net.ipv6.conf.all.forwarding=0");
 
   /** A capability as {@code cap_add} spells it: docker's name without the {@code CAP_} prefix. */
   private static final Pattern CAPABILITY = Pattern.compile("[A-Z][A-Z_]*");
@@ -533,6 +558,7 @@ public final class DeploymentSpecParser {
     DeploymentDriver.PublishMode publishMode = DeploymentDriver.PublishMode.HOST;
     DeploymentDriver.Exposure exposure = DeploymentDriver.Exposure.PUBLIC;
     List<String> capAdd = List.of();
+    List<String> sysctls = List.of();
     String image = null;
     List<String> variants = List.of();
     Duration stopGracePeriod = DeploymentDriver.DEFAULT_STOP_GRACE_PERIOD;
@@ -585,6 +611,7 @@ public final class DeploymentSpecParser {
         case PUBLISH_MODE -> publishMode = publishMode(value, source, lineNumber);
         case EXPOSURE -> exposure = exposure(value, source, lineNumber);
         case CAP_ADD -> capAdd = capAdd(value, source, lineNumber);
+        case SYSCTLS -> sysctls = sysctls(value, source, lineNumber);
         case IMAGE -> image = image(value, source, lineNumber);
         case VARIANTS -> variants = variants(value, source, lineNumber);
         case STOP_GRACE_PERIOD -> stopGracePeriod = stopGracePeriod(value, source, lineNumber);
@@ -637,6 +664,8 @@ public final class DeploymentSpecParser {
                     + IMAGE
                     + ", "
                     + VARIANTS
+                    + ", "
+                    + SYSCTLS
                     + ", "
                     + STOP_GRACE_PERIOD
                     + ", "
@@ -764,7 +793,7 @@ public final class DeploymentSpecParser {
         application,
         renamedFrom,
         stopGracePeriod,
-        new DeclaredShape(binds, publishes, aliases, capAdd),
+        new DeclaredShape(binds, publishes, aliases, capAdd, sysctls),
         exposure,
         image,
         variants);
@@ -867,6 +896,43 @@ public final class DeploymentSpecParser {
         throw error(source, line, "`" + CAP_ADD + "` names `" + capability + "` twice");
       }
       declared.add(capability);
+    }
+    return List.copyOf(declared);
+  }
+
+  /**
+   * {@code sysctls}: comma-separated {@code <name>=<value>} pairs, each out of {@link
+   * #ALLOWED_SYSCTLS}, spaces around the {@code =} tolerated and dropped. A blank entry, one without
+   * {@code =}, one outside the list, or one name twice is refused.
+   */
+  private static List<String> sysctls(String value, String source, int line) {
+    List<String> declared = new ArrayList<>();
+    Set<String> names = new HashSet<>();
+    String allowed = String.join(", ", new java.util.TreeSet<>(ALLOWED_SYSCTLS));
+    for (String candidate : value.split(",", -1)) {
+      String entry = candidate.strip();
+      if (entry.isBlank()) {
+        throw error(source, line, "`" + SYSCTLS + "` has a blank entry");
+      }
+      int equals = entry.indexOf('=');
+      if (equals < 1 || equals == entry.length() - 1) {
+        throw error(
+            source,
+            line,
+            "`" + SYSCTLS + "` entries are `<name>=<value>`, one of " + allowed + ", got: " + entry);
+      }
+      String name = entry.substring(0, equals).strip();
+      String pair = name + "=" + entry.substring(equals + 1).strip();
+      if (!ALLOWED_SYSCTLS.contains(pair)) {
+        throw error(
+            source,
+            line,
+            "`" + SYSCTLS + "` may set " + allowed + " and nothing else, got: " + entry);
+      }
+      if (!names.add(name)) {
+        throw error(source, line, "`" + SYSCTLS + "` names `" + name + "` twice");
+      }
+      declared.add(pair);
     }
     return List.copyOf(declared);
   }

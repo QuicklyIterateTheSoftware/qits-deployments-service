@@ -27,12 +27,20 @@ import java.util.Set;
  * NET_ADMIN} alone today, for the private edge's userspace WireGuard). It has no extras twin. Unlike
  * the other three it is rendered on the update too ({@code --cap-add} is idempotent), so a cap a
  * repository starts declaring reaches its live service without a recreate.
+ *
+ * <p>{@code sysctls} is {@code sysctls:} — kernel parameters set in the container's own network
+ * namespace, as {@code <name>=<value>} pairs out of a closed list that can only turn forwarding OFF
+ * ({@code net.ipv4.ip_forward=0} and the like, for the private edge: a container reads the host's
+ * {@code ip_forward=1} with {@code /proc/sys} read-only, and would route a tunnel peer around the
+ * edge). No extras twin either, and restated on the update too ({@code --sysctl-add} is
+ * idempotent).
  */
 public record DeclaredShape(
     List<ServiceExtras.Mount> binds,
     List<String> publishes,
     List<String> aliases,
-    List<String> capAdd) {
+    List<String> capAdd,
+    List<String> sysctls) {
 
   /**
    * The one placeholder an alias may carry. Replaced by the deployment's environment name, so one
@@ -53,9 +61,10 @@ public record DeclaredShape(
 
   /** A file that declared none of the three — every file that exists today. */
   public static final DeclaredShape NONE =
-      new DeclaredShape(List.of(), List.of(), List.of(), List.of());
+      new DeclaredShape(List.of(), List.of(), List.of(), List.of(), List.of());
 
   public DeclaredShape {
+    sysctls = sysctls == null ? List.of() : List.copyOf(sysctls);
     capAdd = capAdd == null ? List.of() : List.copyOf(capAdd);
     binds = binds == null ? List.of() : List.copyOf(binds);
     publishes = publishes == null ? List.of() : List.copyOf(publishes);
@@ -65,7 +74,16 @@ public record DeclaredShape(
   /** The shape before {@code cap_add}: a file that grants no capability. */
   public DeclaredShape(
       List<ServiceExtras.Mount> binds, List<String> publishes, List<String> aliases) {
-    this(binds, publishes, aliases, List.of());
+    this(binds, publishes, aliases, List.of(), List.of());
+  }
+
+  /** The shape before {@code sysctls}: a file that sets no kernel parameter. */
+  public DeclaredShape(
+      List<ServiceExtras.Mount> binds,
+      List<String> publishes,
+      List<String> aliases,
+      List<String> capAdd) {
+    this(binds, publishes, aliases, capAdd, List.of());
   }
 
   /**

@@ -771,8 +771,8 @@ things about it, each easy to undo by accident:
   frame recorded before the field existed means. The field is the record's LAST component, and a
   null becomes `public` in the record itself.
 
-**`image`, `cap_add` and `variants` deploy one image as a second application** (qits-1976), and
-the private edge — `qits-edge-private` from qits-edge's own release — is what they are for. Seven
+**`image`, `cap_add`, `sysctls` and `variants` deploy one image as a second application** (qits-1976), and
+the private edge — `qits-edge-private` from qits-edge's own release — is what they are for. Eight
 things about them, each easy to undo by accident:
 
 - **`image:` is the pulled image's path segment**, `qits/<image>:<version>` via
@@ -783,6 +783,14 @@ things about them, each easy to undo by accident:
   `DeclaredShape.capAdd` and is the one shape value an UPDATE restates — `--cap-add` is idempotent —
   so a cap reaches a live service without a recreate. A cap the live service holds and the spec no
   longer grants is a WARN naming the hand `--cap-drop`, never performed.
+- **`sysctls:` is closed the same way and can only turn forwarding OFF**
+  (`DeploymentSpecParser.ALLOWED_SYSCTLS`: `net.ipv4.ip_forward=0`, `net.ipv4.conf.all.forwarding=0`,
+  `net.ipv6.conf.all.forwarding=0`), re-checked at the argv. It lives in `DeclaredShape.sysctls` and
+  is restated too: `--sysctl` on the create, `--sysctl-add` on the update (idempotent). A pair the
+  spec stops declaring is left on the service with NO inspect and no log — an extra `service inspect`
+  per update would break the call counts the story ITs pin; `--sysctl-rm` by hand or a recreate. It
+  exists because a container reads the host's `ip_forward=1` with `/proc/sys` read-only, so the
+  private edge's userspace WireGuard would otherwise have the kernel forward tunnel peers around it.
 - **`variants:` is read off the MAIN file only**, and each name is one more blob read at the same tag
   through the same `SpecSource` (`read(ref, rev, path)`, `SpecSource.variantPath`; `SPEC_PATH` stays
   the two-argument default). `DeployService.deployVariants` runs after the main `deployReadSpec` on

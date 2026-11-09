@@ -1724,6 +1724,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // Unconditional: there is no application here for which an unreaped grandchild is desired.
     argv.add("--init");
     capabilityFlags(argv, spec);
+    sysctlFlags(argv, spec, "--sysctl");
     for (String label : labels(spec)) {
       argv.add("--label");
       argv.add(label);
@@ -2050,6 +2051,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // here, without a recreate. A cap it STOPS declaring is not dropped — see `capabilityRemovals`.
     capabilityFlags(argv, spec);
     capabilityRemovals(spec, name);
+    // Sysctls are restated for the same reason: `--sysctl-add` of a pair the service already has
+    // is a no-op. One it STOPS declaring is left as it is, and deliberately not inspected for — an
+    // extra inspect on every update would buy a WARN; `--sysctl-rm` by hand or a recreate does it.
+    sysctlFlags(argv, spec, "--sysctl-add");
     for (String variable : environment(spec)) {
       argv.add("--env-add");
       argv.add(variable);
@@ -2083,6 +2088,22 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       }
       argv.add("--cap-add");
       argv.add(capability);
+    }
+  }
+
+  /**
+   * {@code <flag> <name>=<value>} per pair the repository's {@code sysctls:} sets, in its order —
+   * {@code --sysctl} on the create, {@code --sysctl-add} on the update. Re-checked against the
+   * parser's closed list at the argv, as capabilities are: only turning forwarding off is allowed.
+   */
+  private void sysctlFlags(List<String> argv, ServiceSpec spec, String flag) {
+    for (String sysctl : spec.shape().sysctls()) {
+      if (!DeploymentSpecParser.ALLOWED_SYSCTLS.contains(sysctl)) {
+        throw new ServiceExtras.Refused(
+            "sysctls: `" + sysctl + "` is not a kernel parameter this platform sets");
+      }
+      argv.add(flag);
+      argv.add(sysctl);
     }
   }
 
