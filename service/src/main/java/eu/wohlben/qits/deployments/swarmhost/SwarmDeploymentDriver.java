@@ -298,7 +298,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   static final String RESOURCE_PREFIX = "QITS_RESOURCE_";
 
   /**
-   * This component's own six, written on an argv before the deployment's own and therefore never
+   * This component's own eight, written on an argv before the deployment's own and therefore never
    * stated by config. They are the exception the update diff needs: measured against the extras
    * alone, every deployment would remove and immediately re-add them.
    *
@@ -312,8 +312,14 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * is written CONDITIONALLY changes nothing: membership protects a key from removal, it does not
    * assert that the key is present.
    *
-   * <p>{@code QITS_RESOURCE_*} is the sixth member of the family and is a PREFIX rather than a
-   * name, which is why it is {@link #RESOURCE_PREFIX} beside this set rather than in it.
+   * <p>{@link DeployedIdentity#OTEL_SERVICE_NAME_VARIABLE} and {@link
+   * DeployedIdentity#QUARKUS_OTEL_SERVICE_NAME_VARIABLE} are the newest two members (qits-2054):
+   * the deployer writes both on every argv and config states neither, so without them a diff
+   * against config alone would {@code --env-rm} a variant's telemetry name off on its next
+   * deployment just as surely as it would the domain.
+   *
+   * <p>{@code QITS_RESOURCE_*} is the family's one PREFIX rather than a name, which is why it is
+   * {@link #RESOURCE_PREFIX} beside this set rather than in it.
    */
   static final Set<String> DEPLOYER_OWN_VARIABLES =
       Set.of(
@@ -322,7 +328,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
           VARIANT_VARIABLE,
           DOMAIN_VARIABLE,
           DeployedIdentity.OTEL_VARIABLE,
-          DeployedIdentity.QUARKUS_OTEL_VARIABLE);
+          DeployedIdentity.QUARKUS_OTEL_VARIABLE,
+          DeployedIdentity.OTEL_SERVICE_NAME_VARIABLE,
+          DeployedIdentity.QUARKUS_OTEL_SERVICE_NAME_VARIABLE);
 
   /**
    * How far an update's {@code StartedAt} may sit <i>before</i> the moment this process issued it
@@ -2386,6 +2394,15 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
             spec.commitSha(), spec.environmentName(), spec.wireAlias());
     variables.add(DeployedIdentity.OTEL_VARIABLE + "=" + identity);
     variables.add(DeployedIdentity.QUARKUS_OTEL_VARIABLE + "=" + identity);
+    // service.name is named after the DEPLOYED APPLICATION, never the image (qits-2054): a variant
+    // runs its main application's image, and without this a variant's telemetry read as its main
+    // application's — qits-edge-private under qits-edge's name. Carried in its own pair of
+    // variables rather than folded into the resource-attribute list above: Quarkus' build-time
+    // service.name is merged OVER OTEL_RESOURCE_ATTRIBUTES (see DeployedIdentity), so a service.name
+    // stated only there would be silently overridden by the image's own stamp.
+    String serviceName = DeployedIdentity.serviceName(spec.applicationName());
+    variables.add(DeployedIdentity.OTEL_SERVICE_NAME_VARIABLE + "=" + serviceName);
+    variables.add(DeployedIdentity.QUARKUS_OTEL_SERVICE_NAME_VARIABLE + "=" + serviceName);
     // What ResourceProvisioning made exist a moment ago, as the generic contract. The name is
     // re-validated HERE, at the last line before the argv, exactly like the health path: it is
     // repository-authored input being spliced into an environment-variable key. The idp resource's
