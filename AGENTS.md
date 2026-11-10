@@ -1197,6 +1197,45 @@ Things about it, each easy to undo by accident:
   parameter is accepted for compatibility and changes nothing (`include` used to add
   qits-configuration's extras); `extrasIncluded` is always false.
 
+### `image_defaults:` retires a setting the image now ships (qits-2009)
+
+**No platform path used to delete a single redundant row**: `Settings.retire` drops a whole
+application, the door's `DELETE` is a person's, and the owner ruled (2026-11-10) that an admin must
+not delete such a row by hand. So the repository says it, in `.config/qits/deployments.yml`:
+
+    image_defaults: QUARKUS_TLS_RELOAD_PERIOD=1m, QITS_EDGE_ACME_MODE=production
+
+Comma-separated `KEY=value`; the key passes `Settings.requireKey` (the door's own
+`[A-Z_][A-Z0-9_]*`, ≤255), the value is everything after the FIRST `=`, stripped. Blank entry, no
+`=`, empty value, bad key, a key twice: each a `SpecException` naming the entry. Parsed into an
+ordered `Map` (`DeploymentSpec.imageDefaults`, empty by default), carried on `Target`/`Plan`.
+Variant files go through the same parser and may declare it against their own application. Six
+things about it, each easy to undo by accident:
+
+- **It runs only past the cutover**, as `execute`'s last statement (`retireImageDefaults`, after
+  `retireAfterCutover`): every `FAILED`/`ROLLED_BACK`/refused/unconverged path has already returned.
+  That is the whole safety argument — from that row on every rollback target in the place is this
+  version or newer, and the key is declared only in a release whose image already ships the default.
+  **Write the key in that release or a later one, never earlier.**
+- **Exact, per place.** `Settings.retireImageDefaults(app, env, map)` deletes a row of THAT
+  (application, tier) only when its stored value `equals` the declared one — a secret by its clear
+  value, the one `SettingsExtrasSource` renders; `staging` against `production`, a trailing space or
+  another case is an override and stays. One transaction, each row read `PESSIMISTIC_WRITE` before it
+  is compared, so a door write racing it waits and is compared rather than deleted unread.
+- **One INFO line, keys only**: `Retired N setting(s) of <app> (<env>) equal to the image defaults
+  of <version>: [K1, K2]`; nothing when none matched. A spec without the key costs no query at all.
+- **No event, no audit row, no redeploy** — because a delete through the settings door records none
+  either (`Settings.delete` writes no event, no log line, no audit; `updated_by` exists only on a
+  live row). The preview door simply stops listing the key as stated, and the next deployment's
+  ordinary `--env-rm` diff removes it from the container.
+- **A failure never fails the deployment** — a WARN, and the next deployment (whose spec still says
+  the same) tries again. No `owedRetirements` entry: nothing is half-done in one transaction.
+- **The deployer's own self-update never reaches it.** `HANDED_OFF` returns before the cutover and
+  the successor's startup-sweep adoption has no spec, so a key in THIS repository's file would retire
+  nothing. Only an ordinary deployment retires.
+
+`PdImageDefaultsRetirementTest` holds it end to end; `DeploymentSpecParserTest` holds the grammar.
+
 ### `QITS_DOMAIN`: the platform's domain is ONE fact (2026-09-26, qits-387)
 
 **The bootstrap used to fan the domain out into five per-service composed spellings** —

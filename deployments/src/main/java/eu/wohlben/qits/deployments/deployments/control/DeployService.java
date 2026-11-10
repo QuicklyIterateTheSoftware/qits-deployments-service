@@ -1283,6 +1283,12 @@ public class DeployService implements ReleaseAnnouncements {
    * on the docker host ({@link #resolveVolumes}), and registration has neither the per-place driver
    * call nor a row to fail when the host cannot answer. So the names are resolved at deploy time,
    * after the row is {@code STARTING}, and carried on the {@link Plan} from there.
+   *
+   * <p>{@code imageDefaults} is the file's {@code image_defaults:}, read straight off it like {@code
+   * renamedFrom} and used once, after the cutover: the settings rows of this place that restate
+   * one of those values exactly are retired ({@link #retireImageDefaults}). Empty is every file
+   * today, and a target resolved from the catalogue ({@link #alreadyRegistered}) has none — nothing
+   * converges off one of those.
    */
   record Target(
       String applicationName,
@@ -1306,7 +1312,14 @@ public class DeployService implements ReleaseAnnouncements {
       DeclaredShape shape,
       DeploymentDriver.Exposure exposure,
       String image,
-      String variant) {}
+      String variant,
+      Map<String, String> imageDefaults) {
+
+    /** Null and empty say the same thing: the file declared no image defaults. */
+    Target {
+      imageDefaults = imageDefaults == null ? Map.of() : imageDefaults;
+    }
+  }
 
   /**
    * One software-release event, start to finish, on the worker thread: read what the repository
@@ -2139,7 +2152,10 @@ public class DeployService implements ReleaseAnnouncements {
               spec.image() != null
                   ? spec.image()
                   : defaultImage != null ? defaultImage : applicationName,
-              variant));
+              variant,
+              // The image's own defaults, the variant's file's for a variant — each application
+              // retires its own rows, after its own deployment converged.
+              spec.imageDefaults()));
     }
     return List.copyOf(targets);
   }
@@ -2472,7 +2488,9 @@ public class DeployService implements ReleaseAnnouncements {
                 null,
                 // ...and no image: nothing is pulled off one of them.
                 null,
-                variant));
+                variant,
+                // ...and no image defaults: nothing converges off one of them, so nothing retires.
+                Map.of()));
       }
     }
     return List.copyOf(targets);
@@ -2755,6 +2773,11 @@ public class DeployService implements ReleaseAnnouncements {
     /** Null for the main deployment, the variant's name otherwise. */
     String variant() {
       return target.variant();
+    }
+
+    /** The file's {@code image_defaults:}, empty for nearly every one — see {@link Target}. */
+    Map<String, String> imageDefaults() {
+      return target.imageDefaults();
     }
 
     /**
@@ -3156,6 +3179,58 @@ public class DeployService implements ReleaseAnnouncements {
     announceActive(plan, name, cutover.finishedAt());
     // ...and then the predecessor itself, every step after the frames: see retireAfterCutover.
     retireAfterCutover(plan, rename, name);
+    // ...and last the settings this image now ships as its own defaults — only here, past the
+    // cutover, so a FAILED, ROLLED_BACK or unconverged deployment returned above and retires none.
+    retireImageDefaults(plan);
+  }
+
+  /**
+   * The image-defaults retirement (qits-2009), the cutover's last step: the {@code pd_setting} rows
+   * of this place whose key the spec's {@code image_defaults:} names and whose stored value equals
+   * the declared one exactly are deleted ({@link Settings#retireImageDefaults}); a row holding any
+   * other value is an override and stays. A spec that declares none costs nothing — no query at
+   * all, which is every deployment today.
+   *
+   * <p><b>Why only after {@code ACTIVE}</b>: from this row on, every rollback target in the place
+   * is this version or a newer one, and a repository declares a pair only in a release whose image
+   * already ships it, so whatever runs next carries the default the row restated. Retired before
+   * convergence, a rollback would put back an older image that does not.
+   *
+   * <p><b>Nothing running moves.</b> The live service keeps the variable until the next deployment,
+   * whose {@code --env-rm} diff removes it, exactly as after a delete through the settings door —
+   * which records no event and no audit row either, so neither does this: the preview door simply
+   * stops listing the key under what the next deployment states. Not a redeploy, and not a reason
+   * for one.
+   *
+   * <p><b>A failure never fails the deployment</b>, which is live and announced by now: a WARN, and
+   * the next deployment of the place, whose spec still declares the pairs, retires them then. No
+   * owed-memory like {@link #owedRetirements}, because nothing is half-done — the rows are deleted
+   * in one transaction or not at all, and a row left is merely a value restated once more.
+   */
+  private void retireImageDefaults(Plan plan) {
+    if (plan.imageDefaults().isEmpty()) {
+      return;
+    }
+    try {
+      List<String> retired =
+          settings.retireImageDefaults(
+              plan.applicationName(), plan.environmentName(), plan.imageDefaults());
+      if (!retired.isEmpty()) {
+        // Keys only, never a value: a secret row may be among them.
+        LOG.infof(
+            "Retired %d setting(s) of %s (%s) equal to the image defaults of %s: %s",
+            retired.size(),
+            plan.applicationName(),
+            plan.environmentName(),
+            plan.version(),
+            retired);
+      }
+    } catch (RuntimeException e) {
+      LOG.warnf(
+          "Could not retire the settings of %s (%s) equal to the image defaults of %s, and the next"
+              + " deployment of the place tries again: %s",
+          plan.applicationName(), plan.environmentName(), plan.version(), e.getMessage());
+    }
   }
 
   /** What the cutover bracket carries out: the containers to reap, and when it happened. */

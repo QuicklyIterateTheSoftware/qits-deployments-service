@@ -5,15 +5,18 @@ import eu.wohlben.qits.deployments.environments.control.PdIdentifiers;
 import eu.wohlben.qits.deployments.events.NavigationEntry;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * The strict reader of {@code .config/qits/deployments.yml}. Twenty-five scalar keys, no nesting, no
+ * The strict reader of {@code .config/qits/deployments.yml}. Twenty-six scalar keys, no nesting, no
  * YAML lists — so this is a line reader rather than a YAML library, and being one is what makes every
  * rejection a sentence naming the file and the line.
  *
@@ -37,6 +40,7 @@ import java.util.regex.Pattern;
  * image: qits-edge                     # the image pulled, qits/<image>:<version>; default the app
  * variants: private                    # main file only: also deploy .config/qits/deployments.<v>.yml
  * stop_grace_period: 10m               # default 30s; SIGTERM to SIGKILL, for long transfers
+ * image_defaults: QITS_EDGE_ACME_MODE=production   # env the image ships; equal settings retire
  * routes: /artifacts,/v2               # optional public path prefixes, in navigation order
  * upstream_port: 8080                  # default; the service port behind every route
  * host: registry                       # optional DNS label this application is also served at
@@ -249,6 +253,30 @@ import java.util.regex.Pattern;
  * successor can even start, on the one worker every deployment queues behind, so an unbounded
  * value would be an unbounded stall of the whole platform's deployments.
  *
+ * <p><b>{@code image_defaults} says which environment variables the IMAGE already ships, and with
+ * which value</b> (qits-2009). The settings store is the only source of a container's environment,
+ * and a row stays until something deletes it — so a value that was stated as a setting before the
+ * image carried it as its own default goes on restating it forever, and the owner ruled that an
+ * admin must not delete such a row by hand. This key is the platform's way to retire it: comma-
+ * separated {@code KEY=value} pairs, a key being a setting key ({@code [A-Z_][A-Z0-9_]*}, the very
+ * check the settings door holds, {@code Settings.requireKey}), the value everything after the
+ * FIRST {@code =}, trimmed. A blank entry, a missing {@code =}, an empty value, a malformed key and
+ * a key named twice are each refused naming the entry. The value cannot hold a comma — the entry
+ * separator — nor a {@code #} after whitespace, which starts a comment; a default spelled with
+ * either is one this key cannot state, and its row stays a row.
+ *
+ * <p>What it does is {@code DeployService}'s, after the deployment is {@code ACTIVE} and never
+ * before: every {@code pd_setting} row of the place whose key is declared and whose stored value
+ * equals the declared one EXACTLY ({@code String.equals}, a secret by its clear value) is deleted.
+ * A row holding any other value is a deliberate override and stays. The live container keeps the
+ * variable until the next deployment, whose ordinary {@code --env-rm} diff removes it — and by then
+ * the image supplies it. Only a converged deployment retires anything, because that is what makes
+ * every later rollback target this version or a newer one, so the default travels with it. Which
+ * is also the rule for WRITING the key: a repository declares a pair only in a release whose image
+ * already ships that default, or a later one, because the declaration is a statement about the
+ * image built from the same commit. Allowed in a variant file like any other key — a variant is an
+ * application with rows of its own.
+ *
  * <p><b>{@code health_cmd} and {@code health_path} are alternatives, and setting both is an
  * error.</b> They are not two settings on one gate: the path names a URL a {@code curl} inside the
  * container fetches, and the command replaces that whole mechanism. A deployable image with no
@@ -390,6 +418,9 @@ public final class DeploymentSpecParser {
   private static final String SYSCTLS = "sysctls";
   private static final String IMAGE = "image";
   private static final String VARIANTS = "variants";
+
+  /** The environment the image ships as its own defaults. See the class javadoc (qits-2009). */
+  private static final String IMAGE_DEFAULTS = "image_defaults";
 
   /**
    * The capabilities {@code cap_add} may grant. Closed, and one word long on purpose: every entry
@@ -561,6 +592,7 @@ public final class DeploymentSpecParser {
     List<String> sysctls = List.of();
     String image = null;
     List<String> variants = List.of();
+    Map<String, String> imageDefaults = Map.of();
     Duration stopGracePeriod = DeploymentDriver.DEFAULT_STOP_GRACE_PERIOD;
     List<String> routes = List.of();
     int upstreamPort = DEFAULT_UPSTREAM_PORT;
@@ -615,6 +647,7 @@ public final class DeploymentSpecParser {
         case IMAGE -> image = image(value, source, lineNumber);
         case VARIANTS -> variants = variants(value, source, lineNumber);
         case STOP_GRACE_PERIOD -> stopGracePeriod = stopGracePeriod(value, source, lineNumber);
+        case IMAGE_DEFAULTS -> imageDefaults = imageDefaults(value, source, lineNumber);
         case ROUTES -> routes = routes(value, source, lineNumber);
         case UPSTREAM_PORT -> upstreamPort = upstreamPort(value, source, lineNumber);
         case HOST -> host = host(value, source, lineNumber);
@@ -668,6 +701,8 @@ public final class DeploymentSpecParser {
                     + SYSCTLS
                     + ", "
                     + STOP_GRACE_PERIOD
+                    + ", "
+                    + IMAGE_DEFAULTS
                     + ", "
                     + ROUTES
                     + ", "
@@ -796,7 +831,8 @@ public final class DeploymentSpecParser {
         new DeclaredShape(binds, publishes, aliases, capAdd, sysctls),
         exposure,
         image,
-        variants);
+        variants,
+        imageDefaults);
   }
 
   /**
@@ -935,6 +971,64 @@ public final class DeploymentSpecParser {
       declared.add(pair);
     }
     return List.copyOf(declared);
+  }
+
+  /**
+   * {@code image_defaults}: comma-separated {@code KEY=value} pairs, in the order written. The key
+   * is held to the settings door's own rule ({@link Settings#requireKey}), because it is compared
+   * against a stored setting key and one outside that rule could match no row; the value is what
+   * follows the first {@code =}, stripped, and must not be empty — an empty default is a statement
+   * this key does not make, and an empty row compared against it would retire on a typo.
+   */
+  private static Map<String, String> imageDefaults(String value, String source, int line) {
+    Map<String, String> declared = new LinkedHashMap<>();
+    for (String candidate : value.split(",", -1)) {
+      String entry = candidate.strip();
+      if (entry.isBlank()) {
+        throw error(source, line, "`" + IMAGE_DEFAULTS + "` has a blank entry");
+      }
+      int equals = entry.indexOf('=');
+      if (equals < 0) {
+        throw error(
+            source,
+            line,
+            "`"
+                + IMAGE_DEFAULTS
+                + "` entries are `<KEY>=<value>`, the variable and the value the image ships as its"
+                + " own default, got: "
+                + entry);
+      }
+      String key = entry.substring(0, equals).strip();
+      String defaultValue = entry.substring(equals + 1).strip();
+      try {
+        Settings.requireKey(key);
+      } catch (RuntimeException e) {
+        throw error(
+            source,
+            line,
+            "`"
+                + IMAGE_DEFAULTS
+                + "` keys are setting keys — [A-Z_][A-Z0-9_]*, at most "
+                + Settings.KEY_MAX_LENGTH
+                + " characters — got: "
+                + entry);
+      }
+      if (defaultValue.isEmpty()) {
+        throw error(
+            source,
+            line,
+            "`"
+                + IMAGE_DEFAULTS
+                + "` names `"
+                + key
+                + "` with an empty value — state the value the image ships, got: "
+                + entry);
+      }
+      if (declared.putIfAbsent(key, defaultValue) != null) {
+        throw error(source, line, "`" + IMAGE_DEFAULTS + "` names `" + key + "` twice");
+      }
+    }
+    return Collections.unmodifiableMap(declared);
   }
 
   /** {@code image}: one docker repository path segment, the application's own charset. */

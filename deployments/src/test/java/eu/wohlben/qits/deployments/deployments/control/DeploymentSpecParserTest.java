@@ -11,7 +11,9 @@ import eu.wohlben.qits.deployments.deployments.control.SpecSource.DeploymentSpec
 import eu.wohlben.qits.deployments.deployments.control.SpecSource.DeploymentSpec.VolumeSpec;
 import eu.wohlben.qits.deployments.events.NavigationEntry;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -1458,5 +1460,80 @@ class DeploymentSpecParserTest {
   void theUnknownKeyMessageNamesSysctls() {
     String message = messageOf("sysctl: net.ipv4.ip_forward=0\n");
     assertTrue(message.contains("sysctls"), message);
+  }
+
+  // --- image_defaults (qits-2009) ----------------------------------------------------------------
+
+  /** qits-edge's five rows of 2026-10-30, as the edge's own release declares them. */
+  static final String EDGE_IMAGE_DEFAULTS =
+      "image_defaults: QUARKUS_TLS_KEY_STORE_PEM_ACME_CERT=/work/.letsencrypt/current/lets-encrypt.crt,"
+          + " QUARKUS_TLS_KEY_STORE_PEM_ACME_KEY=/work/.letsencrypt/current/lets-encrypt.key,"
+          + " QUARKUS_TLS_RELOAD_PERIOD=1m, QITS_EDGE_ACME_ENABLED=true,"
+          + " QITS_EDGE_ACME_MODE=production\n";
+
+  @Test
+  void imageDefaultsParseInTheOrderWritten() {
+    Map<String, String> expected = new LinkedHashMap<>();
+    expected.put(
+        "QUARKUS_TLS_KEY_STORE_PEM_ACME_CERT", "/work/.letsencrypt/current/lets-encrypt.crt");
+    expected.put("QUARKUS_TLS_KEY_STORE_PEM_ACME_KEY", "/work/.letsencrypt/current/lets-encrypt.key");
+    expected.put("QUARKUS_TLS_RELOAD_PERIOD", "1m");
+    expected.put("QITS_EDGE_ACME_ENABLED", "true");
+    expected.put("QITS_EDGE_ACME_MODE", "production");
+
+    Map<String, String> parsed = parse(EDGE_IMAGE_DEFAULTS).imageDefaults();
+
+    assertEquals(expected, parsed);
+    assertEquals(List.copyOf(expected.keySet()), List.copyOf(parsed.keySet()), "file order kept");
+  }
+
+  @Test
+  void anImageDefaultsValueIsEverythingAfterTheFirstEqualsTrimmed() {
+    assertEquals(
+        Map.of("JAVA_OPTS", "-Da=b -Dc=d"),
+        parse("image_defaults: JAVA_OPTS = -Da=b -Dc=d \n").imageDefaults());
+    assertEquals(
+        Map.of("A", "x"), parse("image_defaults: \"A=x\"\n").imageDefaults(), "quoted");
+  }
+
+  @Test
+  void anAbsentImageDefaultsIsEmpty() {
+    assertEquals(Map.of(), parse("").imageDefaults());
+    assertEquals(Map.of(), DeploymentSpec.DEFAULTS.imageDefaults());
+  }
+
+  @Test
+  void imageDefaultsRefuseEveryMalformedEntry() {
+    assertTrue(messageOf("image_defaults: A\n").contains("`<KEY>=<value>`"));
+    assertTrue(messageOf("image_defaults: A=\n").contains("empty value"));
+    assertTrue(messageOf("image_defaults: A= \n").contains("empty value"));
+    assertTrue(messageOf("image_defaults: =x\n").contains("setting keys"));
+    assertTrue(messageOf("image_defaults: lower=x\n").contains("setting keys"));
+    assertTrue(messageOf("image_defaults: 1A=x\n").contains("setting keys"));
+    assertTrue(messageOf("image_defaults: A-B=x\n").contains("setting keys"));
+    assertTrue(messageOf("image_defaults: A=x, A=y\n").contains("`A` twice"));
+    assertTrue(messageOf("image_defaults: A=x, A=x\n").contains("`A` twice"));
+    assertTrue(messageOf("image_defaults: A=x,\n").contains("blank entry"));
+    assertTrue(messageOf("image_defaults:\n").contains("blank entry"));
+    assertTrue(messageOf("image_defaults: A=x\nimage_defaults: B=y\n").contains("duplicate key"));
+    String tooLong = "A".repeat(Settings.KEY_MAX_LENGTH + 1);
+    assertTrue(messageOf("image_defaults: " + tooLong + "=x\n").contains("setting keys"));
+  }
+
+  @Test
+  void aVariantFileTakesImageDefaultsToo() {
+    DeploymentSpec spec =
+        DeploymentSpecParser.parse(
+            "application: qits-edge-private\nimage: qits-edge\nimage_defaults: QITS_EDGE_ACME_ENABLED=false\n",
+            ".config/qits/deployments.private.yml of qits-edge@abc1234");
+
+    assertEquals(Map.of("QITS_EDGE_ACME_ENABLED", "false"), spec.imageDefaults());
+    DeploymentSpecParser.checkVariant(spec, "private", "qits-edge", "deployments.private.yml");
+  }
+
+  @Test
+  void theUnknownKeyMessageNamesImageDefaults() {
+    String message = messageOf("image_default: A=x\n");
+    assertTrue(message.contains("image_defaults"), message);
   }
 }

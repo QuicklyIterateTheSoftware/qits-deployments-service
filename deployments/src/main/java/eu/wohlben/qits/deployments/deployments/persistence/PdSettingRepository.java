@@ -4,6 +4,7 @@ import eu.wohlben.qits.deployments.deployments.entity.PdSetting;
 import io.quarkus.hibernate.orm.panache.PanacheRepositoryBase;
 import io.quarkus.panache.common.Sort;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.persistence.LockModeType;
 import java.util.List;
 import java.util.Optional;
 
@@ -27,6 +28,21 @@ public class PdSettingRepository implements PanacheRepositoryBase<PdSetting, Str
             applicationName,
             environmentName,
             settingKey)
+        .firstResultOptional();
+  }
+
+  /**
+   * {@link #findOne}, the row locked for the rest of the transaction — for a compare-and-delete,
+   * so a write landing between the comparison and the delete waits instead of being deleted.
+   */
+  public Optional<PdSetting> findOneForUpdate(
+      String applicationName, String environmentName, String settingKey) {
+    return find(
+            "applicationName = ?1 and environmentName = ?2 and settingKey = ?3",
+            applicationName,
+            environmentName,
+            settingKey)
+        .withLock(LockModeType.PESSIMISTIC_WRITE)
         .firstResultOptional();
   }
 

@@ -87,6 +87,7 @@ sysctls: net.ipv4.ip_forward=0       # kernel parameters as <name>=<value>; only
 image: qits-edge                     # the image pulled, qits/<image>:<version>; default: the application
 variants: private                    # main file only: also deploy .config/qits/deployments.<name>.yml
 stop_grace_period: 10m               # default 30s; SIGTERM-to-SIGKILL, e.g. 90s, 9m30s, at most 1h
+image_defaults: QITS_EDGE_ACME_MODE=production   # env the image ships itself; settings rows equal to it retire
 routes: /artifacts,/artifacts/api    # optional public path prefixes, ordered
 upstream_port: 8080                  # default; target port behind every declared route
 navigation: Artifacts:3              # optional label:positive-position for the first route
@@ -155,6 +156,22 @@ resources: postgresql:edge:qits_edge_private, postgresql:eventstream:qits_edge_p
 for this one reader and **read-only only** — the private edge orders nothing and serves the same
 certificate. Retiring a variant is removing it from `variants:` and retiring its application through
 `POST /applications/{id}/retire`; nothing infers it from the file's absence.
+
+`image_defaults:` says which environment variables the **image already ships as its own defaults**
+(qits-2009), so the settings rows that merely restate them can be retired by the platform rather than
+deleted by hand (an admin must not, by owner ruling of 2026-11-10). It is comma-separated
+`KEY=value` pairs: the key is a setting key (`[A-Z_][A-Z0-9_]*`, the settings door's own check), the
+value is everything after the first `=`, trimmed, and an empty value, a missing `=`, a repeated key or
+a malformed key fails the deployment like any other bad line. A value cannot contain a comma, nor a
+`#` after whitespace (a comment). **The rule is exact**: once a deployment from a spec declaring the
+key is `ACTIVE`, every `pd_setting` row of that application in that tier whose key is declared and
+whose stored value **equals** the declared value (`String.equals`; a secret row by its clear value) is
+deleted, and a row holding any other value — `QITS_EDGE_ACME_MODE=staging` — is an override and stays.
+A `FAILED`, `ROLLED_BACK` or unconverged deployment retires nothing. Nothing is redeployed: the live
+container keeps the variable until the next deployment, whose ordinary `--env-rm` drops it. **Declare a
+pair only in a release whose image already ships that default, or a later one** — the retirement is
+what makes every later rollback target in the tier this version or newer, and so an image carrying
+the default. A variant file may declare it too, against its own application's rows.
 
 `deploy_branches` is **retired**: parsed, validated and acted on by nobody. Where a release lands is
 the environment rows' answer — the designated platform environment — and never the file's. The
@@ -483,7 +500,9 @@ path. The break-glass above covers this component's HTTP calls, not the docker d
   the same sentence as before, now that a credential is a thing this component holds: what a
   repository can NAME is a database of its own, and the VALUES injected for it are ones this
   component generated. A setting is written by an operator or a machine through the settings doors
-  and reaches a container on that place's next deployment; the deployer's own config volume file and
+  and reaches a container on that place's next deployment — and the one row the platform deletes by
+  itself is one a converged deployment's `image_defaults:` says its image already ships, value for
+  value; the deployer's own config volume file and
   qits-configuration, the two earlier sources, are gone (qits-1393).
 - **Untrusted strings are validated at the boundary.** Names become network names, aliases and image
   path segments (dns-label charset); shas become image tags (hex only); the health path is

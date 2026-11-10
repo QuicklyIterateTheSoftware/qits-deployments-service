@@ -2,7 +2,10 @@ package eu.wohlben.qits.deployments.deployments.control;
 
 import eu.wohlben.qits.deployments.events.NavigationEntry;
 import java.time.Duration;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The seam that fetches a repository's deployment spec at a commit — the {@link DeploymentDriver}
@@ -218,6 +221,11 @@ public interface SpecSource {
    * each described by its own {@link #variantPath} file at the same tag. Empty is every file today.
    * Only the main file may name them.
    *
+   * <p>{@code imageDefaults} is {@code image_defaults:} — the environment variables the image ships
+   * as its own defaults, with their values, in the order written (qits-2009). Empty is every file
+   * today. Nothing reaches the argv from it: after the deployment is {@code ACTIVE}, {@code
+   * DeployService} deletes the place's settings rows that restate one of these values exactly.
+   *
    * <p><b>{@code deployBranches} is read and not used here</b>, and that is deliberate — see {@link
    * #deployBranches()}.
    */
@@ -242,10 +250,16 @@ public interface SpecSource {
       DeclaredShape shape,
       DeploymentDriver.Exposure exposure,
       String image,
-      List<String> variants) {
+      List<String> variants,
+      Map<String, String> imageDefaults) {
 
     /** A null list and an empty one are the same statement: the file named none. */
     public DeploymentSpec {
+      // Ordered and unmodifiable: Map.copyOf would lose the order the file wrote the pairs in.
+      imageDefaults =
+          imageDefaults == null || imageDefaults.isEmpty()
+              ? Map.of()
+              : Collections.unmodifiableMap(new LinkedHashMap<>(imageDefaults));
       variants = variants == null ? List.of() : List.copyOf(variants);
       exposure = exposure == null ? DeploymentDriver.Exposure.PUBLIC : exposure;
       shape = shape == null ? DeclaredShape.NONE : shape;
@@ -259,6 +273,54 @@ public interface SpecSource {
           navigationEntries == null ? List.of() : List.copyOf(navigationEntries);
       stopGracePeriod =
           stopGracePeriod == null ? DeploymentDriver.DEFAULT_STOP_GRACE_PERIOD : stopGracePeriod;
+    }
+
+    /** The shape before {@code image_defaults}: an image whose defaults retire no setting. */
+    public DeploymentSpec(
+        boolean availableOnEnv,
+        List<String> deployBranches,
+        String healthPath,
+        String healthCmd,
+        List<ResourceSpec> resources,
+        List<VolumeSpec> volumes,
+        DeploymentDriver.UpdateOrder updateOrder,
+        DeploymentDriver.PublishMode publishMode,
+        List<String> routes,
+        int upstreamPort,
+        String host,
+        boolean browserHostDeclared,
+        List<NavigationEntry> navigationEntries,
+        String apiDocs,
+        String application,
+        String renamedFrom,
+        Duration stopGracePeriod,
+        DeclaredShape shape,
+        DeploymentDriver.Exposure exposure,
+        String image,
+        List<String> variants) {
+      this(
+          availableOnEnv,
+          deployBranches,
+          healthPath,
+          healthCmd,
+          resources,
+          volumes,
+          updateOrder,
+          publishMode,
+          routes,
+          upstreamPort,
+          host,
+          browserHostDeclared,
+          navigationEntries,
+          apiDocs,
+          application,
+          renamedFrom,
+          stopGracePeriod,
+          shape,
+          exposure,
+          image,
+          variants,
+          null);
     }
 
     /** The shape before {@code image} and {@code variants}: the application's own image, alone. */

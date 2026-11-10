@@ -12,6 +12,7 @@ import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import org.jboss.logging.Logger;
@@ -215,6 +216,50 @@ public class Settings {
               }
               LOG.infof("Retired %d setting(s) of %s (%s)", rows.size(), app, env);
               return rows.size();
+            });
+  }
+
+  /**
+   * The image-defaults retirement (qits-2009): delete every setting {@code applicationName} holds in
+   * {@code environmentName} whose key {@code imageDefaults} names and whose stored value EQUALS the
+   * named one ({@link String#equals}, nothing trimmed or folded). A secret row compares by its clear
+   * value, the one {@link SettingsExtrasSource} renders — {@code secret} decides how a value is
+   * shown, never what it is. A row with any other value is an override and stays.
+   *
+   * <p>Called by {@code DeployService} once a deployment whose spec declared {@code
+   * image_defaults:} is {@code ACTIVE}, and never otherwise: a converged deployment is what makes
+   * every later rollback target an image that ships the same defaults. Nothing running changes —
+   * the next deployment's {@code --env-rm} removes the variable, as it does after any delete.
+   *
+   * <p><b>One transaction, each row locked before it is compared</b>, so a door write that lands
+   * between the comparison and the delete waits and is then compared, rather than deleted unread.
+   * Idempotent: a second call finds nothing equal and deletes nothing. Logs nothing — the caller
+   * knows the version the line names, and no value is ever logged.
+   *
+   * @return the keys deleted, in the order {@code imageDefaults} names them
+   */
+  public List<String> retireImageDefaults(
+      String applicationName, String environmentName, Map<String, String> imageDefaults) {
+    if (imageDefaults == null || imageDefaults.isEmpty()) {
+      return List.of();
+    }
+    String app = PdIdentifiers.requireName(applicationName, "application");
+    String env = PdIdentifiers.requireName(environmentName, "environment");
+    return QuarkusTransaction.joiningExisting()
+        .call(
+            () -> {
+              List<String> retired = new ArrayList<>();
+              for (Map.Entry<String, String> declared : imageDefaults.entrySet()) {
+                settings
+                    .findOneForUpdate(app, env, declared.getKey())
+                    .filter(row -> declared.getValue().equals(row.value))
+                    .ifPresent(
+                        row -> {
+                          settings.delete(row);
+                          retired.add(row.settingKey);
+                        });
+              }
+              return List.copyOf(retired);
             });
   }
 
