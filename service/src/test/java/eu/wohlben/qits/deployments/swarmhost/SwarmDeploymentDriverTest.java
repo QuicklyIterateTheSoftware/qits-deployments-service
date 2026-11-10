@@ -399,12 +399,21 @@ class SwarmDeploymentDriverTest {
 
   /** {@link #spec()} deployed as the variant {@code variant} (qits-1976). */
   private DeploymentDriver.ServiceSpec variantSpec(String variant) {
+    return variantSpec(spec().applicationName(), variant);
+  }
+
+  /**
+   * {@link #spec()} deployed under its own application name, as the variant {@code variant}
+   * (qits-1976) — the shape of a variant deployed from a main file's own image under a distinct
+   * application, such as {@code qits-edge-private} deployed from qits-edge's spec (qits-2054).
+   */
+  private DeploymentDriver.ServiceSpec variantSpec(String applicationName, String variant) {
     DeploymentDriver.ServiceSpec main = spec();
     return new DeploymentDriver.ServiceSpec(
         main.environmentId(),
         main.environmentName(),
         main.applicationId(),
-        main.applicationName(),
+        applicationName,
         main.deploymentId(),
         main.commitSha(),
         main.version(),
@@ -466,6 +475,59 @@ class SwarmDeploymentDriverTest {
 
     assertFalse(argv.contains("--env-rm"), argv.toString());
     assertTrue(argv.containsAll(List.of("--env-add", "QITS_VARIANT=private")), argv.toString());
+  }
+
+  @Test
+  void aMainDeploymentsTelemetryIsNamedAfterItsOwnApplication() {
+    // qits-2054: the deployer names every service's telemetry after its deployed application, in
+    // its own pair of variables beside OTEL_RESOURCE_ATTRIBUTES — see DeployedIdentity for why a
+    // fourth service.name= entry in that list would be overridden by Quarkus' build-time stamp.
+    List<String> create = driver().buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
+
+    assertTrue(create.contains("OTEL_SERVICE_NAME=qits-gateway"), create.toString());
+    assertTrue(create.contains("QUARKUS_OTEL_SERVICE_NAME=qits-gateway"), create.toString());
+  }
+
+  @Test
+  void aVariantsTelemetryIsNamedAfterTheVariantsOwnApplicationNeverTheMainOne() {
+    // qits-2054: a deployment variant such as qits-edge-private runs its MAIN application's image
+    // (qits-edge's), but it is registered and deployed under its OWN application name. Before this
+    // fix the container never learned a service.name of its own, so its telemetry exported under
+    // whatever the image's quarkus.application.name happened to be — qits-edge's, not
+    // qits-edge-private's.
+    DeploymentDriver.ServiceSpec variant = variantSpec("qits-edge-private", "private");
+
+    List<String> create = driver().buildCreateArgv(variant, "dev-qits-edge-private", List.of("qits-net"));
+    assertTrue(create.contains("OTEL_SERVICE_NAME=qits-edge-private"), create.toString());
+    assertTrue(create.contains("QUARKUS_OTEL_SERVICE_NAME=qits-edge-private"), create.toString());
+
+    List<String> update = driver().buildUpdateArgv(variant, "dev-qits-edge-private");
+    assertTrue(
+        update.containsAll(List.of("--env-add", "OTEL_SERVICE_NAME=qits-edge-private")),
+        update.toString());
+    assertTrue(
+        update.containsAll(List.of("--env-add", "QUARKUS_OTEL_SERVICE_NAME=qits-edge-private")),
+        update.toString());
+  }
+
+  @Test
+  void anUpdateNeverRemovesTheServiceNameVariablesOffALiveService() {
+    // OTEL_SERVICE_NAME/QUARKUS_OTEL_SERVICE_NAME are deployer-owned like the resource-attribute
+    // pair: config states neither, so without membership in DEPLOYER_OWN_VARIABLES the update diff
+    // would --env-rm both off a live service on its very next deployment.
+    SwarmDeploymentDriver driver = driver();
+    cli.script(
+        SwarmDeploymentDriver.SPEC_ENV_FORMAT,
+        result(
+            0,
+            "QITS_ENVIRONMENT=dev\n"
+                + "QITS_APPLICATION=qits-gateway\n"
+                + "OTEL_SERVICE_NAME=qits-gateway\n"
+                + "QUARKUS_OTEL_SERVICE_NAME=qits-gateway\n"));
+
+    List<String> argv = driver.buildUpdateArgv(spec(), "dev-qits-gateway");
+
+    assertFalse(argv.contains("--env-rm"), argv.toString());
   }
 
   @Test
@@ -1573,8 +1635,8 @@ class SwarmDeploymentDriverTest {
   @Test
   void anUpdateNeverRemovesThisComponentsOwnVariablesOrAProvisionedTriple() {
     // The protected family, and it is a family rather than a list of exceptions: this component
-    // writes its own four on every argv and config states none of them, so a diff against config
-    // alone would remove and re-add all four on every deployment. QITS_RESOURCE_* is the fifth
+    // writes its own six on every argv and config states none of them, so a diff against config
+    // alone would remove and re-add all six on every deployment. QITS_RESOURCE_* is the seventh
     // member and is a PREFIX — ResourceProvisioning injects it from the registry row, and config
     // must not be able to delete a credential it cannot state.
     //
@@ -1582,6 +1644,11 @@ class SwarmDeploymentDriverTest {
     // NO domain, deliberately: membership protects a key from removal, it does not assert that the
     // key is present. Were it outside the set, a live service carrying the domain would have it
     // env-rm'd on its next deployment by any platform that had since stopped stating one.
+    //
+    // OTEL_SERVICE_NAME and QUARKUS_OTEL_SERVICE_NAME (qits-2054) join the family for the same
+    // reason the resource-attribute pair does: the deployer writes both on every argv, config states
+    // neither, and without membership a live service's telemetry name would be env-rm'd on its next
+    // deployment by any config that had never stated it — which is every file today.
     SwarmDeploymentDriver driver = driver();
     cli.script(
         SwarmDeploymentDriver.SPEC_ENV_FORMAT,
@@ -1592,6 +1659,8 @@ class SwarmDeploymentDriverTest {
                 + "QITS_DOMAIN=wohlben.eu\n"
                 + "OTEL_RESOURCE_ATTRIBUTES=service.version=old\n"
                 + "QUARKUS_OTEL_RESOURCE_ATTRIBUTES=service.version=old\n"
+                + "OTEL_SERVICE_NAME=qits-gateway\n"
+                + "QUARKUS_OTEL_SERVICE_NAME=qits-gateway\n"
                 + "QITS_RESOURCE_DB_URL=jdbc:postgresql://dev-qits-oci-postgresql:5432/qits_gateway\n"
                 + "QITS_RESOURCE_DB_PASSWORD=0123456789abcdef\n"));
 
@@ -1649,6 +1718,8 @@ class SwarmDeploymentDriverTest {
             "QITS_DOMAIN",
             "OTEL_RESOURCE_ATTRIBUTES",
             "QUARKUS_OTEL_RESOURCE_ATTRIBUTES",
+            "OTEL_SERVICE_NAME",
+            "QUARKUS_OTEL_SERVICE_NAME",
             "QITS_RESOURCE_DB_PASSWORD")) {
       assertTrue(driver.keptWhenUnstated(key), key);
     }

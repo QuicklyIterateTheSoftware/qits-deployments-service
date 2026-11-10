@@ -1294,10 +1294,11 @@ two, and the one that wins is the one that is written down.
 
 - **everything this argv states** — the extras' own `env`, which is the whole of what config says;
 - **`DEPLOYER_OWN_VARIABLES`** — `QITS_ENVIRONMENT`, `QITS_APPLICATION`, `QITS_VARIANT`,
-  `QITS_DOMAIN`, `OTEL_RESOURCE_ATTRIBUTES` and its `QUARKUS_` twin, this component's identity set.
-  It writes them on the argv and config states none of them, so a diff against config alone would
-  remove and re-add them every time. `QITS_VARIANT` is written for a variant only (see the variants
-  section); membership protects it on a variant's update and adds it to nothing else;
+  `QITS_DOMAIN`, `OTEL_RESOURCE_ATTRIBUTES` and its `QUARKUS_` twin, and `OTEL_SERVICE_NAME` and its
+  `QUARKUS_` twin (qits-2054), this component's identity set. It writes them on the argv and config
+  states none of them, so a diff against config alone would remove and re-add them every time.
+  `QITS_VARIANT` is written for a variant only (see the variants section); membership protects it on
+  a variant's update and adds it to nothing else;
 - **anything under `QITS_RESOURCE_`** — `ResourceProvisioning` injects those from the registry row,
   which is the single authority for the credential. Config cannot state a provisioned password and
   must not be able to delete one.

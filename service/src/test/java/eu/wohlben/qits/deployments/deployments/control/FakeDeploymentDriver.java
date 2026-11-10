@@ -395,7 +395,9 @@ public class FakeDeploymentDriver implements DeploymentDriver {
                 "QITS_APPLICATION",
                 "QITS_DOMAIN",
                 "OTEL_RESOURCE_ATTRIBUTES",
-                "QUARKUS_OTEL_RESOURCE_ATTRIBUTES")
+                "QUARKUS_OTEL_RESOURCE_ATTRIBUTES",
+                "OTEL_SERVICE_NAME",
+                "QUARKUS_OTEL_SERVICE_NAME")
             .contains(key);
   }
 
