@@ -52,11 +52,15 @@ package eu.wohlben.qits.deployments.deployments.control;
  *       lands;
  *   <li>Quarkus' own build-time attributes ({@code service.name}, {@code service.version} from the
  *       pom stamp, {@code webengine.*}), merged OVER the previous;
- *   <li>an env var sits at ordinal 300, above {@code application.properties}' 250 and any custom
- *       config source below 300 — which is what lets {@code QUARKUS_OTEL_SERVICE_NAME} (i.e.
- *       {@code quarkus.otel.service.name}) and {@code QUARKUS_OTEL_RESOURCE_ATTRIBUTES} outrank the
- *       build-time stamp merged in the step above.
+ *   <li>{@code quarkus.otel.resource.attributes} — i.e. {@code QUARKUS_OTEL_RESOURCE_ATTRIBUTES} —
+ *       merged over everything.
  * </ol>
+ *
+ * <p>The build-time {@code service.name} of step 2 is itself read from {@code
+ * quarkus.otel.service.name} at runtime, which defaults to {@code quarkus.application.name}. As an
+ * environment variable, {@code QUARKUS_OTEL_SERVICE_NAME} has ordinal 300, above {@code
+ * application.properties} (250) and any custom config source below 300 (the edge's variant source
+ * is 275), so it is the value step 2 stamps.
  *
  * <p>So the environment name and the instance id arrive from the neutral variable (Quarkus stamps
  * neither), while a {@code service.version} — or a {@code service.name} — written only there is
