@@ -161,6 +161,22 @@ public class PdDeployment extends PanacheEntityBase implements CausedRow {
   @Column(nullable = false)
   public boolean interrupted;
 
+  /**
+   * <b>The settings this deployment's {@code image_defaults:} retired</b> — the {@code pd_setting}
+   * keys {@code DeployService.retireImageDefaults} deleted once the row was {@code ACTIVE},
+   * comma-separated in the file's order (V19, qits-2048). Keys only, never a value: a secret row
+   * may be among them. Null on every row that retired nothing, which is every deployment whose spec
+   * declares no {@code image_defaults:}, every one that found no equal row, and every one that did
+   * not converge.
+   *
+   * <p>It is the one durable trace of the retirement — a delete through the settings door records
+   * no event and no audit row, and neither does this — so a person reading the deployment listing
+   * can tell why a key the store held yesterday is gone. Written in its own transaction after the
+   * rows are deleted; a failure there is a WARN and costs only this record.
+   */
+  @Column(name = "retired_settings", columnDefinition = "text")
+  public String retiredSettings;
+
   @Column(name = "created_at", nullable = false)
   public Instant createdAt;
 

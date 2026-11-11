@@ -6,6 +6,7 @@ import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentRequest;
 import eu.wohlben.qits.deployments.environments.control.ApplicationKeys;
 import jakarta.enterprise.context.ApplicationScoped;
+import java.util.List;
 
 /**
  * The deployment wire shape. Hand-written rather than a MapStruct interface for one reason: {@code
@@ -35,7 +36,20 @@ public class DeploymentMapper {
         deployment.containerName,
         deployment.detail,
         deployment.createdAt,
-        deployment.finishedAt);
+        deployment.finishedAt,
+        retiredSettings(deployment.retiredSettings));
+  }
+
+  /**
+   * The {@code retired_settings} column as the list it is: comma-separated keys in the file's
+   * order, and null — not an empty list — when the row retired nothing. A setting key cannot hold a
+   * comma ({@code Settings.requireKey}), so the split is exact.
+   */
+  private static List<String> retiredSettings(String column) {
+    if (column == null || column.isBlank()) {
+      return null;
+    }
+    return List.of(column.split(","));
   }
 
   /**

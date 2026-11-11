@@ -142,6 +142,33 @@ public record ServiceExtras(
     }
   }
 
+  /**
+   * These extras less every {@code env} entry {@code KEY=value} whose value equals {@code
+   * defaults.get(KEY)} exactly — {@code String.equals}, nothing trimmed and no case folded — and
+   * everything else as it was, order included (qits-2048). It is how a driver stops stating a
+   * variable the image ships as its own default ({@code
+   * DeploymentDriver.ServiceSpec#imageDefaults}): an entry holding any other value is an override
+   * and stays. With no defaults it is {@code this}, so a spec that declares none renders exactly
+   * what it always rendered.
+   */
+  public ServiceExtras withoutEnvEqualTo(Map<String, String> defaults) {
+    if (defaults == null || defaults.isEmpty()) {
+      return this;
+    }
+    List<String> kept = new ArrayList<>();
+    for (String variable : env) {
+      int equals = variable.indexOf('=');
+      if (equals > 0
+          && variable.substring(equals + 1).equals(defaults.get(variable.substring(0, equals)))) {
+        continue;
+      }
+      kept.add(variable);
+    }
+    return kept.size() == env.size()
+        ? this
+        : new ServiceExtras(mounts, publishes, groups, kept, aliases);
+  }
+
   /** Whether this application stated anything at all. */
   public boolean isEmpty() {
     return mounts.isEmpty()

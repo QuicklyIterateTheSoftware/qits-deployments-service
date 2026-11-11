@@ -1207,10 +1207,24 @@ not delete such a row by hand. So the repository says it, in `.config/qits/deplo
 
 Comma-separated `KEY=value`; the key passes `Settings.requireKey` (the door's own
 `[A-Z_][A-Z0-9_]*`, ≤255), the value is everything after the FIRST `=`, stripped. Blank entry, no
-`=`, empty value, bad key, a key twice: each a `SpecException` naming the entry. Parsed into an
-ordered `Map` (`DeploymentSpec.imageDefaults`, empty by default), carried on `Target`/`Plan`.
-Variant files go through the same parser and may declare it against their own application. Six
-things about it, each easy to undo by accident:
+`=`, empty value, bad key, a key twice, a key of the deployer's own family
+(`DeploymentDriver.keptByTheDeployer`: `DEPLOYER_OWN_VARIABLES` or anything under `RESOURCE_PREFIX`,
+which no update ever `--env-rm`s, so a retirement of one would be a claim nothing performs): each a
+`SpecException` naming the entry. Parsed into an ordered `Map` (`DeploymentSpec.imageDefaults`,
+empty by default), carried on `Target`/`Plan` and onto the deployment's own `ServiceSpec`
+(`imageDefaults`, its last component; a rename's restored predecessor gets `Map.of()`). Variant files
+go through the same parser and may declare it against their own application. Seven things about it,
+each easy to undo by accident:
+
+- **The retiring deployment stops stating the variable** (qits-2048). Its argv is built from the
+  settings store BEFORE the rows are deleted, so read unfiltered it `--env-add`ed exactly what it was
+  about to retire, `envRemovals` removed nothing it stated, and the running service kept the variable
+  until some later, unrelated deployment. `SwarmDeploymentDriver.extrasOf` — the one reading create,
+  update, the alias check and `stagedEnvironment` share — now drops every extras env entry
+  `KEY=value` whose value `equals` `spec.imageDefaults().get(KEY)` (`ServiceExtras.withoutEnvEqualTo`,
+  nothing trimmed), so the create does not write it and the update's ordinary diff `--env-rm`s it.
+  An unequal value is still `--env-add`ed. No image defaults: the extras are returned as they were,
+  so every other argv is byte-identical.
 
 - **It runs only past the cutover**, as `execute`'s last statement (`retireImageDefaults`, after
   `retireAfterCutover`): every `FAILED`/`ROLLED_BACK`/refused/unconverged path has already returned.
@@ -1226,15 +1240,21 @@ things about it, each easy to undo by accident:
   of <version>: [K1, K2]`; nothing when none matched. A spec without the key costs no query at all.
 - **No event, no audit row, no redeploy** — because a delete through the settings door records none
   either (`Settings.delete` writes no event, no log line, no audit; `updated_by` exists only on a
-  live row). The preview door simply stops listing the key as stated, and the next deployment's
-  ordinary `--env-rm` diff removes it from the container.
+  live row). The container needs none: the deployment that deletes the rows already stopped stating
+  them, and its own update removed them. **The deleted keys are recorded on that deployment's row**
+  — `pd_deployment.retired_settings` (V19), comma-separated in file order, never a value — in a short
+  `DbRetry.runInNewTx` of its own after the delete, and served as `retiredSettings` (a list, null when
+  none) by `GET /deployments`. Not on `DeploymentActive`: the event is unchanged.
 - **A failure never fails the deployment** — a WARN, and the next deployment (whose spec still says
-  the same) tries again. No `owedRetirements` entry: nothing is half-done in one transaction.
+  the same) tries again. No `owedRetirements` entry: nothing is half-done in one transaction. A
+  failed or rolled-back update deletes nothing either — swarm restores the previous spec, the
+  variables with it, and the rows are still there for the next attempt.
 - **The deployer's own self-update never reaches it.** `HANDED_OFF` returns before the cutover and
   the successor's startup-sweep adoption has no spec, so a key in THIS repository's file would retire
   nothing. Only an ordinary deployment retires.
 
-`PdImageDefaultsRetirementTest` holds it end to end; `DeploymentSpecParserTest` holds the grammar.
+`PdImageDefaultsRetirementTest` holds it end to end; `DeploymentSpecParserTest` holds the grammar;
+`SwarmDeploymentDriverTest` holds the argv (an equal row `--env-rm`ed and unstated, an override kept).
 
 ### `QITS_DOMAIN`: the platform's domain is ONE fact (2026-09-26, qits-387)
 
@@ -2915,6 +2935,12 @@ decommission run, never updated, no unique key — a retried purge is a second r
 `removed` are `jsonb` written as JSON text (`@ColumnTransformer(write = "?::jsonb")` on a `String`,
 so no JSON type mapping is involved); `removed` null is a `FAILED` run, `[]` a purge that found
 nothing. `PdDecommission` is a stamped `CausedRow` (request thread, the `PdEnvironment` case).
+
+**`V19__deployment_retired_settings.sql` is a record, not a state** (qits-2048):
+`retired_settings text`, nullable, on `pd_deployment` — the keys a converged deployment's
+`image_defaults:` deleted from the settings store, comma-separated in file order, keys only. Null is
+every row that retired nothing and every row from before the column; **no backfill**, because what
+those retired was never recorded.
 
 **Nulls are distinct to `=`, and the queries still test for one.** A deployment's `environment_id` was
 null until V8 and is the designated tier now, so the null-testing arms of

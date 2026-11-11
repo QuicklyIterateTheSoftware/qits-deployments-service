@@ -2,6 +2,7 @@ package eu.wohlben.qits.deployments.deployments.dto;
 
 import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentStatus;
 import java.time.Instant;
+import java.util.List;
 
 /**
  * One recorded deployment attempt; {@code applicationName} denormalized for legible listings.
@@ -21,6 +22,12 @@ import java.time.Instant;
  * SoftwareRelease} carries none at all, so only a manual replay supplies one. A client renders it as
  * a link to {@code /ci/runs/<runId>} when it is set and omits it when it is not; there is no other
  * way to reach the run from here.
+ *
+ * <p>{@code retiredSettings} is the setting keys this deployment's {@code image_defaults:} retired
+ * (qits-2048) — deleted from the settings store once it was {@code ACTIVE}, because each held
+ * exactly the default the image now ships — in the file's order. Keys only, never a value. Null on
+ * every deployment that retired nothing, which is nearly all of them: the field is the one place a
+ * reader can see where such a row went, since the delete itself writes no event and no audit row.
  */
 public record PdDeploymentDto(
     String id,
@@ -33,4 +40,5 @@ public record PdDeploymentDto(
     String containerName,
     String detail,
     Instant createdAt,
-    Instant finishedAt) {}
+    Instant finishedAt,
+    List<String> retiredSettings) {}

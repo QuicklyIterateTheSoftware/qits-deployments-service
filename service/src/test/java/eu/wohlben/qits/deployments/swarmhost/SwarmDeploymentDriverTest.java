@@ -1538,6 +1538,142 @@ class SwarmDeploymentDriverTest {
         after.toString());
   }
 
+  /**
+   * {@link #spec()} as a deployment whose {@code deployments.yml} declares {@code image_defaults:}
+   * (qits-2009, qits-2048): every other component as it is there.
+   */
+  private DeploymentDriver.ServiceSpec spec(Map<String, String> imageDefaults) {
+    DeploymentDriver.ServiceSpec base = spec();
+    return new DeploymentDriver.ServiceSpec(
+        base.environmentId(),
+        base.environmentName(),
+        base.applicationId(),
+        base.applicationName(),
+        base.deploymentId(),
+        base.commitSha(),
+        base.version(),
+        base.deploymentName(),
+        base.wireAlias(),
+        base.networks(),
+        base.imageRef(),
+        base.healthPath(),
+        base.healthCmd(),
+        base.availableOnEnv(),
+        base.updateOrder(),
+        base.publishMode(),
+        base.resources(),
+        base.volumes(),
+        base.stopGracePeriod(),
+        base.shape(),
+        base.renamedFrom(),
+        base.takesOverPredecessor(),
+        base.exposure(),
+        base.variant(),
+        imageDefaults);
+  }
+
+  @Test
+  void aSettingEqualToADeclaredImageDefaultIsRemovedByTheRetiringDeploymentsOwnUpdate() {
+    // qits-2048: the deployment whose image_defaults: retires a row is built from the store BEFORE
+    // the row is deleted. Read unfiltered, it --env-add'ed the very variable it was retiring and
+    // the live service kept it until some later deployment. Now an equal row is not stated, so the
+    // update's ordinary diff --env-rm's it — the image ships the same value.
+    List<PdSetting> rows =
+        new ArrayList<>(
+            List.of(
+                setting("QITS_EVENTS_URL", "http://dev-qits-events:8080", false),
+                setting("QUARKUS_TLS_RELOAD_PERIOD", "1m", false)));
+    SwarmDeploymentDriver driver = settingsDriver(rows);
+    cli.script(
+        SwarmDeploymentDriver.SPEC_ENV_FORMAT,
+        result(0, "QITS_EVENTS_URL=http://dev-qits-events:8080\nQUARKUS_TLS_RELOAD_PERIOD=1m\n"));
+
+    List<String> argv =
+        driver.buildUpdateArgv(spec(Map.of("QUARKUS_TLS_RELOAD_PERIOD", "1m")), "dev-qits-gateway");
+
+    assertTrue(argv.containsAll(List.of("--env-rm", "QUARKUS_TLS_RELOAD_PERIOD")), argv.toString());
+    assertTrue(
+        argv.stream().noneMatch(argument -> argument.startsWith("QUARKUS_TLS_RELOAD_PERIOD=")),
+        "the variable equal to the image default is not stated: " + argv);
+    assertTrue(
+        argv.containsAll(List.of("--env-add", "QITS_EVENTS_URL=http://dev-qits-events:8080")),
+        "an undeclared row is stated as ever: " + argv);
+  }
+
+  @Test
+  void aSettingThatOverridesADeclaredImageDefaultIsStillStated() {
+    // A row holding any other value is an override: the retirement never deletes it, so the argv
+    // must keep stating it — and must not remove it. Exact comparison: `staging` is not
+    // `production`, and `30s` is not `1m`.
+    List<PdSetting> rows =
+        new ArrayList<>(
+            List.of(
+                setting("QITS_EDGE_ACME_MODE", "staging", false),
+                setting("QUARKUS_TLS_RELOAD_PERIOD", "30s", false)));
+    SwarmDeploymentDriver driver = settingsDriver(rows);
+    cli.script(
+        SwarmDeploymentDriver.SPEC_ENV_FORMAT,
+        result(0, "QITS_EDGE_ACME_MODE=staging\nQUARKUS_TLS_RELOAD_PERIOD=30s\n"));
+
+    List<String> argv =
+        driver.buildUpdateArgv(
+            spec(
+                Map.of(
+                    "QITS_EDGE_ACME_MODE", "production",
+                    "QUARKUS_TLS_RELOAD_PERIOD", "1m")),
+            "dev-qits-gateway");
+
+    assertTrue(
+        argv.containsAll(List.of("--env-add", "QITS_EDGE_ACME_MODE=staging")), argv.toString());
+    assertTrue(
+        argv.containsAll(List.of("--env-add", "QUARKUS_TLS_RELOAD_PERIOD=30s")), argv.toString());
+    assertFalse(argv.contains("--env-rm"), "an override is never removed: " + argv);
+  }
+
+  @Test
+  void aCreateDoesNotWriteASettingEqualToADeclaredImageDefault() {
+    // The same reading on the create: a service created by the retiring deployment never carries
+    // the variable the image ships, while an override and an undeclared row are written as ever.
+    List<PdSetting> rows =
+        new ArrayList<>(
+            List.of(
+                setting("QITS_EVENTS_URL", "http://dev-qits-events:8080", false),
+                setting("QITS_EDGE_ACME_MODE", "staging", false),
+                setting("QUARKUS_TLS_RELOAD_PERIOD", "1m", false)));
+    SwarmDeploymentDriver driver = settingsDriver(rows);
+
+    List<String> argv =
+        driver.buildCreateArgv(
+            spec(
+                Map.of(
+                    "QUARKUS_TLS_RELOAD_PERIOD", "1m",
+                    "QITS_EDGE_ACME_MODE", "production")),
+            "dev-qits-gateway",
+            List.of("qits-net"));
+
+    assertTrue(
+        argv.stream().noneMatch(argument -> argument.startsWith("QUARKUS_TLS_RELOAD_PERIOD=")),
+        argv.toString());
+    assertTrue(argv.containsAll(List.of("--env", "QITS_EDGE_ACME_MODE=staging")), argv.toString());
+    assertTrue(
+        argv.containsAll(List.of("--env", "QITS_EVENTS_URL=http://dev-qits-events:8080")),
+        argv.toString());
+  }
+
+  @Test
+  void noImageDefaultsRendersExactlyTheArgvItAlwaysDid() {
+    // A spec without image_defaults: is every deployment today, and its argv must not move a byte.
+    List<PdSetting> rows =
+        new ArrayList<>(List.of(setting("QUARKUS_TLS_RELOAD_PERIOD", "1m", false)));
+    SwarmDeploymentDriver driver = settingsDriver(rows);
+
+    assertEquals(
+        driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net")),
+        driver.buildCreateArgv(spec(Map.of()), "dev-qits-gateway", List.of("qits-net")));
+    assertEquals(
+        driver.stagedEnvironment(spec(), true), driver.stagedEnvironment(spec(Map.of()), true));
+  }
+
   @Test
   void anExtrasSourceThatCannotAnswerIsARefusedDeploymentRatherThanTheBootValues() {
     // A fall-back would ship stale values invisibly: a green deployment carrying whatever the

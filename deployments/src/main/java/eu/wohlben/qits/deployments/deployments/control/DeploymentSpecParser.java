@@ -259,20 +259,25 @@ import java.util.regex.Pattern;
  * image carried it as its own default goes on restating it forever, and the owner ruled that an
  * admin must not delete such a row by hand. This key is the platform's way to retire it: comma-
  * separated {@code KEY=value} pairs, a key being a setting key ({@code [A-Z_][A-Z0-9_]*}, the very
- * check the settings door holds, {@code Settings.requireKey}), the value everything after the
- * FIRST {@code =}, trimmed. A blank entry, a missing {@code =}, an empty value, a malformed key and
- * a key named twice are each refused naming the entry. The value cannot hold a comma — the entry
+ * check the settings door holds, {@code Settings.requireKey}), the value everything after the FIRST
+ * {@code =}, trimmed. A blank entry, a missing {@code =}, an empty value, a malformed key and a key
+ * named twice are each refused naming the entry, and so is a key the deployer writes itself ({@code
+ * DeploymentDriver.keptByTheDeployer}: the identity and telemetry variables, anything under {@code
+ * QITS_RESOURCE_}), which no update ever removes. The value cannot hold a comma — the entry
  * separator — nor a {@code #} after whitespace, which starts a comment; a default spelled with
  * either is one this key cannot state, and its row stays a row.
  *
- * <p>What it does is {@code DeployService}'s, after the deployment is {@code ACTIVE} and never
- * before: every {@code pd_setting} row of the place whose key is declared and whose stored value
- * equals the declared one EXACTLY ({@code String.equals}, a secret by its clear value) is deleted.
- * A row holding any other value is a deliberate override and stays. The live container keeps the
- * variable until the next deployment, whose ordinary {@code --env-rm} diff removes it — and by then
- * the image supplies it. Only a converged deployment retires anything, because that is what makes
- * every later rollback target this version or a newer one, so the default travels with it. Which
- * is also the rule for WRITING the key: a repository declares a pair only in a release whose image
+ * <p>What it does is in two halves. The deployment declaring it stops STATING a settings variable
+ * whose value equals the declared default EXACTLY ({@code String.equals}, a secret by its clear
+ * value) — the driver drops it from what it renders — so that deployment's own update {@code
+ * --env-rm}s it from the live service, whose image now supplies it. Then, after the deployment is
+ * {@code ACTIVE} and never before, {@code DeployService} deletes those {@code pd_setting} rows and
+ * records their keys on the deployment's row ({@code retiredSettings}). A row holding any other
+ * value is a deliberate override: stated as ever, and never deleted. A deployment that fails or
+ * rolls back deletes nothing — swarm restores the previous spec, variables included — and the next
+ * deployment tries again. Only a converged deployment retires anything, because that is what makes
+ * every later rollback target this version or a newer one, so the default travels with it. Which is
+ * also the rule for WRITING the key: a repository declares a pair only in a release whose image
  * already ships that default, or a later one, because the declaration is a statement about the
  * image built from the same commit. Allowed in a variant file like any other key — a variant is an
  * application with rows of its own.
@@ -979,6 +984,12 @@ public final class DeploymentSpecParser {
    * against a stored setting key and one outside that rule could match no row; the value is what
    * follows the first {@code =}, stripped, and must not be empty — an empty default is a statement
    * this key does not make, and an empty row compared against it would retire on a typo.
+   *
+   * <p>A key of the deployer's own family ({@link DeploymentDriver#keptByTheDeployer} — the
+   * identity and telemetry variables, anything under {@code QITS_RESOURCE_}) is refused too
+   * (qits-2048): the driver writes those itself and its update never {@code --env-rm}s one, so a
+   * declared default there could delete a row while the container went on carrying the variable — a
+   * retirement nothing performs.
    */
   private static Map<String, String> imageDefaults(String value, String source, int line) {
     Map<String, String> declared = new LinkedHashMap<>();
@@ -1011,6 +1022,18 @@ public final class DeploymentSpecParser {
                 + "` keys are setting keys — [A-Z_][A-Z0-9_]*, at most "
                 + Settings.KEY_MAX_LENGTH
                 + " characters — got: "
+                + entry);
+      }
+      if (DeploymentDriver.keptByTheDeployer(key)) {
+        throw error(
+            source,
+            line,
+            "`"
+                + IMAGE_DEFAULTS
+                + "` names `"
+                + key
+                + "`, which the deployer writes itself and an update never removes — it is no"
+                + " setting an image default can retire, got: "
                 + entry);
       }
       if (defaultValue.isEmpty()) {

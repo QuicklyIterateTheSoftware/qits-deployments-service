@@ -2,8 +2,10 @@ package eu.wohlben.qits.deployments.deployments.control;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.Set;
 
 /**
  * The seam between this component's orchestration and whatever runs the containers — the {@code
@@ -85,6 +87,93 @@ public interface DeploymentDriver {
    * deleting this is a cleanup with no behaviour attached.
    */
   String LEGACY_EXTRAS_PREFIX = "qits.platform.deployments.extras.";
+
+  /** Which tier this application is deployed into — an environment application's, and only one. */
+  String ENVIRONMENT_VARIABLE = "QITS_ENVIRONMENT";
+
+  /** Which application this is, on every plane. */
+  String APPLICATION_VARIABLE = "QITS_APPLICATION";
+
+  /**
+   * Which variant this is — {@code private} for the private edge — written beside {@link
+   * #APPLICATION_VARIABLE} for a service deployed from a main file's {@code variants:} (qits-1976),
+   * and for NO other. A variant gets no deployment settings of its own (owner ruling): it derives
+   * its configuration from its declaration, and this is the one fact it cannot derive itself. A
+   * main deployment carries no {@code QITS_VARIANT} at all, so its argv is what it always was.
+   */
+  String VARIANT_VARIABLE = "QITS_VARIANT";
+
+  /**
+   * The platform's domain, stated once and handed to every container — the one fact a service needs
+   * in order to derive its own public names.
+   *
+   * <p>It used to be fanned out by the bootstrap into five per-service composed spellings — the
+   * edge's ACME domain, the idp's cookie domain, two browser-host lists, the webauthn origins and
+   * the canonical origin — each of which could go stale on its own. The edge's copy and the idp's
+   * did diverge, and sign-in on the live platform broke. So the domain travels the way {@link
+   * #ENVIRONMENT_VARIABLE} already does: one value, written by the deployer, derived from by
+   * whoever needs a hostname. No service carries a hostname in its configuration.
+   */
+  String DOMAIN_VARIABLE = "QITS_DOMAIN";
+
+  /**
+   * What {@code ResourceProvisioning} injects, as the generic contract: {@code
+   * QITS_RESOURCE_<NAME>_URL} and its two siblings. Config states none of them — the registry row
+   * is the single authority for the credential — so the update diff must not be able to remove one.
+   */
+  String RESOURCE_PREFIX = "QITS_RESOURCE_";
+
+  /**
+   * This component's own eight, written on an argv before the deployment's own and therefore never
+   * stated by config. They are the exception the update diff needs: measured against the extras
+   * alone, every deployment would remove and immediately re-add them.
+   *
+   * <p><b>Spelled here, on the seam, rather than in the swarm driver that writes them</b>
+   * (qits-2048), because a second reader outside {@code service/} needs the same answer: {@code
+   * DeploymentSpecParser} refuses an {@code image_defaults:} key of this family, since the update
+   * would never remove one and the retirement would be a claim nothing performs. One set, so the
+   * driver and the parser cannot disagree about which keys are the deployer's.
+   *
+   * <p>{@link #VARIANT_VARIABLE} is written only for a variant, and is a member for the reason
+   * {@link #DOMAIN_VARIABLE} is: the deployer writes it, config states it nowhere, and a diff
+   * against config alone would {@code --env-rm} it off a live variant on its next deployment.
+   *
+   * <p>{@link #DOMAIN_VARIABLE} belongs here for exactly the reason the identity pair does — the
+   * deployer writes it and config states it nowhere, so a diff against config alone would {@code
+   * --env-rm} the domain off every live service on its next deployment. That it is written
+   * CONDITIONALLY changes nothing: membership protects a key from removal, it does not assert that
+   * the key is present.
+   *
+   * <p>{@link DeployedIdentity#OTEL_SERVICE_NAME_VARIABLE} and {@link
+   * DeployedIdentity#QUARKUS_OTEL_SERVICE_NAME_VARIABLE} are the newest two members (qits-2054):
+   * the deployer writes both on every argv and config states neither, so without them a diff
+   * against config alone would {@code --env-rm} a variant's telemetry name off on its next
+   * deployment just as surely as it would the domain.
+   *
+   * <p>{@code QITS_RESOURCE_*} is the family's one PREFIX rather than a name, which is why it is
+   * {@link #RESOURCE_PREFIX} beside this set rather than in it; {@link #keptByTheDeployer} asks
+   * both.
+   */
+  Set<String> DEPLOYER_OWN_VARIABLES =
+      Set.of(
+          ENVIRONMENT_VARIABLE,
+          APPLICATION_VARIABLE,
+          VARIANT_VARIABLE,
+          DOMAIN_VARIABLE,
+          DeployedIdentity.OTEL_VARIABLE,
+          DeployedIdentity.QUARKUS_OTEL_VARIABLE,
+          DeployedIdentity.OTEL_SERVICE_NAME_VARIABLE,
+          DeployedIdentity.QUARKUS_OTEL_SERVICE_NAME_VARIABLE);
+
+  /**
+   * Whether {@code key} is the deployer's own — {@link #DEPLOYER_OWN_VARIABLES} or anything under
+   * {@link #RESOURCE_PREFIX} — and so a variable an update keeps on the live service whether or not
+   * the argv states it. The swarm driver's {@link #keptWhenUnstated} answers with it, and the spec
+   * parser refuses such a key in {@code image_defaults:} with it.
+   */
+  static boolean keptByTheDeployer(String key) {
+    return DEPLOYER_OWN_VARIABLES.contains(key) || key.startsWith(RESOURCE_PREFIX);
+  }
 
   /** The environment a service belongs to. Every service has one. */
   String ENVIRONMENT_LABEL = "qits.platform.deployments.environment";
@@ -568,6 +657,17 @@ public interface DeploymentDriver {
    * the container which variant it is — the swarm driver as {@code QITS_VARIANT} — because a
    * variant has no deployment settings of its own and derives its configuration from its
    * declaration. A main deployment is told nothing: no variable, not an empty one.
+   *
+   * <p>{@code imageDefaults} is the repository's {@code image_defaults:} (qits-2009, qits-2048) —
+   * {@code KEY -> value} pairs the image ships as its own defaults, in the file's order — and is
+   * empty for every file without the key. A driver <b>stops stating</b> an extras variable whose
+   * value equals the declared default exactly ({@code String.equals}, nothing trimmed): the
+   * deployment that retires a row must not be the one that writes it onto the container once more,
+   * or the retired variable would outlive the retirement until some later, unrelated deployment. So
+   * the swarm driver drops it from what it renders, and its update's {@code --env-rm} diff then
+   * removes it from the live service like any other key no longer stated. A value that differs is
+   * an override and is stated as ever. Only this deployment's own spec carries the map; a
+   * predecessor restored by a rename rollback declares none.
    */
   record ServiceSpec(
       String environmentId,
@@ -593,11 +693,17 @@ public interface DeploymentDriver {
       String renamedFrom,
       boolean takesOverPredecessor,
       Exposure exposure,
-      String variant) {
+      String variant,
+      Map<String, String> imageDefaults) {
 
     /** Null lists and empty ones are the same statement: this application declared none. */
     public ServiceSpec {
       exposure = exposure == null ? Exposure.PUBLIC : exposure;
+      // Order kept, because it is the file's and a reader of the spec reads it in that order.
+      imageDefaults =
+          imageDefaults == null
+              ? Map.of()
+              : java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(imageDefaults));
       shape = shape == null ? DeclaredShape.NONE : shape;
       networks = networks == null ? List.of() : List.copyOf(networks);
       resources = resources == null ? List.of() : List.copyOf(resources);
@@ -605,6 +711,63 @@ public interface DeploymentDriver {
       updateOrder = updateOrder == null ? UpdateOrder.START_FIRST : updateOrder;
       publishMode = publishMode == null ? PublishMode.HOST : publishMode;
       stopGracePeriod = stopGracePeriod == null ? DEFAULT_STOP_GRACE_PERIOD : stopGracePeriod;
+    }
+
+    /**
+     * The shape before {@code imageDefaults}: a spec that declares no {@code image_defaults:},
+     * whose environment is the settings store's whole and unfiltered.
+     */
+    public ServiceSpec(
+        String environmentId,
+        String environmentName,
+        String applicationId,
+        String applicationName,
+        String deploymentId,
+        String commitSha,
+        String version,
+        String deploymentName,
+        String wireAlias,
+        List<String> networks,
+        String imageRef,
+        String healthPath,
+        String healthCmd,
+        boolean availableOnEnv,
+        UpdateOrder updateOrder,
+        PublishMode publishMode,
+        List<ResourceBinding> resources,
+        List<VolumeMount> volumes,
+        Duration stopGracePeriod,
+        DeclaredShape shape,
+        String renamedFrom,
+        boolean takesOverPredecessor,
+        Exposure exposure,
+        String variant) {
+      this(
+          environmentId,
+          environmentName,
+          applicationId,
+          applicationName,
+          deploymentId,
+          commitSha,
+          version,
+          deploymentName,
+          wireAlias,
+          networks,
+          imageRef,
+          healthPath,
+          healthCmd,
+          availableOnEnv,
+          updateOrder,
+          publishMode,
+          resources,
+          volumes,
+          stopGracePeriod,
+          shape,
+          renamedFrom,
+          takesOverPredecessor,
+          exposure,
+          variant,
+          Map.of());
     }
 
     /** The shape before {@code variant}: the main deployment, which is no variant. */

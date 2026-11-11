@@ -262,75 +262,11 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   static final int DEPLOYED_REPLICAS = 1;
 
-  /** Which tier this application is deployed into — an environment application's, and only one. */
-  static final String ENVIRONMENT_VARIABLE = "QITS_ENVIRONMENT";
-
-  /** Which application this is, on every plane. */
-  static final String APPLICATION_VARIABLE = "QITS_APPLICATION";
-
-  /**
-   * Which variant this is — {@code private} for the private edge — written beside {@link
-   * #APPLICATION_VARIABLE} for a service deployed from a main file's {@code variants:} (qits-1976),
-   * and for NO other. A variant gets no deployment settings of its own (owner ruling): it derives
-   * its configuration from its declaration, and this is the one fact it cannot derive itself. A
-   * main deployment carries no {@code QITS_VARIANT} at all, so its argv is what it always was.
-   */
-  static final String VARIANT_VARIABLE = "QITS_VARIANT";
-
-  /**
-   * The platform's domain, stated once and handed to every container — the one fact a service needs
-   * in order to derive its own public names.
-   *
-   * <p>It used to be fanned out by the bootstrap into five per-service composed spellings — the
-   * edge's ACME domain, the idp's cookie domain, two browser-host lists, the webauthn origins and
-   * the canonical origin — each of which could go stale on its own. The edge's copy and the idp's
-   * did diverge, and sign-in on the live platform broke. So the domain travels the way {@link
-   * #ENVIRONMENT_VARIABLE} already does: one value, written by the deployer, derived from by
-   * whoever needs a hostname. No service carries a hostname in its configuration.
-   */
-  static final String DOMAIN_VARIABLE = "QITS_DOMAIN";
-
-  /**
-   * What {@code ResourceProvisioning} injects, as the generic contract: {@code
-   * QITS_RESOURCE_<NAME>_URL} and its two siblings. Config states none of them — the registry row
-   * is the single authority for the credential — so the update diff must not be able to remove one.
-   */
-  static final String RESOURCE_PREFIX = "QITS_RESOURCE_";
-
-  /**
-   * This component's own eight, written on an argv before the deployment's own and therefore never
-   * stated by config. They are the exception the update diff needs: measured against the extras
-   * alone, every deployment would remove and immediately re-add them.
-   *
-   * <p>{@link #VARIANT_VARIABLE} is written only for a variant, and is a member for the reason
-   * {@link #DOMAIN_VARIABLE} is: the deployer writes it, config states it nowhere, and a diff
-   * against config alone would {@code --env-rm} it off a live variant on its next deployment.
-   *
-   * <p>{@link #DOMAIN_VARIABLE} is the newest member and belongs here for exactly the reason the
-   * other four do — the deployer writes it and config states it nowhere, so a diff against config
-   * alone would {@code --env-rm} the domain off every live service on its next deployment. That it
-   * is written CONDITIONALLY changes nothing: membership protects a key from removal, it does not
-   * assert that the key is present.
-   *
-   * <p>{@link DeployedIdentity#OTEL_SERVICE_NAME_VARIABLE} and {@link
-   * DeployedIdentity#QUARKUS_OTEL_SERVICE_NAME_VARIABLE} are the newest two members (qits-2054):
-   * the deployer writes both on every argv and config states neither, so without them a diff
-   * against config alone would {@code --env-rm} a variant's telemetry name off on its next
-   * deployment just as surely as it would the domain.
-   *
-   * <p>{@code QITS_RESOURCE_*} is the family's one PREFIX rather than a name, which is why it is
-   * {@link #RESOURCE_PREFIX} beside this set rather than in it.
-   */
-  static final Set<String> DEPLOYER_OWN_VARIABLES =
-      Set.of(
-          ENVIRONMENT_VARIABLE,
-          APPLICATION_VARIABLE,
-          VARIANT_VARIABLE,
-          DOMAIN_VARIABLE,
-          DeployedIdentity.OTEL_VARIABLE,
-          DeployedIdentity.QUARKUS_OTEL_VARIABLE,
-          DeployedIdentity.OTEL_SERVICE_NAME_VARIABLE,
-          DeployedIdentity.QUARKUS_OTEL_SERVICE_NAME_VARIABLE);
+  // The variables this driver writes for the deployer itself — QITS_ENVIRONMENT, QITS_APPLICATION,
+  // QITS_VARIANT, QITS_DOMAIN and the telemetry four — and the QITS_RESOURCE_ prefix are spelled on
+  // the seam (DeploymentDriver.DEPLOYER_OWN_VARIABLES and its neighbours) since qits-2048, because
+  // the spec parser refuses an image_defaults: key of that family and must ask the same set this
+  // driver's update diff exempts. They are inherited here under the names they always had.
 
   /**
    * How far an update's {@code StartedAt} may sit <i>before</i> the moment this process issued it
@@ -2283,11 +2219,22 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * qits.deployments.extras.<application>.*}, read through the seam at the deployment's place. Every
    * argv reads it through here, so the three readings (create, update, the alias
    * check) and the settings preview ask exactly the same question.
+   *
+   * <p><b>Less every variable equal to an image default the spec declares</b> (qits-2048). The
+   * deployment whose {@code image_defaults:} retires a row is built from the settings store before
+   * the retirement runs, so read unfiltered its argv would {@code --env-add} the very variables it
+   * is about to delete — and {@link #envRemovals} removes only what the argv does not state, so the
+   * running service would keep them until some later, unrelated deployment. Dropped here, the one
+   * reading every argv shares, an equal variable is simply no longer stated: a create does not
+   * write it, and an update's diff {@code --env-rm}s it from the live service, whose image supplies
+   * the same value. A row with any other value is an override and is stated as ever. A spec with no
+   * image defaults reads exactly what it always read.
    */
   private ServiceExtras extrasOf(ServiceSpec spec) {
     return ServiceExtras.of(
-        extrasSource.forDeployment(spec.applicationName(), spec.environmentName()),
-        spec.applicationName());
+            extrasSource.forDeployment(spec.applicationName(), spec.environmentName()),
+            spec.applicationName())
+        .withoutEnvEqualTo(spec.imageDefaults());
   }
 
   /**
@@ -2312,7 +2259,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   @Override
   public boolean keptWhenUnstated(String key) {
-    return DEPLOYER_OWN_VARIABLES.contains(key) || key.startsWith(RESOURCE_PREFIX);
+    return DeploymentDriver.keptByTheDeployer(key);
   }
 
   /**

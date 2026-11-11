@@ -3196,16 +3196,26 @@ public class DeployService implements ReleaseAnnouncements {
    * already ships it, so whatever runs next carries the default the row restated. Retired before
    * convergence, a rollback would put back an older image that does not.
    *
-   * <p><b>Nothing running moves.</b> The live service keeps the variable until the next deployment,
-   * whose {@code --env-rm} diff removes it, exactly as after a delete through the settings door —
-   * which records no event and no audit row either, so neither does this: the preview door simply
-   * stops listing the key under what the next deployment states. Not a redeploy, and not a reason
-   * for one.
+   * <p><b>The container is already rid of them</b> (qits-2048). This deployment's own spec carried
+   * the pairs ({@code ServiceSpec#imageDefaults}), and the driver stopped stating every settings
+   * variable equal to one, so the update that just converged {@code --env-rm}ed it from the live
+   * service — whose image supplies the same value. Only the ROWS wait for {@code ACTIVE}: a
+   * deployment that failed or rolled back returned above, swarm restored the previous spec with the
+   * variables in it, and the rows are still there for the next deployment to try again with. Not a
+   * redeploy, and not a reason for one.
+   *
+   * <p><b>What retired is recorded on this deployment's row</b> — {@code retired_settings}, the
+   * keys comma-separated in the file's order, never a value — and served as {@code retiredSettings}
+   * by the deployment listing. That is the only trace: a delete through the settings door records
+   * no event and no audit row, and neither does this. It is written in a short transaction of its
+   * own after the delete has committed, so the rows go whether or not the record lands.
    *
    * <p><b>A failure never fails the deployment</b>, which is live and announced by now: a WARN, and
    * the next deployment of the place, whose spec still declares the pairs, retires them then. No
    * owed-memory like {@link #owedRetirements}, because nothing is half-done — the rows are deleted
-   * in one transaction or not at all, and a row left is merely a value restated once more.
+   * in one transaction or not at all, and a row left is merely a value restated once more. A record
+   * that failed to land after the delete committed is lost; the WARN says so, and the INFO line
+   * before it named the keys.
    */
   private void retireImageDefaults(Plan plan) {
     if (plan.imageDefaults().isEmpty()) {
@@ -3224,6 +3234,17 @@ public class DeployService implements ReleaseAnnouncements {
             plan.environmentName(),
             plan.version(),
             retired);
+        String recorded = String.join(",", retired);
+        DbRetry.runInNewTx(
+            "Recording the settings " + plan.deploymentId() + " retired",
+            () -> {
+              PdDeployment row = deployments.findById(plan.deploymentId());
+              if (row != null) {
+                row.retiredSettings = recorded;
+                deployments.flush(); // statement phase, so a lost connection is retriable
+              }
+            },
+            CUTOVER_BUDGET);
       }
     } catch (RuntimeException e) {
       LOG.warnf(
@@ -3497,7 +3518,11 @@ public class DeployService implements ReleaseAnnouncements {
         plan.shape(),
         null,
         false,
-        plan.exposure());
+        plan.exposure(),
+        null,
+        // No image defaults: the restored predecessor runs ITS last image, which this deployment's
+        // image_defaults: says nothing about, so every one of its rows is stated as it was.
+        Map.of());
   }
 
   /**
@@ -3943,7 +3968,10 @@ public class DeployService implements ReleaseAnnouncements {
         // Which networks it joins — the flat one, the private one, or the two.
         plan.exposure(),
         // Null for the main deployment; the variant's name otherwise, which the container is told.
-        plan.variant());
+        plan.variant(),
+        // The pairs the image ships as its own defaults: a settings row equal to one is no longer
+        // stated, so this deployment's own update --env-rm's what retireImageDefaults deletes.
+        plan.imageDefaults());
   }
 
   /**

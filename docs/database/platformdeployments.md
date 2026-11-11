@@ -35,6 +35,7 @@ erDiagram
     text navigation_entries
     string navigation_label "length 64"
     int navigation_position
+    text retired_settings
     text routes
     string run_id
     long seq

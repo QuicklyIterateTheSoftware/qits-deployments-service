@@ -161,14 +161,18 @@ certificate. Retiring a variant is removing it from `variants:` and retiring its
 (qits-2009), so the settings rows that merely restate them can be retired by the platform rather than
 deleted by hand (an admin must not, by owner ruling of 2026-11-10). It is comma-separated
 `KEY=value` pairs: the key is a setting key (`[A-Z_][A-Z0-9_]*`, the settings door's own check), the
-value is everything after the first `=`, trimmed, and an empty value, a missing `=`, a repeated key or
-a malformed key fails the deployment like any other bad line. A value cannot contain a comma, nor a
-`#` after whitespace (a comment). **The rule is exact**: once a deployment from a spec declaring the
-key is `ACTIVE`, every `pd_setting` row of that application in that tier whose key is declared and
-whose stored value **equals** the declared value (`String.equals`; a secret row by its clear value) is
-deleted, and a row holding any other value — `QITS_EDGE_ACME_MODE=staging` — is an override and stays.
-A `FAILED`, `ROLLED_BACK` or unconverged deployment retires nothing. Nothing is redeployed: the live
-container keeps the variable until the next deployment, whose ordinary `--env-rm` drops it. **Declare a
+value is everything after the first `=`, trimmed, and an empty value, a missing `=`, a repeated key, a
+malformed key or a key the deployer writes itself (`QITS_ENVIRONMENT`, `QITS_APPLICATION`,
+`QITS_VARIANT`, `QITS_DOMAIN`, the four telemetry variables, anything under `QITS_RESOURCE_`) fails
+the deployment like any other bad line. A value cannot contain a comma, nor a `#` after whitespace (a
+comment). **The rule is exact**: a setting whose stored value **equals** the declared value
+(`String.equals`; a secret row by its clear value) is no longer stated by that deployment, so its own
+update `--env-rm`s the variable from the running service, which gets the same value from the image.
+Once the deployment is `ACTIVE`, those `pd_setting` rows are deleted and their keys recorded on the
+deployment (`retiredSettings` in `GET /deployments`). A row holding any other value —
+`QITS_EDGE_ACME_MODE=staging` — is an override: stated as ever, and kept. A `FAILED`, `ROLLED_BACK` or
+unconverged deployment retires nothing — swarm restores the previous spec, variables included — and
+the next deployment tries again. Nothing is redeployed for it. **Declare a
 pair only in a release whose image already ships that default, or a later one** — the retirement is
 what makes every later rollback target in the tier this version or newer, and so an image carrying
 the default. A variant file may declare it too, against its own application's rows.

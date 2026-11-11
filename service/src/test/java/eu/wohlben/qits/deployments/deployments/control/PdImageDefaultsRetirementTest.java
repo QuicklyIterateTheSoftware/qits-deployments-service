@@ -102,6 +102,25 @@ public class PdImageDefaultsRetirementTest {
     assertTrue(line.contains(app) && line.contains(env) && line.contains(VERSION), line);
     assertTrue(line.contains("[QUARKUS_TLS_RELOAD_PERIOD, QITS_EDGE_ACME_ENABLED]"), line);
     assertFalse(line.contains("1m") || line.contains("true,") || line.contains("staging"), line);
+
+    // qits-2048: the deployment's own spec carried the pairs, so its update stopped stating the
+    // equal rows (SwarmDeploymentDriverTest holds the argv) — and the row records what retired, in
+    // the file's order, keys only.
+    DeploymentDriver.ServiceSpec applied = appliedSpecOf(app);
+    assertEquals(
+        List.of(
+            "QUARKUS_TLS_KEY_STORE_PEM_ACME_CERT",
+            "QUARKUS_TLS_RELOAD_PERIOD",
+            "QITS_EDGE_ACME_ENABLED",
+            "QITS_EDGE_ACME_MODE"),
+        List.copyOf(applied.imageDefaults().keySet()));
+    assertEquals("1m", applied.imageDefaults().get("QUARKUS_TLS_RELOAD_PERIOD"));
+    assertEquals(
+        "QUARKUS_TLS_RELOAD_PERIOD,QITS_EDGE_ACME_ENABLED",
+        newestRetiredColumn(app, environmentId));
+    assertEquals(
+        List.of("QUARKUS_TLS_RELOAD_PERIOD", "QITS_EDGE_ACME_ENABLED"),
+        servedRetired(environmentId, app).get(0));
   }
 
   @Test
@@ -146,6 +165,14 @@ public class PdImageDefaultsRetirementTest {
     awaitSettled(environmentId, 4);
     assertEquals(PdDeploymentStatus.ACTIVE, newestStatus(app, environmentId));
     assertEquals(Map.of(), valuesOf(app, env));
+
+    // Only the ACTIVE row records a retirement; the FAILED, ROLLED_BACK and refused ones carry
+    // none.
+    List<List<String>> served = servedRetired(environmentId, app);
+    assertEquals(4, served.size(), served.toString());
+    assertEquals(List.of("QUARKUS_TLS_RELOAD_PERIOD"), served.get(0), "newest first");
+    assertEquals(
+        java.util.Arrays.asList(null, null, null), served.subList(1, 4), served.toString());
   }
 
   @Test
@@ -161,6 +188,9 @@ public class PdImageDefaultsRetirementTest {
 
     assertEquals(PdDeploymentStatus.ACTIVE, newestStatus(app, environmentId));
     assertEquals(Map.of("QUARKUS_TLS_RELOAD_PERIOD", "1m"), valuesOf(app, env));
+    assertEquals(Map.of(), appliedSpecOf(app).imageDefaults());
+    assertEquals(null, newestRetiredColumn(app, environmentId));
+    assertEquals(java.util.Arrays.asList((List<String>) null), servedRetired(environmentId, app));
   }
 
   @Test
@@ -220,6 +250,31 @@ public class PdImageDefaultsRetirementTest {
   private Map<String, String> valuesOf(String app, String env) {
     return settings.rowsOf(app, env).stream()
         .collect(Collectors.toMap(row -> row.settingKey, row -> row.value));
+  }
+
+  /** The {@code retired_settings} column of the place's newest row, as stored. */
+  private String newestRetiredColumn(String name, String environmentId) {
+    return QuarkusTransaction.requiringNew()
+        .call(() -> deployments.newestForPlace(name, environmentId).orElseThrow().retiredSettings);
+  }
+
+  /**
+   * Each of the application's rows' {@code retiredSettings}, as {@code GET /deployments} serves.
+   */
+  @SuppressWarnings("unchecked")
+  private List<List<String>> servedRetired(String environmentId, String name) {
+    return deploymentsOf(environmentId).stream()
+        .filter(row -> name.equals(row.get("applicationName")))
+        .map(row -> (List<String>) row.get("retiredSettings"))
+        .toList();
+  }
+
+  /** The last spec the fake driver applied for {@code name}. */
+  private DeploymentDriver.ServiceSpec appliedSpecOf(String name) {
+    List<DeploymentDriver.ServiceSpec> applied =
+        fake.applied().stream().filter(spec -> name.equals(spec.applicationName())).toList();
+    assertFalse(applied.isEmpty(), "nothing was applied for " + name);
+    return applied.get(applied.size() - 1);
   }
 
   private PdDeploymentStatus newestStatus(String name, String environmentId) {

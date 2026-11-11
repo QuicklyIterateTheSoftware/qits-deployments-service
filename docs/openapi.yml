@@ -204,6 +204,10 @@ components:
           $ref: "#/components/schemas/Instant"
         finishedAt:
           $ref: "#/components/schemas/Instant"
+        retiredSettings:
+          type: array
+          items:
+            type: string
     PdDeploymentRequestDto:
       type: object
       properties:

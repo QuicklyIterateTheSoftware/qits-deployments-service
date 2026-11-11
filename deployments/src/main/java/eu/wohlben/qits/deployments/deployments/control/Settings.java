@@ -228,8 +228,12 @@ public class Settings {
    *
    * <p>Called by {@code DeployService} once a deployment whose spec declared {@code
    * image_defaults:} is {@code ACTIVE}, and never otherwise: a converged deployment is what makes
-   * every later rollback target an image that ships the same defaults. Nothing running changes —
-   * the next deployment's {@code --env-rm} removes the variable, as it does after any delete.
+   * every later rollback target an image that ships the same defaults. By then the container no
+   * longer carries the variable: that same deployment stopped stating every row this deletes (the
+   * driver drops an extras variable equal to a declared default, {@code
+   * ServiceExtras#withoutEnvEqualTo}), so its own update {@code --env-rm}ed it (qits-2048). A
+   * deployment that failed or rolled back never gets here — swarm restored the previous spec, the
+   * variables with it — so the rows stay and the next deployment tries again.
    *
    * <p><b>One transaction, each row locked before it is compared</b>, so a door write that lands
    * between the comparison and the delete waits and is then compared, rather than deleted unread.

@@ -1521,6 +1521,32 @@ class DeploymentSpecParserTest {
   }
 
   @Test
+  void imageDefaultsRefuseAKeyTheDeployerWritesItself() {
+    // qits-2048: an update never --env-rm's the deployer's own family, so a default declared for
+    // one would delete a row while the container went on carrying the variable.
+    for (String key :
+        List.of(
+            "QITS_ENVIRONMENT",
+            "QITS_APPLICATION",
+            "QITS_VARIANT",
+            "QITS_DOMAIN",
+            "OTEL_RESOURCE_ATTRIBUTES",
+            "QUARKUS_OTEL_RESOURCE_ATTRIBUTES",
+            "OTEL_SERVICE_NAME",
+            "QUARKUS_OTEL_SERVICE_NAME",
+            "QITS_RESOURCE_DB_URL")) {
+      String message = messageOf("image_defaults: A=x, " + key + "=y\n");
+      assertTrue(message.contains("`" + key + "`"), message);
+      assertTrue(message.contains("the deployer writes itself"), message);
+      assertTrue(message.contains(key + "=y"), "names the entry: " + message);
+    }
+    // A near neighbour of the family is an ordinary setting key.
+    assertEquals(
+        Map.of("QITS_RESOURCES", "x", "QITS_DOMAIN_ALIAS", "y"),
+        parse("image_defaults: QITS_RESOURCES=x, QITS_DOMAIN_ALIAS=y\n").imageDefaults());
+  }
+
+  @Test
   void aVariantFileTakesImageDefaultsToo() {
     DeploymentSpec spec =
         DeploymentSpecParser.parse(

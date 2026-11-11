@@ -1,0 +1,17 @@
+-- WHICH SETTINGS A DEPLOYMENT'S `image_defaults:` RETIRED (qits-2048).
+--
+-- A repository's deployments.yml may name `image_defaults:` (qits-2009): KEY=value pairs its image
+-- already ships. Once a deployment declaring them is ACTIVE, `DeployService.retireImageDefaults`
+-- deletes every `pd_setting` row of the place whose value equals the declared default exactly — and
+-- that same deployment has already stopped stating those variables, so its own update `--env-rm`ed
+-- them from the live service. The delete records no event and no audit row (a delete through the
+-- settings door records none either), so without this column nothing said where a row went.
+--
+-- KEYS ONLY, COMMA-SEPARATED, IN THE FILE'S ORDER, NEVER A VALUE: a secret row may be among them.
+-- The read door serves it as a list (`retiredSettings`).
+--
+-- NULLABLE, NO DEFAULT AND NO BACKFILL. Null is every row that retired nothing — no
+-- `image_defaults:`, no equal row, or a deployment that did not converge — and every row written
+-- before this column existed, which is right: what those retired was never recorded and cannot be
+-- reconstructed from anything here.
+alter table pd_deployment add column retired_settings text;
