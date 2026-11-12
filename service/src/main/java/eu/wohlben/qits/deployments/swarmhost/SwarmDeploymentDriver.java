@@ -14,6 +14,8 @@ import eu.wohlben.qits.deployments.environments.control.PdIdentifiers;
 import eu.wohlben.qits.deployments.environments.control.PdNetworks;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.net.InetAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -138,18 +140,18 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   private static final Duration CONVERGE_POLL = Duration.ofSeconds(1);
 
   /**
+   * How often a removed service's task containers are asked after (qits-2118). How LONG is the
+   * spec's own: its {@code stop_grace_period} plus {@link DeploymentDriver#RECREATE_DRAIN_MARGIN} —
+   * see {@link #drainDeadline}. The fixed ten one-second polls this replaced were shorter than the
+   * thirty-second grace a postgres is given, so the give-up arm was the ordinary path for exactly
+   * the service it existed to protect.
+   */
+  private static final Duration TWIN_DRAIN_WAIT = Duration.ofSeconds(1);
+
+  /**
    * A network is removable roughly a second after the services on it go, not immediately —
    * measured. So a teardown retries rather than reporting a failure that is only a moment early.
    */
-  /**
-   * How long a reaped seed twin's task may take to stop before the successor is created anyway.
-   * Ten seconds covers a postgres shutdown; the give-up arm exists so a wedged task cannot hold
-   * every deployment hostage, and it says what it risks.
-   */
-  private static final int TWIN_DRAIN_ATTEMPTS = 10;
-
-  private static final Duration TWIN_DRAIN_WAIT = Duration.ofSeconds(1);
-
   private static final int NETWORK_REMOVE_ATTEMPTS = 5;
 
   private static final Duration NETWORK_REMOVE_WAIT = Duration.ofSeconds(1);
@@ -244,6 +246,50 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       "{{range .Spec.TaskTemplate.Networks}}{{println .Target}}{{end}}";
 
   /**
+   * The resolvers a live service's spec hands its tasks (qits-2117), as JSON — {@code
+   * {"Nameservers":["10.231.0.5","1.1.1.1"]}}, or {@code {}}/{@code null} for a service created with
+   * no {@code --dns}. Read for the order, which is the whole point: the private edge's VIP has to be
+   * FIRST. See {@link #nameservers}.
+   */
+  static final String SPEC_DNS_FORMAT = "{{json .Spec.TaskTemplate.ContainerSpec.DNSConfig}}";
+
+  /**
+   * A service's virtual IPs, one {@code <NetworkID> <Addr>} line each — the runner's {@code
+   * PrivateEdge.VIPS_FORMAT}, read by hand for the same reason: the native image is spared a JSON
+   * binding for three fields.
+   */
+  static final String VIPS_FORMAT =
+      "{{range .Endpoint.VirtualIPs}}{{.NetworkID}} {{.Addr}}{{\"\\n\"}}{{end}}";
+
+  /** The comment line docker writes into a container's resolv.conf naming its upstream servers. */
+  static final String EXT_SERVERS = "# ExtServers:";
+
+  /**
+   * The public edge's application name. With {@link #privateEdgeApplication} it is the pair that
+   * never gets the private edge as resolver: the private edge would resolve through itself, and
+   * the public one resolves the world for the world.
+   */
+  static final String PUBLIC_EDGE_APPLICATION = "qits-edge";
+
+  /** A docker object id as {@code network inspect} and {@code service ls -q} print one. */
+  private static final Pattern DOCKER_ID = Pattern.compile("[0-9a-z]{1,128}");
+
+  /** The {@code host(x)} spelling docker uses for a server reached from the host's namespace. */
+  private static final Pattern HOST_FORM = Pattern.compile("host\\((.*)\\)");
+
+  /** A dotted-quad, before {@link InetAddress#ofLiteral} decides whether it is one. */
+  private static final Pattern IPV4_LITERAL = Pattern.compile("[0-9]{1,3}(\\.[0-9]{1,3}){3}");
+
+  /** Hex, colons and an optional embedded dotted-quad — never a zone or a name. */
+  private static final Pattern IPV6_LITERAL = Pattern.compile("[0-9A-Fa-f:.]{2,45}");
+
+  /** The quoted strings of the {@code Nameservers} array in {@link #SPEC_DNS_FORMAT}'s output. */
+  private static final Pattern NAMESERVERS =
+      Pattern.compile("\"Nameservers\"\\s*:\\s*\\[([^\\]]*)\\]");
+
+  private static final Pattern QUOTED = Pattern.compile("\"([^\"]*)\"");
+
+  /**
    * The DESIRED task count the service spec holds. Guarded by {@code if}, because a global-mode
    * service has no {@code Replicated} block at all and the template would print {@code <no value>}
    * — an empty answer is "this service has no replica count", which {@link #parseReplicas} reads as
@@ -310,6 +356,32 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * twice.
    */
   private final Map<String, String> issuedImages = new ConcurrentHashMap<>();
+
+  /**
+   * The last spec this process applied, per service, for every {@code private} or {@code both}
+   * service that takes the private edge as resolver (qits-2117) — what {@link
+   * #reapplyBehindPrivateEdge} re-applies when the edge's VIP moves. Memory, on purpose and with the
+   * {@code specRetries} trade: a deployer restart forgets it, and a service it forgot is put right
+   * by its own next deployment, whose resolver drift recreates it. Bounded by the number of
+   * services, since a name is overwritten, never added twice.
+   */
+  private final Map<String, ServiceSpec> resolverSpecs = new ConcurrentHashMap<>();
+
+  /**
+   * The private edge's VIP as it was before this process applied the edge, per edge service name —
+   * written by {@link #apply}, read and cleared by {@link #awaitConverged}. Empty string for "there
+   * was none". It is how a converged edge deployment tells a recreate (a new VIP) from an update.
+   */
+  private final Map<String, String> edgeVipsBefore = new ConcurrentHashMap<>();
+
+  /** The wait between two polls of a stopping task. A seam so the suite's clock moves instead. */
+  @FunctionalInterface
+  interface Pause {
+    void pause(Duration duration) throws InterruptedException;
+  }
+
+  /** {@link Thread#sleep} in production; the suite advances its own {@link #clock} instead. */
+  Pause pause = duration -> Thread.sleep(duration.toMillis());
 
   /**
    * The clock the issue instant is read from. A field so the suite can pin it — a test that
@@ -414,6 +486,24 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   @ConfigProperty(name = "qits.deployments.swarm.private-network.subnet")
   String privateNetworkSubnet;
+
+  /**
+   * The private edge's application name (qits-2117) — the swarm service labelled {@link
+   * DeploymentDriver#APP_NAME_LABEL}{@code =<this>} whose VIP on {@link #privateNetwork} a {@code
+   * private} or {@code both} service is handed as its first resolver. {@code qits-edge-private}
+   * shipped, the name qits-containers' {@code PrivateEdgeResolver} and the runner's {@code
+   * PrivateEdge} look for too.
+   */
+  @ConfigProperty(name = "qits.deployments.swarm.private-edge.application")
+  String privateEdgeApplication;
+
+  /**
+   * Where this process's own resolvers are read from (qits-2117): the upstreams that follow the
+   * private edge's VIP in a private service's {@code --dns} list. {@code /etc/resolv.conf} shipped;
+   * another path is for a suite.
+   */
+  @ConfigProperty(name = "qits.deployments.swarm.private-edge.resolv-conf")
+  String resolvConf;
 
   /**
    * The platform's one domain, handed to every container as {@link #DOMAIN_VARIABLE}. See that
@@ -554,11 +644,38 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
         exists && !self && missingVolume == null && missingAlias == null
             ? networkDrift(target, networks)
             : null;
-    boolean recreate = missingVolume != null || missingAlias != null || drift != null;
+    // The private edge as resolver (qits-2117): asked once, for a private or both service that is
+    // not an edge, and used three ways — the drift below, the create's --dns, and a self-update's
+    // --dns-rm/--dns-add. Every other service spends no CLI call on it.
+    Resolvers resolvers = privateEdgeResolvers(spec);
+    // ...and the resolver list itself, last of the four, under the same rules: never for a
+    // self-update, and only when the wanted list could be established at all — a missing edge must
+    // not recreate every private service on the platform into a create with no --dns.
+    String resolverDrift =
+        exists
+                && !self
+                && missingVolume == null
+                && missingAlias == null
+                && drift == null
+                && resolvers.found()
+            ? resolverDrift(target, resolvers.servers())
+            : null;
+    boolean recreate =
+        missingVolume != null || missingAlias != null || drift != null || resolverDrift != null;
     boolean updating = exists && !recreate;
+    if (isPrivateEdge(spec) && !self) {
+      // The VIP before, so the verdict can tell a recreate (a new VIP) from an update (the same).
+      edgeVipsBefore.put(target, Optional.ofNullable(privateEdgeVip().vip()).orElse(""));
+    }
     List<String> argv;
     try {
-      argv = updating ? buildUpdateArgv(spec, target) : buildCreateArgv(spec, target, networks);
+      if (!updating) {
+        argv = buildCreateArgv(spec, target, networks, resolvers);
+      } else if (self) {
+        argv = buildSelfUpdateArgv(spec, target, networks, resolvers);
+      } else {
+        argv = buildUpdateArgv(spec, target);
+      }
     } catch (ServiceExtras.Refused e) {
       // Deployment config said something swarm cannot express. Nothing was applied — the argv is
       // built before the command runs — so this deployment changed nothing.
@@ -577,6 +694,12 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
                 + " removed and created again on the networks its exposure names — its writable"
                 + " layer goes with it. It recreates once: afterwards the networks match.",
             target, drift);
+      } else if (resolverDrift != null) {
+        // The CLI's --dns-add does not promise to keep the order, and the order is the point — the
+        // private edge's VIP has to be asked first — so drift recreates rather than updating.
+        LOG.warnf(
+            "Recreating service %s: its resolvers are %s and should be %s",
+            target, resolverDrift, resolvers.servers());
       } else if (missingVolume != null) {
         LOG.warnf(
             "Recreating service %s: it declares the volume %s and the live service does not have it."
@@ -592,7 +715,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
                 + " deployment is an ordinary update.",
             target, missingAlias);
       }
-      removeForRecreate(target);
+      String stillStopping = removeForRecreate(spec, target);
+      if (stillStopping != null) {
+        // The service is gone and its task is not: creating now would be a second writer on the
+        // volume. It stays absent, and the next deployment takes the create path.
+        LOG.warnf("Refusing to deploy %s: %s", name, stillStopping);
+        return new ApplyResult(ApplyOutcome.REFUSED, stillStopping);
+      }
     }
     if (!self) {
       // The seed twin dies at cutover, and it dies FIRST. It holds the wire alias (DNS would
@@ -601,7 +730,11 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       // task then sits Pending on "port already in use" forever). Removed after the argv is built,
       // so a REFUSED deployment changes nothing; if the create still fails, the task the twin ran
       // is what the last boot's stack file restores.
-      reapSeedTwin(name);
+      String twinStillStopping = reapSeedTwin(spec, name);
+      if (twinStillStopping != null) {
+        LOG.warnf("Refusing to deploy %s: %s", name, twinStillStopping);
+        return new ApplyResult(ApplyOutcome.REFUSED, twinStillStopping);
+      }
     }
     PdProcess.Result result = run(argv, APPLY_TIMEOUT);
     if (result.exitCode() != 0 || result.timedOut()) {
@@ -613,6 +746,12 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       // WHICH image the verdict is about — the failure detail picks this image's tasks out of the
       // predecessor's. Never for a self-update: nothing here waits for its verdict.
       issuedImages.put(target, spec.imageRef());
+      // What the private edge's next move re-applies — see `reapplyBehindPrivateEdge`.
+      if (wantsPrivateEdgeResolvers(spec)) {
+        resolverSpecs.put(target, spec);
+      } else {
+        resolverSpecs.remove(target);
+      }
     }
     if (updating && !self) {
       // WHICH update the verdict is about, recorded the only place that knows. See
@@ -635,6 +774,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
           "Self-update issued on service %s: the swarm manager finishes it, and the row stays"
               + " STARTING until the instance that survives records it",
           target);
+      if (updating && resolvers.found()) {
+        checkSelfResolverOrder(target, resolvers);
+      }
       return new ApplyResult(
           ApplyOutcome.HANDED_OFF, "the swarm manager arbitrates this service's own succession");
     }
@@ -701,6 +843,20 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   @Override
   public Convergence awaitConverged(String name, Duration timeout) {
+    Convergence verdict = awaitVerdict(name, timeout);
+    // The private edge's own deployment, now that it is serving: if its VIP moved, every private
+    // and both service this process deployed still asks the old one first (qits-2117).
+    String vipBefore = edgeVipsBefore.remove(name);
+    if (vipBefore != null && verdict.outcome() == ConvergenceOutcome.CONVERGED) {
+      String vipAfter = privateEdgeVip().vip();
+      if (vipAfter != null && !vipAfter.equals(vipBefore)) {
+        reapplyBehindPrivateEdge(vipAfter);
+      }
+    }
+    return verdict;
+  }
+
+  private Convergence awaitVerdict(String name, Duration timeout) {
     long deadline = System.nanoTime() + timeout.toNanos();
     // Null when nothing issued an update for this service — the first deployment of an
     // application, or an instance that did not perform the update it is asking about.
@@ -1259,41 +1415,81 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * volume it is two writers on one cluster. Measured twice: the un-reaped twin corrupted the WAL
    * over hours, and the first reap-then-create did the same in its seconds of overlap — both
    * boots ended in "could not locate a valid checkpoint record" at the next cold start.
+   *
+   * <p><b>And when the wait runs out, it is {@link #removeForRecreate}'s rule</b> (qits-2118): a
+   * spec holding a {@code private:} volume is refused rather than created beside the twin's task —
+   * the sentence is returned, and the caller turns it into the REFUSED deployment. Without one the
+   * successor is created anyway, with the WARN. Null is "go ahead".
    */
-  private void reapSeedTwin(String name) {
+  private String reapSeedTwin(ServiceSpec spec, String name) {
     String twin = SEED_STACK_PREFIX + name;
     if (!serviceExists(twin)) {
-      return;
+      return null;
     }
     PdProcess.Result removed = run(List.of(runtime, "service", "rm", twin), CLEANUP_TIMEOUT);
     if (removed.exitCode() != 0) {
       LOG.warnf(
           "Could not remove the seed service %s — the successor may wait on its ports: %s",
           twin, removed.output());
-      return;
+      return null;
     }
-    if (awaitTasksGone(twin)) {
+    Duration deadline = drainDeadline(spec);
+    if (awaitTasksGone(twin, deadline)) {
       LOG.infof("Removed the seed service %s: %s takes the alias and the ports", twin, name);
-      return;
+      return null;
+    }
+    String volume = privateVolume(spec);
+    if (volume != null) {
+      return stillStopping(twin, deadline, volume);
     }
     LOG.warnf(
-        "The seed service %s is removed but its task is still stopping — the successor may start"
-            + " beside it",
-        twin);
+        "The seed service %s is removed but its task is still stopping after %ss — the successor"
+            + " may start beside it",
+        twin, deadline.toSeconds());
+    return null;
   }
 
   /**
-   * Whether the removed service's task containers are gone yet, waited on for at most {@link
-   * #TWIN_DRAIN_ATTEMPTS} × {@link #TWIN_DRAIN_WAIT}.
+   * How long a removed service's task is waited for: its {@code stop_grace_period} — the moment
+   * swarm SIGKILLs it — plus {@link DeploymentDriver#RECREATE_DRAIN_MARGIN} for the daemon to take
+   * the container away (qits-2118). {@code DeployService.convergenceTimeout} counts the same sum.
+   */
+  static Duration drainDeadline(ServiceSpec spec) {
+    return spec.stopGracePeriod().plus(DeploymentDriver.RECREATE_DRAIN_MARGIN);
+  }
+
+  /** The first {@code private:} volume the spec mounts, or null when it holds none. */
+  private static String privateVolume(ServiceSpec spec) {
+    return spec.volumes().stream()
+        .filter(volume -> !volume.shared())
+        .map(VolumeMount::source)
+        .findFirst()
+        .orElse(null);
+  }
+
+  /** The refusal sentence, one spelling for both callers. */
+  private static String stillStopping(String service, Duration deadline, String volume) {
+    return service
+        + " is still stopping after "
+        + deadline.toSeconds()
+        + "s; not creating beside it on "
+        + volume;
+  }
+
+  /**
+   * Whether the removed service's task containers are gone yet, waited on for at most {@code
+   * deadline} — polled every {@link #TWIN_DRAIN_WAIT}, the time read off {@link #clock}.
    *
    * <p>{@code service rm} returns while the task is still shutting down, and the wait is about
    * VOLUMES rather than ports — see {@link #reapSeedTwin}, which measured it twice on postgres.
    * Both callers remove a service whose successor is created on the same storage, so both owe the
-   * same wait; the give-up arm exists so a wedged task cannot hold every deployment hostage, and
-   * each caller says what it risks.
+   * same wait. The give-up arm exists so a wedged task cannot hold every deployment hostage, and
+   * what each caller does with it depends on the volume: a private one is a refusal, never a
+   * second writer (qits-2118).
    */
-  private boolean awaitTasksGone(String service) {
-    for (int attempt = 0; attempt < TWIN_DRAIN_ATTEMPTS; attempt++) {
+  private boolean awaitTasksGone(String service, Duration deadline) {
+    Instant started = clock.instant();
+    while (true) {
       PdProcess.Result tasks =
           run(
               List.of(
@@ -1306,14 +1502,16 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       if (tasks.exitCode() == 0 && safe(tasks.output()).strip().isEmpty()) {
         return true;
       }
+      if (Duration.between(started, clock.instant()).compareTo(deadline) >= 0) {
+        return false;
+      }
       try {
-        Thread.sleep(TWIN_DRAIN_WAIT.toMillis());
+        pause.pause(TWIN_DRAIN_WAIT);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
         return false;
       }
     }
-    return false;
   }
 
   /**
@@ -1634,6 +1832,15 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * registry can resolve them to a digest.
    */
   List<String> buildCreateArgv(ServiceSpec spec, String name, List<String> networks) {
+    return buildCreateArgv(spec, name, networks, privateEdgeResolvers(spec));
+  }
+
+  /**
+   * The create, with the private edge's resolvers already looked up — {@link #apply} asks once and
+   * hands the same answer to the drift check and here. See {@link #dnsFlags}.
+   */
+  List<String> buildCreateArgv(
+      ServiceSpec spec, String name, List<String> networks, Resolvers resolvers) {
     // Read once, off ONE snapshot: the same refusal would otherwise be reached twice, the aliases
     // belong to the membership while everything else belongs to the flags below it, and one
     // snapshot is what keeps every reading of one deployment in agreement.
@@ -1657,6 +1864,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     registryAuthFlag(argv);
     // The FULL membership, here and nowhere else: every later --network-add recreates the task.
     networkFlags(argv, networks, extras.aliases());
+    // ...and who answers its lookups, for a service on the private overlay (qits-2117).
+    dnsFlags(argv, spec, name, resolvers);
     // A deployed application outlives the daemon's restart.
     argv.add("--restart-condition");
     argv.add("any");
@@ -1907,6 +2116,461 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     }
   }
 
+
+  // --- the private edge as resolver (qits-2117) ---------------------------------------------------
+
+  /**
+   * The resolvers a service on the private overlay is handed, in order — the private edge's VIP,
+   * then this process's own upstreams — or none, with {@code why} saying which half was missing.
+   * {@link #NOT_ASKED} is the answer for every service the rule does not cover (public, or an edge).
+   */
+  record Resolvers(List<String> servers, String why) {
+
+    Resolvers {
+      servers = servers == null ? List.of() : List.copyOf(servers);
+    }
+
+    boolean found() {
+      return !servers.isEmpty();
+    }
+
+    /** The VIP, which is the first server — or null when none were found. */
+    String vip() {
+      return servers.isEmpty() ? null : servers.get(0);
+    }
+  }
+
+  /** A service the rule does not cover: no lookup was made, so there is nothing to say. */
+  static final Resolvers NOT_ASKED = new Resolvers(List.of(), null);
+
+  /** The private edge's VIP on the overlay, or null with the reason. */
+  record EdgeVip(String vip, String why) {}
+
+  /**
+   * Whether this spec takes the private edge as resolver: {@code private} or {@code both}, and not
+   * an edge. The private edge would resolve through itself, and the public edge resolves the world
+   * for the world — neither gets one.
+   */
+  boolean wantsPrivateEdgeResolvers(ServiceSpec spec) {
+    return spec.exposure() != Exposure.PUBLIC && !isEdge(spec);
+  }
+
+  private boolean isEdge(ServiceSpec spec) {
+    return PUBLIC_EDGE_APPLICATION.equals(spec.applicationName()) || isPrivateEdge(spec);
+  }
+
+  private boolean isPrivateEdge(ServiceSpec spec) {
+    return privateEdgeApplication != null
+        && !privateEdgeApplication.isBlank()
+        && privateEdgeApplication.strip().equals(spec.applicationName());
+  }
+
+  /**
+   * The resolvers for this spec — {@link #NOT_ASKED} when the rule does not cover it, else the
+   * lookup. <b>All or nothing</b>, the runner's {@code PrivateEdge} rule: only the VIP <em>and</em>
+   * at least one upstream make a list. {@code --dns} REPLACES the upstream rather than prepending to
+   * it, so a VIP-only list would have docker's embedded resolver answer every public name with the
+   * edge's REFUSED; and upstreams alone would put back exactly the resolution that answers a
+   * private app's name with the public wildcard, which is why this exists. Never throws.
+   */
+  Resolvers privateEdgeResolvers(ServiceSpec spec) {
+    if (!wantsPrivateEdgeResolvers(spec)) {
+      return NOT_ASKED;
+    }
+    try {
+      EdgeVip edge = privateEdgeVip();
+      if (edge.vip() == null) {
+        return new Resolvers(List.of(), edge.why());
+      }
+      List<String> upstreams = upstreamsBesides(edge.vip());
+      if (upstreams.isEmpty()) {
+        return new Resolvers(
+            List.of(),
+            resolvConf
+                + " names no upstream resolver, and a resolver list holding only the private"
+                + " edge's VIP would answer every public name REFUSED");
+      }
+      List<String> servers = new ArrayList<>();
+      servers.add(edge.vip());
+      servers.addAll(upstreams);
+      return new Resolvers(servers, null);
+    } catch (RuntimeException e) {
+      return new Resolvers(List.of(), String.valueOf(e.getMessage()));
+    }
+  }
+
+  /**
+   * Where the private edge is on the overlay — qits-containers' {@code PrivateEdgeResolver} and the
+   * runner's {@code PrivateEdge}, step for step:
+   *
+   * <ol>
+   *   <li>{@code docker network inspect --format {{.Id}} <private-network>} — the overlay's id;
+   *   <li>{@code docker service ls -q --filter label=<APP_NAME_LABEL>=<private-edge application>}
+   *       — which must answer exactly one service;
+   *   <li>{@code docker service inspect} over {@code .Endpoint.VirtualIPs} — the entry whose {@code
+   *       NetworkID} is the overlay's, its {@code /prefix} stripped.
+   * </ol>
+   *
+   * Read-only; a step that fails says why. Never throws.
+   */
+  EdgeVip privateEdgeVip() {
+    if (privateNetwork == null || privateNetwork.isBlank()) {
+      return new EdgeVip(null, "qits.deployments.swarm.private-network names no network");
+    }
+    if (privateEdgeApplication == null || privateEdgeApplication.isBlank()) {
+      return new EdgeVip(null, "qits.deployments.swarm.private-edge.application names nothing");
+    }
+    String network = privateNetwork.strip();
+    String application = privateEdgeApplication.strip();
+    PdProcess.Result inspected =
+        run(
+            List.of(runtime, "network", "inspect", "--format", "{{.Id}}", network),
+            INSPECT_TIMEOUT);
+    List<String> idLines = inspected.exitCode() == 0 ? lines(inspected.output()) : List.of();
+    String networkId = idLines.isEmpty() ? "" : idLines.get(idLines.size() - 1);
+    if (!DOCKER_ID.matcher(networkId).matches()) {
+      return new EdgeVip(
+          null, "the network " + network + " has no id: " + safe(inspected.output()).strip());
+    }
+    PdProcess.Result listed =
+        run(
+            List.of(
+                runtime,
+                "service",
+                "ls",
+                "-q",
+                "--filter",
+                "label=" + APP_NAME_LABEL + "=" + application),
+            INSPECT_TIMEOUT);
+    if (listed.exitCode() != 0) {
+      return new EdgeVip(null, "docker service ls answered " + safe(listed.output()).strip());
+    }
+    List<String> services = lines(listed.output());
+    if (services.size() != 1 || !DOCKER_ID.matcher(services.get(0)).matches()) {
+      return new EdgeVip(
+          null,
+          "expected exactly one swarm service labelled "
+              + APP_NAME_LABEL
+              + "="
+              + application
+              + ", found "
+              + services.size());
+    }
+    String service = services.get(0);
+    PdProcess.Result vips =
+        run(
+            List.of(runtime, "service", "inspect", "--format", VIPS_FORMAT, service),
+            INSPECT_TIMEOUT);
+    if (vips.exitCode() != 0) {
+      return new EdgeVip(
+          null, "docker service inspect " + service + " answered " + safe(vips.output()).strip());
+    }
+    Optional<String> vip = vipOn(vips.output(), networkId);
+    if (vip.isEmpty()) {
+      return new EdgeVip(
+          null,
+          "the service " + service + " has no single virtual IP on " + network + " (" + networkId
+              + ")");
+    }
+    return new EdgeVip(vip.get(), null);
+  }
+
+  /**
+   * The {@code Addr} of the one line whose {@code NetworkID} is the overlay's, without its prefix;
+   * empty when no line or more than one names it, or the address is not a literal.
+   */
+  static Optional<String> vipOn(String vipLines, String networkId) {
+    List<String> found = new ArrayList<>();
+    for (String line : lines(vipLines)) {
+      String[] fields = line.split("\\s+");
+      if (fields.length == 2 && fields[0].equals(networkId)) {
+        int slash = fields[1].indexOf('/');
+        found.add(slash < 0 ? fields[1] : fields[1].substring(0, slash));
+      }
+    }
+    return found.size() == 1 ? dnsServer(found.get(0)) : Optional.empty();
+  }
+
+  /** This process's upstreams, read from {@link #resolvConf}, without {@code vip}. */
+  private List<String> upstreamsBesides(String vip) {
+    String text;
+    try {
+      text = Files.readString(Path.of(resolvConf), StandardCharsets.UTF_8);
+    } catch (Exception e) {
+      LOG.debugf("Could not read %s: %s", resolvConf, e.toString());
+      return List.of();
+    }
+    return upstreams(text).stream().filter(server -> !server.equals(vip)).toList();
+  }
+
+  /**
+   * The servers of the first {@code # ExtServers: [a b host(c)]} line — {@code host(x)} is {@code
+   * x} — when docker wrote one, else every {@code nameserver} line's, in order. Loopback and
+   * anything that is not an address literal are dropped, repeats kept once. On a user-defined
+   * network the {@code nameserver} is docker's embedded {@code 127.0.0.11} and the comment holds the
+   * real upstreams; this process's loopback is not a task's. The runner's {@code
+   * PrivateEdge.upstreams}, byte for byte in what it answers.
+   */
+  static List<String> upstreams(String resolvConfText) {
+    List<String> lines = resolvConfText.lines().map(String::strip).toList();
+    List<String> candidates = new ArrayList<>();
+    Optional<String> ext = lines.stream().filter(l -> l.startsWith(EXT_SERVERS)).findFirst();
+    if (ext.isPresent()) {
+      String rest = ext.get().substring(EXT_SERVERS.length()).strip();
+      if (rest.startsWith("[")) {
+        rest = rest.substring(1);
+      }
+      int close = rest.lastIndexOf(']');
+      if (close >= 0) {
+        rest = rest.substring(0, close);
+      }
+      for (String token : rest.strip().split("\\s+")) {
+        Matcher host = HOST_FORM.matcher(token);
+        candidates.add(host.matches() ? host.group(1) : token);
+      }
+    } else {
+      for (String line : lines) {
+        String[] fields = line.split("\\s+");
+        if (fields.length >= 2 && fields[0].equals("nameserver")) {
+          candidates.add(fields[1]);
+        }
+      }
+    }
+    List<String> servers = new ArrayList<>();
+    for (String candidate : candidates) {
+      dnsServer(candidate)
+          .filter(server -> !loopback(server) && !servers.contains(server))
+          .ifPresent(servers::add);
+    }
+    return List.copyOf(servers);
+  }
+
+  /** The candidate when it is an IPv4 or IPv6 literal, else empty — never a name to resolve. */
+  private static Optional<String> dnsServer(String candidate) {
+    if (candidate == null
+        || !(IPV4_LITERAL.matcher(candidate).matches()
+            || (candidate.contains(":") && IPV6_LITERAL.matcher(candidate).matches()))) {
+      return Optional.empty();
+    }
+    try {
+      // A literal never reaches a resolver: ofLiteral parses and nothing else.
+      InetAddress.ofLiteral(candidate);
+      return Optional.of(candidate);
+    } catch (IllegalArgumentException e) {
+      return Optional.empty();
+    }
+  }
+
+  /** 127.0.0.0/8 or ::1, of a value {@link #dnsServer} passed. */
+  private static boolean loopback(String literal) {
+    try {
+      return InetAddress.ofLiteral(literal).isLoopbackAddress();
+    } catch (IllegalArgumentException e) {
+      return true;
+    }
+  }
+
+  /**
+   * The {@code Nameservers} of {@link #SPEC_DNS_FORMAT}'s output, in order — empty for {@code {}},
+   * {@code null} or a config with none, which is every service created before qits-2117.
+   */
+  static List<String> nameservers(String dnsConfigJson) {
+    Matcher array = NAMESERVERS.matcher(safe(dnsConfigJson));
+    if (!array.find()) {
+      return List.of();
+    }
+    List<String> servers = new ArrayList<>();
+    Matcher quoted = QUOTED.matcher(array.group(1));
+    while (quoted.find()) {
+      servers.add(quoted.group(1));
+    }
+    return List.copyOf(servers);
+  }
+
+  /** The live service's resolvers, in order — or empty when the inspect cannot answer. */
+  private Optional<List<String>> liveNameservers(String service) {
+    PdProcess.Result inspected =
+        run(
+            List.of(runtime, "service", "inspect", "--format", SPEC_DNS_FORMAT, service),
+            INSPECT_TIMEOUT);
+    if (inspected.exitCode() != 0) {
+      return Optional.empty();
+    }
+    return Optional.of(nameservers(inspected.output()));
+  }
+
+  /**
+   * The live resolver list when it is not {@code wanted} — or null. Fail-safe like {@link
+   * #networkDrift}: an inspect that cannot answer recreates nothing, and the caller asks only once
+   * the wanted list is established, so a private edge that is missing for a moment never turns
+   * into every private service on the platform recreated without a resolver.
+   */
+  private String resolverDrift(String service, List<String> wanted) {
+    Optional<List<String>> live = liveNameservers(service);
+    if (live.isEmpty()) {
+      LOG.warnf(
+          "Could not read the resolvers of %s, so nothing is recreated over them — the next"
+              + " deployment asks again",
+          service);
+      return null;
+    }
+    return live.get().equals(wanted) ? null : live.get().toString();
+  }
+
+  /**
+   * {@code --dns <server>} per resolver, in order, on a create — and the one line a person (or a
+   * verification, since {@code qits:agent} cannot inspect the swarm) reads to know which way it
+   * went: INFO naming the resolvers, or WARN naming why there are none. Nothing at all for a service
+   * the rule does not cover.
+   */
+  private void dnsFlags(List<String> argv, ServiceSpec spec, String name, Resolvers resolvers) {
+    if (resolvers == NOT_ASKED || !wantsPrivateEdgeResolvers(spec)) {
+      return;
+    }
+    if (!resolvers.found()) {
+      LOG.warnf("%s gets no private-edge resolver: %s", name, resolvers.why());
+      return;
+    }
+    for (String server : resolvers.servers()) {
+      argv.add("--dns");
+      argv.add(server);
+    }
+    LOG.infof("%s resolves through the private edge: resolvers %s", name, resolvers.servers());
+  }
+
+  /**
+   * The deployer's own update (qits-2119): {@link #buildUpdateArgv}, plus the two things an
+   * ordinary update never states and a self-update cannot get any other way, because a self-update
+   * is never recreated — removing the service this process answers on would leave nothing to
+   * create the successor.
+   *
+   * <ul>
+   *   <li><b>Its networks.</b> The managed networks the live service is on, against the ones its
+   *       exposure names: {@code --network-rm <net>} for each one extra, {@code --network-add
+   *       name=<net>} for each one missing — with {@code alias=<a>} for each alias its shape
+   *       declares, since an attachment carries its aliases. Swarm registers the service name on
+   *       every attached network, so the name needs none. One INFO names the move. A live list that
+   *       cannot be read moves nothing — {@link #networkDrift}'s fail-safe.
+   *   <li><b>Its resolvers</b>, when it is {@code private} or {@code both} and the private edge
+   *       answered: {@code --dns-rm} each live one and {@code --dns-add} each wanted one, when they
+   *       differ. The CLI does not promise to keep the order, and that is accepted for this one
+   *       service — its own lookups of private names are its FQDN client calls — and checked after
+   *       the hand-off ({@link #checkSelfResolverOrder}).
+   * </ul>
+   *
+   * Package-private for the argv test.
+   */
+  List<String> buildSelfUpdateArgv(
+      ServiceSpec spec, String name, List<String> networks, Resolvers resolvers) {
+    List<String> argv = new ArrayList<>(buildUpdateArgv(spec, name));
+    String target = argv.remove(argv.size() - 1);
+    Optional<Set<String>> live = liveManagedNetworks(name, managedNetworkIds());
+    if (live.isPresent()) {
+      List<String> managed = managedNetworks();
+      Set<String> wanted = new LinkedHashSet<>();
+      networks.stream().filter(managed::contains).forEach(wanted::add);
+      List<String> extra = live.get().stream().filter(net -> !wanted.contains(net)).toList();
+      List<String> missing = wanted.stream().filter(net -> !live.get().contains(net)).toList();
+      if (!extra.isEmpty() || !missing.isEmpty()) {
+        LOG.infof("%s moves itself from %s to %s", spec.applicationName(), live.get(), wanted);
+        for (String network : extra) {
+          argv.add("--network-rm");
+          argv.add(network);
+        }
+        List<String> aliases =
+            missing.isEmpty() ? List.of() : shapeOf(spec, extrasOf(spec)).aliases();
+        for (String network : missing) {
+          StringBuilder attachment = new StringBuilder("name=").append(network);
+          for (String alias : aliases) {
+            attachment.append(",alias=").append(alias);
+          }
+          argv.add("--network-add");
+          argv.add(attachment.toString());
+        }
+      }
+    }
+    if (resolvers.found()) {
+      Optional<List<String>> liveDns = liveNameservers(name);
+      if (liveDns.isPresent() && !liveDns.get().equals(resolvers.servers())) {
+        for (String server : liveDns.get()) {
+          argv.add("--dns-rm");
+          argv.add(server);
+        }
+        for (String server : resolvers.servers()) {
+          argv.add("--dns-add");
+          argv.add(server);
+        }
+        LOG.infof(
+            "%s resolves through the private edge: resolvers %s", name, resolvers.servers());
+      }
+    } else if (wantsPrivateEdgeResolvers(spec)) {
+      LOG.warnf("%s gets no private-edge resolver: %s", name, resolvers.why());
+    }
+    argv.add(target);
+    return List.copyOf(argv);
+  }
+
+  /**
+   * After the self-update is handed off, whether the spec swarm now holds asks the private edge
+   * first — the order {@code --dns-add} does not promise. A WARN when it does not; this process is
+   * being replaced, so there is nothing else to do about it here, and the next self-deploy asks
+   * again.
+   */
+  private void checkSelfResolverOrder(String service, Resolvers resolvers) {
+    Optional<List<String>> live = liveNameservers(service);
+    if (live.isEmpty()) {
+      return;
+    }
+    if (live.get().isEmpty() || !live.get().get(0).equals(resolvers.vip())) {
+      LOG.warnf(
+          "%s's resolvers are %s after its self-update: the private edge's VIP %s is not first, so"
+              + " a private name may be answered by an upstream first",
+          service, live.get(), resolvers.vip());
+    }
+  }
+
+  /**
+   * After the private edge was deployed and its VIP moved — which only a recreate does; an
+   * ordinary release is a {@code service update} and keeps it — every private or both service this
+   * process deployed whose first resolver is not the new VIP is applied again from its last spec.
+   * Its resolver drift then recreates it with the new list. Each failure is a WARN and never fails
+   * the edge's own deployment, which has already converged. A service whose live resolvers cannot
+   * be read is left to its next deployment.
+   */
+  private void reapplyBehindPrivateEdge(String vip) {
+    List<ServiceSpec> stale = new ArrayList<>();
+    for (Map.Entry<String, ServiceSpec> entry : resolverSpecs.entrySet()) {
+      Optional<List<String>> live = liveNameservers(entry.getKey());
+      if (live.isEmpty()) {
+        continue;
+      }
+      if (live.get().isEmpty() || !live.get().get(0).equals(vip)) {
+        stale.add(entry.getValue());
+      }
+    }
+    if (stale.isEmpty()) {
+      return;
+    }
+    LOG.infof(
+        "Re-applying %d service(s) after %s moved to %s",
+        stale.size(), privateEdgeApplication.strip(), vip);
+    for (ServiceSpec spec : stale) {
+      try {
+        ApplyResult result = apply(spec);
+        if (result.outcome() == ApplyOutcome.REFUSED) {
+          LOG.warnf(
+              "Could not re-apply %s behind the private edge: %s",
+              spec.wireAlias(), result.detail());
+        }
+      } catch (RuntimeException e) {
+        LOG.warnf(e, "Could not re-apply %s behind the private edge", spec.wireAlias());
+      } finally {
+        // Nobody awaits these verdicts: the edge's deployment is the one being recorded.
+        issuedImages.remove(spec.wireAlias());
+        issuedUpdates.remove(spec.wireAlias());
+      }
+    }
+  }
 
   /**
    * Package-private for the argv test: the replace, which is this and nothing more.
@@ -2507,8 +3171,17 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * task to be gone, for {@link #reapSeedTwin}'s reason and more sharply: the successor is created
    * on the very volumes the predecessor is still writing to, so an overlap of seconds is two
    * writers on one store rather than a moment of duplicated serving.
+   *
+   * <p><b>The wait is the spec's stop deadline, and running out of it is a REFUSAL for a service
+   * that holds a {@code private:} volume</b> (qits-2118). Creating anyway was the 2026-09-05
+   * corruption recorded in qits-database-oci's {@code deployments.yml}: a stop-first postgres
+   * whose old postmaster had not exited when the new one started on the same data directory. So
+   * the sentence comes back and the caller refuses the deployment; the service stays absent, and
+   * the next deployment takes the create path. A service with no private volume keeps the old
+   * create-anyway behaviour, with the WARN — a stateless overlap of seconds is nothing. Null is "go
+   * ahead".
    */
-  private void removeForRecreate(String name) {
+  private String removeForRecreate(ServiceSpec spec, String name) {
     PdProcess.Result removed = run(List.of(runtime, "service", "rm", name), CLEANUP_TIMEOUT);
     if (removed.exitCode() != 0) {
       // The create that follows will fail on the name still being taken, and that is the honest
@@ -2516,14 +3189,21 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       // serving.
       LOG.warnf("Could not remove %s to recreate it with its declared shape: %s",
           name, removed.output());
-      return;
+      return null;
     }
-    if (!awaitTasksGone(name)) {
-      LOG.warnf(
-          "The service %s is removed but its task is still stopping — the successor may start"
-              + " beside it, on the same volumes",
-          name);
+    Duration deadline = drainDeadline(spec);
+    if (awaitTasksGone(name, deadline)) {
+      return null;
     }
+    String volume = privateVolume(spec);
+    if (volume != null) {
+      return stillStopping(name, deadline, volume);
+    }
+    LOG.warnf(
+        "The service %s is removed but its task is still stopping after %ss — the successor may"
+            + " start beside it",
+        name, deadline.toSeconds());
+    return null;
   }
 
   /**

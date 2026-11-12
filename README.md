@@ -472,6 +472,16 @@ the git host spec read, the idp provisioning, and the bearer's token mint (which
 transport failure only — see `IdpGitHostBearer` for why an edge's 503 on the token endpoint is not
 recognisable). A call already aimed at an internal address is never tried twice.
 
+**Once qits-deployments is `private`, that one try cannot reach githost or the idp** (epic
+qits-1980). The internal addresses `http://<env>-qits-githost:8080` and `http://<env>-qits-idp:8080`
+resolve on `qits-net` only, and a `private` deployer is on `qits-private` alone, so the extra try
+fails fast — a name that does not resolve — and harmlessly: the call fails exactly as it would have
+without it. (A `both` deployer is still on `qits-net` and keeps it.) The way out is then the host
+break-glass on the edge, the dossier page *Edge break-glass* of qits-1980. The deployer moves
+itself between the two networks on its own self-update (qits-2119: `--network-add`/`--network-rm`,
+logged `qits-deployments moves itself from [...] to [...]`), so this applies from the release that
+declares `exposure: private` onward.
+
 **Image pulls with no edge.** Since qits-757 every deployment pulls
 `registry.qits.<domain>/qits/<app>:<version>` — through the edge. Redeploying the edge itself works
 because qits-edge updates `start-first` (the deployer's default; its `deployments.yml` sets

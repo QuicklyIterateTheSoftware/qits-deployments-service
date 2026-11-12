@@ -1025,6 +1025,18 @@ public interface DeploymentDriver {
   Duration DEFAULT_STOP_GRACE_PERIOD = Duration.ofSeconds(30);
 
   /**
+   * How much longer than its {@code stop_grace_period} a removed service's task is waited for before
+   * a recreate gives up on it (qits-2118) — the stop deadline is {@code grace + this}.
+   *
+   * <p>The grace is when swarm SIGKILLs the task; the margin is the daemon's own bookkeeping after
+   * that — the kill, the container's removal, the task leaving {@code docker ps} — which on a loaded
+   * host is seconds, not milliseconds. The ten-second wait it replaced was shorter than the grace
+   * itself, so a postgres honouring its default 30 s was routinely still running when its successor
+   * was created on the same data directory. {@code DeployService.convergenceTimeout} counts it.
+   */
+  Duration RECREATE_DRAIN_MARGIN = Duration.ofSeconds(30);
+
+  /**
    * How a replacement overlaps its predecessor — {@code update_order} in the repository's spec.
    *
    * <p><b>{@code start-first} is what makes a rollback lossless</b>: the predecessor keeps serving
@@ -1121,8 +1133,20 @@ public interface DeploymentDriver {
    *
    * <p>{@code readOnly} is the one option the grammar carries, which is {@link ServiceExtras.Mount}'s
    * own.
+   *
+   * <p>{@code shared} is the declared scope: true for a {@code shared:} volume, false for the
+   * application's own {@code private:} one. It decides one thing, the recreate guard (qits-2118): a
+   * service holding a private volume is never created beside a predecessor task that has not
+   * stopped, because that is two writers on one store. The three-argument form is a private volume,
+   * which is the conservative reading.
    */
-  record VolumeMount(String source, String target, boolean readOnly) {}
+  record VolumeMount(String source, String target, boolean readOnly, boolean shared) {
+
+    /** A {@code private:} volume — see the record's javadoc for why that is the default. */
+    public VolumeMount(String source, String target, boolean readOnly) {
+      this(source, target, readOnly, false);
+    }
+  }
 
   /**
    * One provisioned resource, as the service is told about it: {@code

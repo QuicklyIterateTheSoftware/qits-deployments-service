@@ -2245,7 +2245,11 @@ public class DeployService implements ReleaseAnnouncements {
       DeploymentSpec.VolumeSpec declared, String source, boolean pinned) {
     return new ResolvedVolume(
         declared,
-        new DeploymentDriver.VolumeMount(source, declared.target(), declared.readOnly()),
+        new DeploymentDriver.VolumeMount(
+            source,
+            declared.target(),
+            declared.readOnly(),
+            declared.scope() == DeploymentSpec.VolumeSpec.Scope.SHARED),
         pinned);
   }
 
@@ -3483,7 +3487,8 @@ public class DeployService implements ReleaseAnnouncements {
           volume.declared().scope() == DeploymentSpec.VolumeSpec.Scope.PRIVATE
               ? predecessor + "-" + volume.declared().name()
               : mount.source();
-      volumes.add(new DeploymentDriver.VolumeMount(source, mount.target(), mount.readOnly()));
+      volumes.add(
+          new DeploymentDriver.VolumeMount(source, mount.target(), mount.readOnly(), mount.shared()));
     }
 
     String primary = PdNetworks.application(plan.environmentName(), predecessor);
@@ -3994,12 +3999,23 @@ public class DeployService implements ReleaseAnnouncements {
    * Neither wait is a symptom; both are swarm doing exactly what it was told. A deadline that did not
    * count them would turn swarm's verdict into this process's timeout and throw the diagnosis away,
    * which is the failure {@code health-timeout-seconds}'s own comment describes.
+   *
+   * <p><b>…or the recreate's stop deadline, whichever is longer</b> (qits-2118). A recreate waits
+   * for the removed service's task for its grace plus {@link
+   * DeploymentDriver#RECREATE_DRAIN_MARGIN} before it creates — or refuses to, for a service holding
+   * a private volume. That wait belongs to the same stop-first shape (a stop before a start), and
+   * for a grace under thirty seconds {@code 2 × grace} is shorter than it, so the allowance is raised
+   * to {@code max(2 × grace, grace + margin)}: one budget that covers the longer of the two waits a
+   * stop-first application can sit through. At the shipped 30 s grace both are 60 s and nothing
+   * moved.
    */
   private Duration convergenceTimeout(Plan plan) {
     Duration timeout = Duration.ofSeconds(healthTimeoutSeconds);
     if (plan.updateOrder() == DeploymentDriver.UpdateOrder.STOP_FIRST
         && plan.stopGracePeriod() != null) {
-      timeout = timeout.plus(plan.stopGracePeriod().multipliedBy(2));
+      Duration twice = plan.stopGracePeriod().multipliedBy(2);
+      Duration drain = plan.stopGracePeriod().plus(DeploymentDriver.RECREATE_DRAIN_MARGIN);
+      timeout = timeout.plus(twice.compareTo(drain) >= 0 ? twice : drain);
     }
     return timeout;
   }

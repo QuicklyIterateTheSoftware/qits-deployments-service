@@ -100,7 +100,7 @@ class VolumeResolutionTest {
       assertEquals(
           List.of(
               new DeploymentDriver.VolumeMount(APP + "-letsencrypt", "/work/.letsencrypt", false),
-              new DeploymentDriver.VolumeMount("qits_shared_m2", "/m2", true)),
+              new DeploymentDriver.VolumeMount("qits_shared_m2", "/m2", true, true)),
           resolved.mounts(),
           "renamedFrom=" + noRename);
       assertEquals(List.of(), resolved.pinned());
@@ -116,7 +116,7 @@ class VolumeResolutionTest {
 
     assertEquals(
         List.of(
-            new DeploymentDriver.VolumeMount("qits_shared_m2", "/m2", true),
+            new DeploymentDriver.VolumeMount("qits_shared_m2", "/m2", true, true),
             new DeploymentDriver.VolumeMount(
                 OLD + "-letsencrypt", "/work/.letsencrypt", false)),
         resolved.mounts());
