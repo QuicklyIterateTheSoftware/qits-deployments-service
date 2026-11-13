@@ -10,11 +10,14 @@ import eu.wohlben.qits.deployments.deployments.control.FakeArtifactPurge;
 import eu.wohlben.qits.deployments.deployments.control.FakeDeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.FakeSpecSource;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource;
+import eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove;
+import eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.restassured.http.ContentType;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -72,6 +75,22 @@ public class ProviderStates {
   public static final String AN_ENVIRONMENT_TO_TEAR_DOWN = "an environment to tear down";
 
   /**
+   * One application deployed ACTIVE whose spec declares a postgres resource {@code db}, its claim on
+   * the public server, and both postgres servers running in its tier — what an operator's database
+   * move (qits-2175) is asked of. Named by qits-platform-access-monorepo's {@code qits deployments
+   * database move}.
+   */
+  public static final String AN_APPLICATION_HOLDING_A_DATABASE =
+      "an application holding a database";
+
+  /**
+   * One database move that finished: moved from the public server to the private one, both sides'
+   * counts equal, the source kept until its retention runs out. Named by the CLI's {@code moves} and
+   * {@code move-status}.
+   */
+  public static final String A_FINISHED_DATABASE_MOVE = "a database move that finished";
+
+  /**
    * The machine gate is on: a bearer no idp issued answers 401. Only {@code
    * MachineGuardEnforcedProfile} runs the service gated, so only {@link
    * GatedGoldenMasterRecordingTest} and {@link GatedConsumerPactVerificationTest} use this state. It
@@ -96,6 +115,9 @@ public class ProviderStates {
 
   /** The version the rollback state ships second, so {@link #VERSION} is its rollback target. */
   static final String NEXT_VERSION = "2026.102.120000";
+
+  /** The image both postgres servers run on the orchestrator double, for the move's containers. */
+  static final String POSTGRES_IMAGE = "registry.qits.dev.localhost/qits/qits-oci-postgresql:2026.101.120000";
 
   /**
    * What a state hands back: its parameters, keys sorted, and its unique tokens.
@@ -139,6 +161,8 @@ public class ProviderStates {
     states.put(A_DECOMMISSIONED_APPLICATION, this::aDecommissionedApplication);
     states.put(A_SERVICE_LINKED_INTO_AN_ENVIRONMENT, this::aServiceLinkedIntoAnEnvironment);
     states.put(AN_ENVIRONMENT_TO_TEAR_DOWN, this::anEnvironmentToTearDown);
+    states.put(AN_APPLICATION_HOLDING_A_DATABASE, this::anApplicationHoldingADatabase);
+    states.put(A_FINISHED_DATABASE_MOVE, this::aFinishedDatabaseMove);
   }
 
   /** Every state name this provider answers for. */
@@ -512,6 +536,79 @@ public class ProviderStates {
     removable.add(id);
     Map<String, String> params = new TreeMap<>();
     params.put("environmentId", id);
+    return new Setup(params, List.of(token));
+  }
+
+  /**
+   * {@link #AN_APPLICATION_HOLDING_A_DATABASE}: a release of an application declaring {@code db},
+   * settled ACTIVE, with the image of both postgres servers on the orchestrator double so the move
+   * an interaction queues can run its containers (the suite's {@code FakeDatabaseContainers}).
+   * {@code application} is the application NAME, which is what the move door takes.
+   */
+  private Setup anApplicationHoldingADatabase() {
+    driver.reset();
+    String token = token();
+    String environment = "contract-" + token;
+    String environmentId = createEnvironment(environment, true);
+    String application = "contract-app-" + token;
+    specs.script(
+        application,
+        new SpecSource.DeploymentSpec(
+            false,
+            null,
+            null,
+            null,
+            List.of(new SpecSource.DeploymentSpec.ResourceSpec("db", null))));
+    driver.scriptRunningImage(environment + "-qits-oci-postgresql", POSTGRES_IMAGE);
+    driver.scriptRunningImage(environment + "-qits-oci-postgresql-private", POSTGRES_IMAGE);
+    release(application, VERSION);
+    settle(environmentId, 1);
+    Map<String, String> params = new TreeMap<>();
+    params.put("application", application);
+    params.put("environmentName", environment);
+    params.put("resource", "db");
+    return new Setup(params, List.of(token));
+  }
+
+  /**
+   * {@link #A_FINISHED_DATABASE_MOVE}: one {@code pd_database_move} row written straight to the
+   * table, MOVED, with fixed manifests — the record a move leaves, without staging the five steps
+   * that write it (those are {@code DatabaseMovesTest}'s). {@code id} is the move's.
+   */
+  private Setup aFinishedDatabaseMove() {
+    String token = token();
+    String application = "contract-app-" + token;
+    String database = "qits_contract_app_" + token;
+    String id = UUID.randomUUID().toString();
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              PdDatabaseMove row = new PdDatabaseMove();
+              row.id = id;
+              row.batchId = id;
+              row.applicationName = application;
+              row.environmentName = "contract-" + token;
+              row.resourceName = "db";
+              row.sourceServer = "public";
+              row.sourceDatabase = database;
+              row.targetServer = "private";
+              row.targetDatabase = database;
+              row.keptDatabase = database + "_moved_202601010000";
+              row.origin = PdDatabaseMove.Origin.DEPLOYMENT;
+              row.state = PdDatabaseMoveState.MOVED;
+              row.sourceCounts = "{\"public.flyway_schema_history\":4,\"public.items\":12}";
+              row.targetCounts = row.sourceCounts;
+              row.serviceName = "contract-" + token + "-" + application;
+              row.serviceReplicas = 1;
+              row.createdAt = Instant.now();
+              row.startedAt = row.createdAt;
+              row.finishedAt = row.createdAt;
+              row.dropAfter = row.createdAt.plus(java.time.Duration.ofDays(7));
+              row.persist();
+            });
+    Map<String, String> params = new TreeMap<>();
+    params.put("application", application);
+    params.put("id", id);
     return new Setup(params, List.of(token));
   }
 

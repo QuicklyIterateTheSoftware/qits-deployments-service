@@ -1,0 +1,30 @@
+{
+  "move": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "batchId": "00000000-0000-4000-8000-000000000001",
+    "applicationName": "contract-app-00000001",
+    "environmentName": "contract-00000001",
+    "resourceName": "db",
+    "sourceServer": "public",
+    "sourceDatabase": "qits_contract_app_00000001",
+    "targetServer": "private",
+    "targetDatabase": "qits_contract_app_00000001",
+    "specServer": "public",
+    "specDatabase": "qits_contract_app_00000001",
+    "keptDatabase": null,
+    "origin": "OPERATOR",
+    "requestedBy": "an-operator",
+    "state": "QUEUED",
+    "sourceCounts": null,
+    "targetCounts": null,
+    "sourceRows": null,
+    "targetRows": null,
+    "detail": null,
+    "createdAt": "2026-01-01T00:00:00Z",
+    "startedAt": null,
+    "finishedAt": null,
+    "dropAfter": null,
+    "droppedAt": null
+  },
+  "note": "this overrides the spec: the next deployment of contract-app-00000001 moves it back to public/qits_contract_app_00000001, which its spec resolves to"
+}

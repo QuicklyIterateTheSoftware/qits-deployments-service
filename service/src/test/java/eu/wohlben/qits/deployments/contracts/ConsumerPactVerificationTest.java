@@ -197,4 +197,14 @@ class ConsumerPactVerificationTest {
   Map<String, String> anEnvironmentToTearDown() {
     return states.params(ProviderStates.AN_ENVIRONMENT_TO_TEAR_DOWN);
   }
+
+  @State(ProviderStates.AN_APPLICATION_HOLDING_A_DATABASE)
+  Map<String, String> anApplicationHoldingADatabase() {
+    return states.params(ProviderStates.AN_APPLICATION_HOLDING_A_DATABASE);
+  }
+
+  @State(ProviderStates.A_FINISHED_DATABASE_MOVE)
+  Map<String, String> aFinishedDatabaseMove() {
+    return states.params(ProviderStates.A_FINISHED_DATABASE_MOVE);
+  }
 }

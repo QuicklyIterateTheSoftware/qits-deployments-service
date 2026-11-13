@@ -341,6 +341,33 @@ class GoldenMasterRecordingTest {
               204,
               null,
               null),
+          // qits-2175: the database move's three doors, for the CLI's `qits deployments database`.
+          write(
+              ProviderStates.AN_APPLICATION_HOLDING_A_DATABASE,
+              "moveDatabase",
+              "POST",
+              "/deployments/api/database-moves",
+              202,
+              "{\"application\":\"{application}\",\"resource\":\"{resource}\","
+                  + "\"server\":\"private\"}"),
+          new Interaction(
+              ProviderStates.A_FINISHED_DATABASE_MOVE,
+              "listDatabaseMoves",
+              "GET",
+              "/deployments/api/database-moves",
+              Map.of("application", "{application}"),
+              200,
+              null,
+              null,
+              List.of()),
+          new Interaction(
+              ProviderStates.A_FINISHED_DATABASE_MOVE,
+              "getDatabaseMove",
+              "GET",
+              "/deployments/api/database-moves/{id}",
+              200,
+              null,
+              null),
           // Recorded by GatedGoldenMasterRecordingTest: only a gated application answers 401.
           write(
               ProviderStates.THE_MACHINE_GATE_IS_ON,

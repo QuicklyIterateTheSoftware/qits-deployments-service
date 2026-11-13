@@ -3,6 +3,74 @@
   "provider": "qits-deployments",
   "states": [
     {
+      "name": "a database move that finished",
+      "slug": "a-database-move-that-finished",
+      "params": {
+        "application": "contract-app-00000001",
+        "id": "00000000-0000-4000-8000-000000000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getDatabaseMove",
+          "method": "GET",
+          "path": "/deployments/api/database-moves/{id}",
+          "status": 200,
+          "file": "a-database-move-that-finished/getDatabaseMove.json",
+          "frozen": {
+            "ids": [
+              "$.move.id",
+              "$.move.batchId"
+            ],
+            "instants": [
+              "$.move.createdAt",
+              "$.move.startedAt",
+              "$.move.finishedAt",
+              "$.move.dropAfter"
+            ],
+            "strings": [
+              "$.move.applicationName",
+              "$.move.environmentName",
+              "$.move.sourceDatabase",
+              "$.move.targetDatabase",
+              "$.move.keptDatabase"
+            ],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "listDatabaseMoves",
+          "method": "GET",
+          "path": "/deployments/api/database-moves",
+          "query": {
+            "application": "{application}"
+          },
+          "status": 200,
+          "file": "a-database-move-that-finished/listDatabaseMoves.json",
+          "frozen": {
+            "ids": [
+              "$.moves[*].id",
+              "$.moves[*].batchId"
+            ],
+            "instants": [
+              "$.moves[*].createdAt",
+              "$.moves[*].startedAt",
+              "$.moves[*].finishedAt",
+              "$.moves[*].dropAfter"
+            ],
+            "strings": [
+              "$.moves[*].applicationName",
+              "$.moves[*].environmentName",
+              "$.moves[*].sourceDatabase",
+              "$.moves[*].targetDatabase",
+              "$.moves[*].keptDatabase"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "a deployment request that deployed",
       "slug": "a-deployment-request-that-deployed",
       "params": {
@@ -274,6 +342,48 @@
               "$.pins[*].applicationName"
             ],
             "listFilteredTo": "$.pins"
+          }
+        }
+      ]
+    },
+    {
+      "name": "an application holding a database",
+      "slug": "an-application-holding-a-database",
+      "params": {
+        "application": "contract-app-00000001",
+        "environmentName": "contract-00000001",
+        "resource": "db"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "moveDatabase",
+          "method": "POST",
+          "path": "/deployments/api/database-moves",
+          "body": {
+            "application": "{application}",
+            "resource": "{resource}",
+            "server": "private"
+          },
+          "status": 202,
+          "file": "an-application-holding-a-database/moveDatabase.json",
+          "frozen": {
+            "ids": [
+              "$.move.id",
+              "$.move.batchId"
+            ],
+            "instants": [
+              "$.move.createdAt"
+            ],
+            "strings": [
+              "$.move.applicationName",
+              "$.move.environmentName",
+              "$.move.sourceDatabase",
+              "$.move.targetDatabase",
+              "$.move.specDatabase",
+              "$.note"
+            ],
+            "listFilteredTo": null
           }
         }
       ]
