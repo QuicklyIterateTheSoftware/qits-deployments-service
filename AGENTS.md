@@ -1497,7 +1497,13 @@ resource?, server?, database?}` → 202. Decided on the request thread (the live
 for the default target; 400/404/409/502 are answers), written `QUEUED`, and queued as a redeploy of
 the live version (`DeployService.redeploy`, the manual door's semantics) whose `beforeProvisioning`
 takes the held target for that one resource. A redeploy, because a moved database is only half a
-move: nothing short of a deployment hands the running service the new address. An override the spec
+move: nothing short of a deployment hands the running service the new address. The held target is also
+what `prepare`/`beforeProvisioning` hands provisioning for that resource, so `ensurePostgres`' backstop
+sees claim == resolved; without it an override to another NAME switched the claim, was refused by the
+backstop and left the service stopped (qits-orchestrator, 2026-11-13). "The live version" is the
+newest row that is `ACTIVE`/`SCALED_TO_ZERO`, seen past a run of `FAILED`/`ROLLED_BACK`/`IMAGE_MISSING`
+rows, so a move back through the door recovers a place whose post-switch deployment failed; such a
+failure is an ERROR from `finish` naming the stopped service and the moved database. An override the spec
 disagrees with is accepted and the answer's `note` says the next deployment moves it back. `GET
 /database-moves[?application=]` and `/{id}` are the read surface (and the entity-exposure rule's
 answer for the table). Roles: the operator's set **and `qits:agent`** on all three — the POST is the
