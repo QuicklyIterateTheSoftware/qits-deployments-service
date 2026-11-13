@@ -1425,33 +1425,46 @@ the same name) is compared with the TARGET (rule server, `resolve()` database). 
 place: nothing. Anything else is a MOVE, recorded step by step in `pd_database_move` (V20):
 
 1. **stop** — the claim holder's service (its wire alias) scaled to 0, waited for until no task is
-   left (`DatabaseContainers.drained`), the source `ALLOW_CONNECTIONS false` and its backends
-   terminated;
+   left (`DatabaseContainers.drained`), the source FENCED by privilege — `REVOKE CONNECT` from its
+   role and `PUBLIC` — and its backends terminated. Never `ALLOW_CONNECTIONS false` before the dump:
+   that flag shuts out superusers too, and `pg_dump` connects as one (`DatabaseScriptsPostgresTest`);
 2. **extract** — a container on the SOURCE server's network only, volume `qits-dbmove-<id>`:
    `pg_dump -Fc` plus an exact `count(*)` of every table into a manifest;
 3. **ingest** — a container on the TARGET server's network only, same volume: the role with the
    claim's stored password, the database owned by it, `pg_restore --no-owner --no-privileges
    --role=<role>`, the same manifest;
 4. **compare** — same tables, same counts, or ABORT: target dropped (and its role, when no claim on
-   that server uses it), source re-opened, volume removed, the service scaled back to the replicas it
+   that server uses it), source re-opened (`GRANT CONNECT` to its role), volume removed, the service scaled back to the replicas it
    had, the deployment `FAILED` naming the first differing table;
 5. **switch** — the claim takes the target (password unchanged) in the transaction that writes
-   `SWITCHING`; the source is renamed `<db>_moved_<yyyyMMddHHmm>` (≤63), still closed; the volume
+   `SWITCHING`; the source is renamed `<db>_moved_<yyyyMMddHHmm>` (≤63), still fenced, and only then
+   `ALLOW_CONNECTIONS false` (nothing connects to a kept copy again); the volume
    goes; `drop_after = now + qits.deployments.database-move.retention` (`P7D`). One INFO line names
    both databases and both sides' row totals.
 
 Every container joins exactly ONE network (`ContainerSpec.network`, never `extraNetworks`), so a
 cross-server move is two containers sharing a volume. The moves of one deployment are one BATCH:
 stopped once, all copied and verified, then all switched — or all aborted. **Refused before anything
-stops**: this deployer's own databases, a target another claim holds, a target that already exists
+stops**: this deployer's own databases (moving them is qits-2209), a target another claim holds, a target that already exists
 on the target server and is not an earlier ABORTED attempt of the same move. A predecessor resource
 the successor no longer declares by NAME is still refused (`refuseAbandonedPredecessorClaims`), and
 `ensurePostgres` keeps a belt: a claim whose database differs from the resolved one is refused
 rather than re-provisioned, should anything reach provisioning without the move.
 
+**A target server that is not deployed DEFERS the move** (the rollout gap before
+`qits-oci-postgresql-private` exists; "deployed" is `PostgresAdmin.deployed`, a service under its
+alias): the claim stays, the deployment provisions against it as before, one WARN says `deferred: the
+<server> postgres is not deployed in <env>`, and the first deployment after the server exists moves
+it. The door answers 409 with the same sentence. A NEW claim whose rule server is not deployed still
+fails, naming that.
+
 **A restart is never a forgotten move** (`settleInterrupted`, on the worker at boot and on every
 observation tick for what boot could not finish): a batch with a row at `SWITCHING` or later is
-finished, any other is aborted. A `QUEUED` operator move is refused at boot only — on a tick it is
+finished AND its application is REDEPLOYED at the version its interrupted deployment was putting live
+(the service is at zero and its spec names the old database). The interrupted-deployment machinery
+does not cover it: `sweepInFlight` flags the row `interrupted` (V16), but only `OwedReleaseSweep`
+re-drives one, and only for a bus release with a `pd_owed_release` obligation, which `Door.MANUAL`
+never writes. Any other batch is aborted. A `QUEUED` operator move is refused at boot only — on a tick it is
 waiting in the queue behind the pass. The tick also runs `sweepExpired`, which drops kept copies past
 `drop_after` (and the old role, when no claim on that server uses it) and stamps `dropped_at`.
 

@@ -196,15 +196,15 @@
         },
         {
           "type" : "eu.wohlben.qits.deployments.deployments.control.DatabaseMoves$Live",
-          "kind" : "assembler",
+          "kind" : "mapper",
           "via" : null,
-          "site" : "DatabaseMoves.live(String, PdEnvironment)"
+          "site" : "DatabaseMoves.coordinates(String, PdDeployment)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.deployments.control.RepositoryRef",
-          "kind" : "assembler",
+          "kind" : "mapper",
           "via" : null,
-          "site" : "DatabaseMoves.live(String, PdEnvironment)"
+          "site" : "DatabaseMoves.coordinates(String, PdDeployment)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.deployments.control.RollbackPins$Pin",
@@ -378,13 +378,13 @@
           "type" : "eu.wohlben.qits.deployments.deployments.control.DatabaseMoves$Live",
           "kind" : "assembler",
           "via" : null,
-          "site" : "DatabaseMoves.live(String, PdEnvironment)"
+          "site" : "DatabaseMoves.coordinates(String, PdDeployment)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.deployments.control.RepositoryRef",
           "kind" : "assembler",
           "via" : null,
-          "site" : "DatabaseMoves.live(String, PdEnvironment)"
+          "site" : "DatabaseMoves.coordinates(String, PdDeployment)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
@@ -460,7 +460,7 @@
           "type" : "eu.wohlben.qits.deployments.deployments.control.DatabaseMoves$Live",
           "kind" : "assembler",
           "via" : null,
-          "site" : "DatabaseMoves.live(String, PdEnvironment)"
+          "site" : "DatabaseMoves.coordinates(String, PdDeployment)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.deployments.control.RepositoryRef",
@@ -689,10 +689,16 @@
           "site" : "DatabaseMoves.request(String, String, String, String, String)"
         },
         {
-          "type" : "eu.wohlben.qits.deployments.deployments.control.RepositoryRef",
+          "type" : "eu.wohlben.qits.deployments.deployments.control.DatabaseMoves$Live",
           "kind" : "mapper",
           "via" : null,
           "site" : "DatabaseMoves.live(String, PdEnvironment)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.RepositoryRef",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.control.DatabaseMoves$Live",
+          "site" : "Live.repository()"
         },
         {
           "type" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
