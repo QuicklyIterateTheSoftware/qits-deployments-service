@@ -85,7 +85,7 @@
              (extract, ingest, the private server's psql) are built and run through it rather than
              through a hand-assembled argv, the owner's ruling of 2026-11-13. Published by
              qits-containers-javalib; no Quarkus and no CDI in it, so it is native-image neutral. -->
-        <qits.containers-driver.version>2026.1110.32907</qits.containers-driver.version>
+        <qits.containers-driver.version>2026.1113.145102</qits.containers-driver.version>
         <qits.telemetry-core.version>2026.1106.507</qits.telemetry-core.version>
         <!-- The user-story framework (test scope): this repo's story catalogue is written as
              @UserStory methods, so a `mvn verify -DskipITs=false` also regenerates
