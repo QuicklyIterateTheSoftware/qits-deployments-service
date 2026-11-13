@@ -164,6 +164,8 @@ class SettingsDiffTest {
     assertTrue(SettingsDiff.looksSecret("GITHUB_TOKEN"));
     assertTrue(SettingsDiff.looksSecret("db_password"));
     assertTrue(SettingsDiff.looksSecret("REGISTRY_AUTH"));
+    // qits-2175: what the deployer hands the private postgres is masked by its name alone.
+    assertTrue(SettingsDiff.looksSecret(DeploymentDriver.SERVER_PASSWORD_VARIABLE));
     assertFalse(SettingsDiff.looksSecret("AUTHOR"));
     assertFalse(SettingsDiff.looksSecret("QITS_DOMAIN"));
     assertFalse(SettingsDiff.looksSecret("AUTH_MODE"));

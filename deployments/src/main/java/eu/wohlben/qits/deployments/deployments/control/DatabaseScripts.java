@@ -1,0 +1,382 @@
+package eu.wohlben.qits.deployments.deployments.control;
+
+import eu.wohlben.qits.deployments.environments.control.PdIdentifiers;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.util.Map;
+import java.util.TreeMap;
+
+/**
+ * Every script a {@link DatabaseContainers.OneShot} runs (qits-2175), as pure functions: identifiers
+ * in, a shell script out. No I/O and no state, so the suite asserts them as text.
+ *
+ * <p><b>DDL has no bind variables, so every identifier is re-validated right here</b> — {@link
+ * PdIdentifiers#requireDatabaseName}, the {@code PgResourceProvisioner} stance: {@code qits_} and
+ * lowercase letters, digits and underscores, which is also a charset a shell and a SQL string literal
+ * take without one escaping rule. Nothing here quotes cleverly because nothing here needs to.
+ *
+ * <p><b>No password is ever in a script.</b> The admin's arrives as {@code PGPASSWORD}, which psql,
+ * pg_dump and pg_restore read themselves; a role's arrives as {@value #ROLE_PASSWORD} and psql reads it
+ * with {@code \getenv} into a variable that {@code :'role_password'} quotes as a literal. Both are
+ * {@link DatabaseContainers.OneShot#secrets}, which never reach an argv.
+ *
+ * <p>Each psql runs with {@code -X} (no {@code .psqlrc}), {@code -v ON_ERROR_STOP=1} and under {@code
+ * set -eu}, so any failing statement fails the container and the container's exit code is the verdict.
+ */
+final class DatabaseScripts {
+
+  /** The variable a role's password reaches a container in. */
+  static final String ROLE_PASSWORD = "QITS_ROLE_PASSWORD";
+
+  /** Where the dump lands in the move's volume. */
+  static final String DUMP = DatabaseContainers.MOUNT + "/dump.pgc";
+
+  static final String MANIFEST_BEGIN = "qits-manifest-begin";
+  static final String MANIFEST_END = "qits-manifest-end";
+
+  /** The marker {@link #exists} prints before its answer. */
+  static final String EXISTS_MARKER = "qits-exists=";
+
+  /** The database every postgres has, and the one an admin can be sure of connecting to. */
+  static final String ADMIN_DATABASE = "postgres";
+
+  /** A kept copy's suffix: {@code _moved_} and the minute of the switch, UTC. */
+  private static final DateTimeFormatter KEPT_STAMP =
+      DateTimeFormatter.ofPattern("yyyyMMddHHmm").withZone(ZoneOffset.UTC);
+
+  /** Postgres' identifier limit. */
+  private static final int NAME_MAX = 63;
+
+  private DatabaseScripts() {}
+
+  /** One psql session over {@code sql}, against {@code database}, under {@code set -eu}. */
+  static String psql(String database, String sql) {
+    return "set -eu\n" + psqlStep(database, sql, null);
+  }
+
+  private static String psqlStep(String database, String sql, String redirect) {
+    return "psql -X -q -t -A -v ON_ERROR_STOP=1 -d "
+        + (ADMIN_DATABASE.equals(database) ? ADMIN_DATABASE : id(database))
+        + " <<'QITS_SQL'"
+        + (redirect == null ? "" : " > " + redirect)
+        + "\n"
+        + sql
+        + "\nQITS_SQL\n";
+  }
+
+  /**
+   * The private server's provisioning — {@code PgResourceProvisioner}'s statements, as one psql
+   * session. The role is created when missing (with {@value #ROLE_PASSWORD}, which the caller set to
+   * the stored password, or the fresh one when nothing was stored) and left alone when present — or,
+   * with {@code rotate}, reset to it: the reconcile arm, for a role the registry knows no password
+   * for. The database is created owned by the role and closed to {@code PUBLIC}, or re-owned.
+   */
+  static String provision(String database, String role, boolean rotate) {
+    String db = id(database);
+    String r = id(role);
+    String sql =
+        "\\getenv role_password "
+            + ROLE_PASSWORD
+            + "\n"
+            + "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '"
+            + r
+            + "') AS role_existed \\gset\n"
+            + "\\if :role_existed\n"
+            + (rotate ? "ALTER ROLE " + r + " WITH LOGIN PASSWORD :'role_password';\n" : "")
+            + "\\else\n"
+            + "CREATE ROLE "
+            + r
+            + " LOGIN PASSWORD :'role_password';\n"
+            + "\\endif\n"
+            + "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = '"
+            + db
+            + "') AS db_existed \\gset\n"
+            + "\\if :db_existed\n"
+            + "ALTER DATABASE "
+            + db
+            + " OWNER TO "
+            + r
+            + ";\n"
+            + "\\else\n"
+            + "CREATE DATABASE "
+            + db
+            + " OWNER "
+            + r
+            + ";\n"
+            + "REVOKE ALL ON DATABASE "
+            + db
+            + " FROM public;\n"
+            + "\\endif";
+    return psql(ADMIN_DATABASE, sql);
+  }
+
+  /** Prints {@value #EXISTS_MARKER}{@code t} or {@code f}: whether the database exists there. */
+  static String exists(String database) {
+    return psql(
+        ADMIN_DATABASE,
+        "SELECT '"
+            + EXISTS_MARKER
+            + "' || EXISTS (SELECT 1 FROM pg_database WHERE datname = '"
+            + id(database)
+            + "');");
+  }
+
+  /** The answer {@link #exists} printed, or null when it printed none. */
+  static Boolean existsAnswer(String output) {
+    for (String line : lines(output)) {
+      if (line.startsWith(EXISTS_MARKER)) {
+        return "t".equals(line.substring(EXISTS_MARKER.length()).strip());
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Fence the source: its role — and {@code PUBLIC}, already revoked at provisioning and revoked
+   * again idempotently — lose {@code CONNECT}, and every backend still open is terminated. The
+   * service is already scaled to zero; this is what makes the dump the last word.
+   *
+   * <p><b>By privilege, never by {@code ALLOW_CONNECTIONS false}.</b> That flag shuts out EVERYONE,
+   * superusers included, so the {@code pg_dump} that follows — which connects as the admin — died
+   * with {@code database "x" is not currently accepting connections}. A superuser bypasses the
+   * {@code CONNECT} privilege, so the fence keeps the application out and lets the dump in.
+   */
+  static String close(String database, String role) {
+    return psql(ADMIN_DATABASE, closeSql(database, role));
+  }
+
+  /** {@link #close}'s statements, plain SQL — what the real-postgres test runs over JDBC. */
+  static String closeSql(String database, String role) {
+    String db = id(database);
+    String r = id(role);
+    return "REVOKE CONNECT ON DATABASE "
+        + db
+        + " FROM PUBLIC;\n"
+        + "REVOKE CONNECT ON DATABASE "
+        + db
+        + " FROM "
+        + r
+        + ";\n"
+        + "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE datname = '"
+        + db
+        + "' AND pid <> pg_backend_pid();";
+  }
+
+  /**
+   * Re-open the source to its role — an abort's last word to postgres. An abort only ever happens
+   * before the switch, so the source is still there under its own name.
+   */
+  static String reopen(String database, String role) {
+    return psql(ADMIN_DATABASE, reopenSql(database, role));
+  }
+
+  /** {@link #reopen}'s statement, plain SQL. */
+  static String reopenSql(String database, String role) {
+    return "GRANT CONNECT ON DATABASE " + id(database) + " TO " + id(role) + ";";
+  }
+
+  /**
+   * The extract: {@code pg_dump -Fc} of the source into the volume, then the source's manifest —
+   * written into the volume beside the dump, and printed between the markers for the caller.
+   */
+  static String extract(String database) {
+    String db = id(database);
+    String manifest = DatabaseContainers.MOUNT + "/source.counts";
+    return "set -eu\n"
+        + "pg_dump -d "
+        + db
+        + " -Fc -f "
+        + DUMP
+        + "\n"
+        + psqlStep(db, COUNTS, manifest)
+        + printManifest(manifest);
+  }
+
+  /**
+   * The ingest: the target role (with the claim's own password, so the service's credential does not
+   * change) and the target database owned by it — dropping first only what an earlier aborted attempt
+   * of this same move left behind — then the restore and the target's manifest.
+   *
+   * <p>{@code --no-owner --role=<role>} makes every restored object the role's; {@code
+   * --no-privileges} drops the dump's grants, which on a cross-name move would name a role the target
+   * server does not have. One role per database is the platform's shape, so there is nothing else for
+   * a grant to say.
+   */
+  static String ingest(String database, String role, boolean dropLeftover) {
+    String db = id(database);
+    String r = id(role);
+    String manifest = DatabaseContainers.MOUNT + "/target.counts";
+    String sql =
+        "\\getenv role_password "
+            + ROLE_PASSWORD
+            + "\n"
+            + "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '"
+            + r
+            + "') AS role_existed \\gset\n"
+            + "\\if :role_existed\n"
+            + "ALTER ROLE "
+            + r
+            + " WITH LOGIN PASSWORD :'role_password';\n"
+            + "\\else\n"
+            + "CREATE ROLE "
+            + r
+            + " LOGIN PASSWORD :'role_password';\n"
+            + "\\endif\n"
+            + (dropLeftover ? "DROP DATABASE IF EXISTS " + db + " WITH (FORCE);\n" : "")
+            + "CREATE DATABASE "
+            + db
+            + " OWNER "
+            + r
+            + ";\n"
+            + "REVOKE ALL ON DATABASE "
+            + db
+            + " FROM public;";
+    return "set -eu\n"
+        + psqlStep(ADMIN_DATABASE, sql, null)
+        + "pg_restore -d "
+        + db
+        + " --no-owner --no-privileges --role="
+        + r
+        + " --exit-on-error "
+        + DUMP
+        + "\n"
+        + psqlStep(db, COUNTS, manifest)
+        + printManifest(manifest);
+  }
+
+  /**
+   * The switch's last statement to the source: rename it aside, still fenced — and then, since
+   * nothing ever connects to a kept copy again, {@code ALLOW_CONNECTIONS false} on it as well. The
+   * retention sweep's {@code DROP ... WITH (FORCE)} needs no connection to it. Idempotent: a source
+   * already renamed renames nothing, and the kept copy is closed whether or not this run renamed it.
+   */
+  static String rename(String from, String to) {
+    String source = id(from);
+    String kept = id(to);
+    return psql(
+        ADMIN_DATABASE,
+        "SELECT 'ALTER DATABASE "
+            + source
+            + " RENAME TO "
+            + kept
+            + "' WHERE EXISTS (SELECT 1 FROM pg_database WHERE datname = '"
+            + source
+            + "')\n\\gexec\n"
+            + "SELECT 'ALTER DATABASE "
+            + kept
+            + " WITH ALLOW_CONNECTIONS false' WHERE EXISTS (SELECT 1 FROM pg_database WHERE datname"
+            + " = '"
+            + kept
+            + "')\n\\gexec");
+  }
+
+  /** Drop a database, connections and all, and optionally the role that owned it. */
+  static String drop(String database, String role) {
+    String sql = "DROP DATABASE IF EXISTS " + id(database) + " WITH (FORCE);";
+    if (role != null) {
+      sql += "\nDROP ROLE IF EXISTS " + id(role) + ";";
+    }
+    return psql(ADMIN_DATABASE, sql);
+  }
+
+  /** {@code <database>_moved_<yyyyMMddHHmm>}, the database part cut so the whole stays in 63. */
+  static String keptName(String database, Instant at) {
+    String suffix = "_moved_" + KEPT_STAMP.format(at);
+    String base = id(database);
+    if (base.length() + suffix.length() > NAME_MAX) {
+      base = base.substring(0, NAME_MAX - suffix.length());
+    }
+    return id(base + suffix);
+  }
+
+  /**
+   * The manifest between the markers: {@code <schema>.<table>=<rows>} per line, sorted by table.
+   * Null when the markers are missing — a script that never reached its last step.
+   */
+  static Map<String, Long> manifest(String output) {
+    Map<String, Long> counts = new TreeMap<>();
+    boolean inside = false;
+    boolean closed = false;
+    for (String line : lines(output)) {
+      if (line.equals(MANIFEST_BEGIN)) {
+        inside = true;
+        counts.clear();
+        continue;
+      }
+      if (line.equals(MANIFEST_END)) {
+        closed = inside;
+        inside = false;
+        continue;
+      }
+      if (inside && !line.isEmpty()) {
+        int eq = line.lastIndexOf('=');
+        if (eq <= 0) {
+          return null;
+        }
+        try {
+          counts.put(line.substring(0, eq), Long.parseLong(line.substring(eq + 1).strip()));
+        } catch (NumberFormatException unreadable) {
+          return null;
+        }
+      }
+    }
+    return closed ? counts : null;
+  }
+
+  /**
+   * The first table the two manifests disagree on, by name — a table on one side only, or two
+   * counts — as a sentence; null when they agree.
+   */
+  static String firstDifference(Map<String, Long> source, Map<String, Long> target) {
+    TreeMap<String, Boolean> tables = new TreeMap<>();
+    source.keySet().forEach(t -> tables.put(t, true));
+    target.keySet().forEach(t -> tables.put(t, true));
+    for (String table : tables.keySet()) {
+      Long before = source.get(table);
+      Long after = target.get(table);
+      if (before == null) {
+        return table + " is on the target only (" + after + " rows)";
+      }
+      if (after == null) {
+        return table + " is missing on the target (" + before + " rows on the source)";
+      }
+      if (!before.equals(after)) {
+        return table + " has " + before + " rows on the source and " + after + " on the target";
+      }
+    }
+    return null;
+  }
+
+  /** The sum of a manifest. */
+  static long total(Map<String, Long> counts) {
+    return counts.values().stream().mapToLong(Long::longValue).sum();
+  }
+
+  /**
+   * An exact {@code count(*)} of every table outside {@code pg_catalog} and {@code
+   * information_schema}, one generated statement per table run by {@code \gexec}; each prints
+   * {@code <schema>.<table>=<rows>}.
+   */
+  private static final String COUNTS =
+      "SELECT format('SELECT %L || %L || count(*) FROM %I.%I;', n.nspname || '.' || c.relname, '=',"
+          + " n.nspname, c.relname)\n"
+          + "  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace\n"
+          + " WHERE c.relkind IN ('r', 'p')\n"
+          + "   AND n.nspname NOT IN ('pg_catalog', 'information_schema')\n"
+          + "   AND n.nspname NOT LIKE 'pg\\_temp\\_%' AND n.nspname NOT LIKE 'pg\\_toast%'\n"
+          + " ORDER BY n.nspname, c.relname\n"
+          + "\\gexec";
+
+  private static String printManifest(String manifest) {
+    return "echo " + MANIFEST_BEGIN + "\ncat " + manifest + "\necho " + MANIFEST_END + "\n";
+  }
+
+  private static String id(String identifier) {
+    return PdIdentifiers.requireDatabaseName(identifier);
+  }
+
+  private static String[] lines(String output) {
+    return (output == null ? "" : output).replace("\r", "").lines().map(String::strip).toArray(String[]::new);
+  }
+}

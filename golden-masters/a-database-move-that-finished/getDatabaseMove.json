@@ -1,0 +1,36 @@
+{
+  "move": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "batchId": "00000000-0000-4000-8000-000000000001",
+    "applicationName": "contract-app-00000001",
+    "environmentName": "contract-00000001",
+    "resourceName": "db",
+    "sourceServer": "public",
+    "sourceDatabase": "qits_contract_app_00000001",
+    "targetServer": "private",
+    "targetDatabase": "qits_contract_app_00000001",
+    "specServer": null,
+    "specDatabase": null,
+    "keptDatabase": "qits_contract_app_00000001_moved_202601010000",
+    "origin": "DEPLOYMENT",
+    "requestedBy": null,
+    "state": "MOVED",
+    "sourceCounts": {
+      "public.flyway_schema_history": 4,
+      "public.items": 12
+    },
+    "targetCounts": {
+      "public.flyway_schema_history": 4,
+      "public.items": 12
+    },
+    "sourceRows": 16,
+    "targetRows": 16,
+    "detail": null,
+    "createdAt": "2026-01-01T00:00:00Z",
+    "startedAt": "2026-01-01T00:00:00Z",
+    "finishedAt": "2026-01-01T00:00:00Z",
+    "dropAfter": "2026-01-01T00:00:00Z",
+    "droppedAt": null
+  },
+  "note": null
+}

@@ -12,6 +12,7 @@ import eu.wohlben.qits.deployments.deployments.control.DeploymentExtrasSource;
 import eu.wohlben.qits.deployments.deployments.control.ExtrasSnapshot;
 import eu.wohlben.qits.deployments.deployments.control.HealthGate;
 import eu.wohlben.qits.deployments.deployments.control.PdProcess;
+import eu.wohlben.qits.deployments.deployments.control.ResourceProvisioning;
 import eu.wohlben.qits.deployments.deployments.control.ServiceExtras;
 import eu.wohlben.qits.deployments.deployments.control.SettingsExtrasSource;
 import eu.wohlben.qits.deployments.deployments.entity.PdSetting;
@@ -375,6 +376,48 @@ class SwarmDeploymentDriverTest {
     updating.platformDomain = Optional.of("wohlben.eu");
     List<String> update = updating.buildUpdateArgv(spec(), "dev-qits-gateway");
     assertTrue(update.containsAll(List.of("--env-add", "QITS_DOMAIN=wohlben.eu")), update.toString());
+  }
+
+  @Test
+  void thePrivatePostgresIsHandedTheDeployersOwnAdminPasswordAndNothingElseIs() {
+    // qits-2175: both servers share one admin credential, so the deployer initialises the private
+    // one itself — POSTGRES_PASSWORD from qits.deployments.postgres.admin-password, for that
+    // application alone. No settings row states it; a rule in code does.
+    SwarmDeploymentDriver driver = driver();
+    driver.postgresAdminPassword = Optional.of("the-admin-password");
+    DeploymentDriver.ServiceSpec privatePostgres =
+        new DeploymentDriver.ServiceSpec(
+            "env-id",
+            "dev",
+            "app-id",
+            ResourceProvisioning.PRIVATE_POSTGRES_APPLICATION,
+            "dep-id",
+            "abc1234",
+            VERSION,
+            "qits-pd-dev-qits-oci-postgresql-private-dep",
+            "dev-qits-oci-postgresql-private",
+            List.of("qits-private"),
+            IMAGE,
+            null,
+            "pg_isready -U postgres",
+            false,
+            DeploymentDriver.UpdateOrder.STOP_FIRST,
+            DeploymentDriver.PublishMode.HOST,
+            List.of(),
+            List.of());
+
+    List<String> create =
+        driver.buildCreateArgv(privatePostgres, "dev-qits-oci-postgresql-private", List.of("qits-private"));
+    assertTrue(create.contains("POSTGRES_PASSWORD=the-admin-password"), create.toString());
+    List<String> update = driver.buildUpdateArgv(privatePostgres, "dev-qits-oci-postgresql-private");
+    assertTrue(
+        update.containsAll(List.of("--env-add", "POSTGRES_PASSWORD=the-admin-password")),
+        update.toString());
+
+    List<String> other = driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
+    assertTrue(
+        other.stream().noneMatch(argument -> argument.startsWith("POSTGRES_PASSWORD")),
+        "no other application is handed the admin password: " + other);
   }
 
   @Test

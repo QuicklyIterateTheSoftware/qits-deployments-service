@@ -11,8 +11,9 @@ instead of inheriting them, and why every seam that reaches outside the process 
 skipped: `FakeDeploymentDriver` behind `DeploymentDriver` (the orchestrator), `FakeSpecSource` behind
 `SpecSource` (the git host), `FakeResourceProvisioner` behind `ResourceProvisioner` (the
 platform's postgres), `FakeIdpClientProvisioner` behind `IdpClientProvisioner` (qits-idp's
-service-client API) and `FakeArtifactPurge` behind `ArtifactPurge` (qits-artifacts' purge door,
-qits-1941). **Five fakes** — the ancestor's stub HTTP server for the topology dissolved
+service-client API), `FakeArtifactPurge` behind `ArtifactPurge` (qits-artifacts' purge door,
+qits-1941) and `FakeDatabaseContainers` behind `DatabaseContainers` (the database move's and the
+private postgres' one-shot containers, qits-2175). **Six fakes** — the ancestor's stub HTTP server for the topology dissolved
 when the topology became a repository query, and `FakeDeclarationSeed` went with qits-configuration
 (qits-1393).
 
@@ -1123,12 +1124,14 @@ derived or generated here. So the rule that nothing arriving over HTTP contribut
 `docker run` is unchanged by provisioning: the credential is this component's, and the registry row
 is its only copy.
 
-**Provisioning speaks SQL, not shell.** `CREATE ROLE` / `CREATE DATABASE` / `REVOKE` / `ALTER …
-OWNER` over plain JDBC — no `psql`, no `docker exec`, no process. `exec` is still not in the docker
-vocabulary and must not enter it. The postgres superuser password comes from
+**Provisioning speaks SQL.** `CREATE ROLE` / `CREATE DATABASE` / `REVOKE` / `ALTER … OWNER` over
+plain JDBC on the public server; on the private one the same statements go to `psql` in a one-shot
+container (qits-2175, `DatabaseScripts`, identifiers re-validated at the line that assembles them).
+`exec` is still not in the docker vocabulary and must not enter it. The postgres superuser password comes from
 `qits.deployments.postgres.admin-password` (deployment config, the domain that already
-holds the socket), has no default, is never stored in a row and never reaches an argv. **There is no
-`DROP` and none is coming**: marking a resource obsolete is future work, and it will be a mark.
+holds the socket), has no default, is never stored in a row and never reaches an argv. **Provisioning
+never `DROP`s.** The one `DROP` is a database move's (qits-2175): the target of an aborted move, and
+the kept copy of a finished one once its retention has run out.
 
 **The `platformdeployments` database is credential-bearing.** `pd_resource.password` is the single
 authority for every provisioned application's credential — a postgres password or an idp client
@@ -1393,10 +1396,96 @@ each is easy to undo by accident:
 - **No transaction spans the seam call.** The registry read and the row upsert are two
   `requiringNew()` brackets with the DDL between them — a socket to another server must never sit
   inside this component's own transaction.
-- **The host is derived, never configured.** An environment application uses
-  `PdNetworks.alias(<tier>, "qits-oci-postgresql")`; a platform-plane one uses the platform
-  environment's tier, and fails with a sentence when no environment is designated. There is no
-  postgres-host config key and there should not be one.
+- **The host is derived, never configured — and it is the CLAIM's server's** (qits-2175).
+  `pd_resource.server` (V20) is `public` or `private`; the host is `DatabaseServer.host(<tier>)`,
+  `PdNetworks.alias(<tier>, "qits-oci-postgresql")` or `…-private`, in `ensurePostgres` and
+  `recordedBindings` alike. A NEW claim takes `DatabaseServer.forExposure` — `exposure: private` →
+  the private server, `public`/`both` → the public one, the one place the rule is spelled — and an
+  existing claim changes server only through a move. There is no postgres-host config key and there
+  should not be one.
+- **The private server is provisioned by `psql` in a container**, `ContainerResourceProvisioner`
+  over `DatabaseContainers`: this deployer is on qits-net alone and cannot open a socket to a
+  postgres on qits-private alone. Same statements, same four drift arms; the admin password reaches
+  the container as `PGPASSWORD` and the role's through psql's `\getenv`, never in an argv or a
+  script. `@Typed` to its own class, so `ResourceProvisioner` keeps exactly one bean of its type and
+  `FakeResourceProvisioner` still replaces only the public server's. The private server's own
+  superuser password is the deployer's admin password, written by the swarm driver as
+  `POSTGRES_PASSWORD` for `qits-oci-postgresql-private` alone (`ResourceProvisioning
+  .PRIVATE_POSTGRES_APPLICATION`) — a rule in code, not a settings row; its deployment fails naming
+  the key when none is configured, and the preview masks it by its name.
+
+### Moving a database (qits-2175)
+
+**A changed target used to be an EMPTY database, silently.** A claim is found by (application, tier,
+resource NAME), so a pin edited or dropped, or a `renamed_from` whose convention name followed the
+application, re-provisioned an empty database under the new name and started the service green on
+it. `DatabaseMoves.beforeProvisioning` runs in `DeployService.execute` right before `ensureAll`: per
+declared postgres resource the CLAIM (own, or on a rename with none of its own the predecessor's for
+the same name) is compared with the TARGET (rule server, `resolve()` database). No claim or the same
+place: nothing. Anything else is a MOVE, recorded step by step in `pd_database_move` (V20):
+
+1. **stop** — the claim holder's service (its wire alias) scaled to 0, waited for until no task is
+   left (`DatabaseContainers.drained`), the source FENCED by privilege — `REVOKE CONNECT` from its
+   role and `PUBLIC` — and its backends terminated. Never `ALLOW_CONNECTIONS false` before the dump:
+   that flag shuts out superusers too, and `pg_dump` connects as one (`DatabaseScriptsPostgresTest`);
+2. **extract** — a container on the SOURCE server's network only, volume `qits-dbmove-<id>`:
+   `pg_dump -Fc` plus an exact `count(*)` of every table into a manifest;
+3. **ingest** — a container on the TARGET server's network only, same volume: the role with the
+   claim's stored password, the database owned by it, `pg_restore --no-owner --no-privileges
+   --role=<role>`, the same manifest;
+4. **compare** — same tables, same counts, or ABORT: target dropped (and its role, when no claim on
+   that server uses it), source re-opened (`GRANT CONNECT` to its role), volume removed, the service scaled back to the replicas it
+   had, the deployment `FAILED` naming the first differing table;
+5. **switch** — the claim takes the target (password unchanged) in the transaction that writes
+   `SWITCHING`; the source is renamed `<db>_moved_<yyyyMMddHHmm>` (≤63), still fenced, and only then
+   `ALLOW_CONNECTIONS false` (nothing connects to a kept copy again); the volume
+   goes; `drop_after = now + qits.deployments.database-move.retention` (`P7D`). One INFO line names
+   both databases and both sides' row totals.
+
+Every container joins exactly ONE network (`ContainerSpec.network`, never `extraNetworks`), so a
+cross-server move is two containers sharing a volume. The moves of one deployment are one BATCH:
+stopped once, all copied and verified, then all switched — or all aborted. **Refused before anything
+stops**: this deployer's own databases (moving them is qits-2209), a target another claim holds, a target that already exists
+on the target server and is not an earlier ABORTED attempt of the same move. A predecessor resource
+the successor no longer declares by NAME is still refused (`refuseAbandonedPredecessorClaims`), and
+`ensurePostgres` keeps a belt: a claim whose database differs from the resolved one is refused
+rather than re-provisioned, should anything reach provisioning without the move.
+
+**A target server that is not deployed DEFERS the move** (the rollout gap before
+`qits-oci-postgresql-private` exists; "deployed" is `PostgresAdmin.deployed`, a service under its
+alias): the claim stays, the deployment provisions against it as before, one WARN says `deferred: the
+<server> postgres is not deployed in <env>`, and the first deployment after the server exists moves
+it. The door answers 409 with the same sentence. A NEW claim whose rule server is not deployed still
+fails, naming that.
+
+**A restart is never a forgotten move** (`settleInterrupted`, on the worker at boot and on every
+observation tick for what boot could not finish): a batch with a row at `SWITCHING` or later is
+finished AND its application is REDEPLOYED at the version its interrupted deployment was putting live
+(the service is at zero and its spec names the old database). The interrupted-deployment machinery
+does not cover it: `sweepInFlight` flags the row `interrupted` (V16), but only `OwedReleaseSweep`
+re-drives one, and only for a bus release with a `pd_owed_release` obligation, which `Door.MANUAL`
+never writes. Any other batch is aborted. A `QUEUED` operator move is refused at boot only — on a tick it is
+waiting in the queue behind the pass. The tick also runs `sweepExpired`, which drops kept copies past
+`drop_after` (and the old role, when no claim on that server uses it) and stamps `dropped_at`.
+
+**The containers go through qits-containers-driver** (`service/dbhost/DockerDatabaseContainers`, the
+owner's ruling of 2026-11-13): `ContainerSpec` built, `DockerArgv.run` rendered under
+`LifecyclePolicy.ephemeral`, `ContainerProcess` run, then `docker wait` (the one hand-built argv —
+the library has none), `DockerArgv.logsTail` and `DockerArgv.rm`. The library renders env as `-e
+K=V`, so `withheld` rewrites the SECRET keys to `-e K` and hands the values to the CLI's own
+environment; it has no stdin, so the script is `sh -c`'s argument and carries no secret. Labels are
+`qits.platform.deployments.dbmove.*`, never qits-containers' namespace (its volume sweep).
+
+**The operator's door is a redeploy** — `POST /deployments/api/database-moves` `{application,
+resource?, server?, database?}` → 202. Decided on the request thread (the live version's spec read
+for the default target; 400/404/409/502 are answers), written `QUEUED`, and queued as a redeploy of
+the live version (`DeployService.redeploy`, the manual door's semantics) whose `beforeProvisioning`
+takes the held target for that one resource. A redeploy, because a moved database is only half a
+move: nothing short of a deployment hands the running service the new address. An override the spec
+disagrees with is accepted and the answer's `note` says the next deployment moves it back. `GET
+/database-moves[?application=]` and `/{id}` are the read surface (and the entity-exposure rule's
+answer for the table). Roles: the operator's set **and `qits:agent`** on all three — the POST is the
+one write an agent may make here (qits-2187's agent runs it); never `qits:system`.
 
 The admin credential and the untrusted-input rules for the two names are in **Untrusted input**
 above. `PgResourceProvisionerTest` runs the matrix against a real postgres because the arms differ
@@ -2368,10 +2457,11 @@ is COMPARED against a stored application name. Five things about it, each easy t
   the rename takes the predecessor down as a side effect of its successor's first deployment.
 - **It also REFUSES a rename that would leave the predecessor's data behind** (qits-1397). Before
   anything is provisioned, every postgres claim the predecessor holds in the tier being deployed into
-  is checked against the successor's resolved databases; one the successor does not declare fails
-  the deployment naming it — `the predecessor `X` holds the database `Y`, which this spec does not
-  declare; … pin it in `resources:` (database: Y)` — rather than starting it green on a new, empty
-  one. A null value never reaches the check.
+  is checked against the successor's declared resource NAMES (qits-2175 — it was the resolved
+  databases); one the successor no longer declares fails the deployment naming it. A declared name
+  that resolves to another database is no longer a refusal but a database MOVE (see *Moving a
+  database*), so a rename no longer has to pin the old name to keep its data. A null value never
+  reaches the check.
 - **It is a declaration and never an inference.** A prefix rule, a similarity test or "the previous
   holder of this database" are all "hand this application somebody else's store" with a heuristic in
   front of it. A key is written in a reviewed commit and read at the released tag, like every other
@@ -2516,9 +2606,9 @@ deployed here — runs the path it always ran. Seven things about it, each easy 
 
 **Refused:**
 
-- a spec that would leave the predecessor's own database behind — pin it in the successor's
-  `resources:` (qits-1397), or the deployment fails naming the database rather than starting green on
-  an empty one.
+- a spec that stops declaring one of the predecessor's database resources by NAME (qits-1397,
+  narrowed by qits-2175) — the deployment fails naming it rather than starting green on an empty one.
+  A declared name that resolves to a new database is a move, not a refusal.
 - `renamed_from:` on the deployer's own spec — `DeploymentDriver.isOwnService` refuses it before
   anything moves, because the cutover would retire the service it is answering on. This component's
   own moves are the hand steps in *Retiring the plane's bare-named services* and *This repo is its own
@@ -2526,8 +2616,9 @@ deployed here — runs the path it always ran. Seven things about it, each easy 
 
 **Exempt, never moved by a rename:**
 
-- database and role NAMES — pin the old one in `resources:` if the data is to survive; nothing here
-  renames a database.
+- database and role NAMES are not renamed in place: an unpinned resource whose convention name
+  follows the application is MOVED to the new name (qits-2175, copied and verified, the old kept
+  for the retention); pin the old name in `resources:` to keep it as it is.
 - published maven/npm coordinates and `quarkus.package.output-name`.
 - java package roots.
 - the idp issuer constants (`ResourceProvisioning.IDP_APPLICATION`,

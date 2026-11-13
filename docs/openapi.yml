@@ -112,6 +112,13 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PdLinkedServiceDto"
+    ListMovesResponse:
+      type: object
+      properties:
+        moves:
+          type: array
+          items:
+            $ref: "#/components/schemas/PdDatabaseMoveDto"
     ListPinsResponse:
       type: object
       properties:
@@ -133,6 +140,24 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PdSettingDto"
+    MoveRequest:
+      type: object
+      properties:
+        application:
+          type: string
+        resource:
+          type: string
+        server:
+          type: string
+        database:
+          type: string
+    MoveResponse:
+      type: object
+      properties:
+        move:
+          $ref: "#/components/schemas/PdDatabaseMoveDto"
+        note:
+          type: string
     PdApplicationDto:
       type: object
       properties:
@@ -153,6 +178,67 @@ components:
         healthPath:
           type: string
         createdAt:
+          $ref: "#/components/schemas/Instant"
+    PdDatabaseMoveDto:
+      type: object
+      properties:
+        id:
+          type: string
+        batchId:
+          type: string
+        applicationName:
+          type: string
+        environmentName:
+          type: string
+        resourceName:
+          type: string
+        sourceServer:
+          type: string
+        sourceDatabase:
+          type: string
+        targetServer:
+          type: string
+        targetDatabase:
+          type: string
+        specServer:
+          type: string
+        specDatabase:
+          type: string
+        keptDatabase:
+          type: string
+        origin:
+          type: string
+        requestedBy:
+          type: string
+        state:
+          type: string
+        sourceCounts:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+        targetCounts:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+        sourceRows:
+          type: integer
+          format: int64
+        targetRows:
+          type: integer
+          format: int64
+        detail:
+          type: string
+        createdAt:
+          $ref: "#/components/schemas/Instant"
+        startedAt:
+          $ref: "#/components/schemas/Instant"
+        finishedAt:
+          $ref: "#/components/schemas/Instant"
+        dropAfter:
+          $ref: "#/components/schemas/Instant"
+        droppedAt:
           $ref: "#/components/schemas/Instant"
     PdDecommissionDto:
       type: object
@@ -733,6 +819,108 @@ paths:
       security:
       - SecurityScheme:
         - qits:system
+        - qits:agent
+  /deployments/api/database-moves:
+    post:
+      summary: "Move an application's database to another server or name — queued\
+        \ as a redeploy of its live version whose provisioning copies, verifies and\
+        \ switches it"
+      operationId: moveDatabase
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveRequest"
+        required: true
+      responses:
+        "202":
+          description: Queued on the deploy worker; the move is named
+        "400":
+          description: "No application, a malformed name, an unknown server, or no\
+            \ resource named for an application holding several databases"
+        "404":
+          description: The application holds no such database
+        "409":
+          description: "Already there, the deployer's own database, a target another\
+            \ application holds, or nothing serving to redeploy"
+        "502":
+          description: The live version's spec could not be read
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Database Move Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:admin-agent
+        - qits:desk-admin
+        - qits:desk
+        - qits:agent
+    get:
+      summary: "The database moves, newest first — of one application, or of every\
+        \ one"
+      operationId: listDatabaseMoves
+      parameters:
+      - name: application
+        in: query
+        schema:
+          type: string
+      responses:
+        "200":
+          description: "The moves, newest first; at most 200"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListMovesResponse"
+        "400":
+          description: A malformed application name
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Database Move Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:admin-agent
+        - qits:desk-admin
+        - qits:desk
+        - qits:agent
+  /deployments/api/database-moves/{id}:
+    get:
+      summary: "One database move: its state, both sides' counts, and when its kept\
+        \ copy goes"
+      operationId: getDatabaseMove
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: The move
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MoveResponse"
+        "404":
+          description: No move of that id
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Database Move Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:admin-agent
+        - qits:desk-admin
+        - qits:desk
         - qits:agent
   /deployments/api/deployment-requests:
     get:
