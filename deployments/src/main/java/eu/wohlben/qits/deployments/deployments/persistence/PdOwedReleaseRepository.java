@@ -62,6 +62,29 @@ public class PdOwedReleaseRepository implements PanacheRepositoryBase<PdOwedRele
   }
 
   /**
+   * The newest accepted release of this repository that carries its name, settled or not — what a
+   * database move reads the repository's address from when the live deployment's own release
+   * opened no obligation (qits-2175). The rename subscriber keeps every row of one repository on its
+   * current name, so the newest is no better than any other; it is merely deterministic.
+   */
+  public Optional<PdOwedRelease> newestNamedOfRepository(String repoId) {
+    if (repoId == null) {
+      return Optional.empty();
+    }
+    return find("repoId = ?1 and repoName is not null order by seq desc", repoId)
+        .firstResultOptional();
+  }
+
+  /** The newest accepted release of this package that carries a repository name, settled or not. */
+  public Optional<PdOwedRelease> newestNamedOfPackage(String packageName) {
+    if (packageName == null) {
+      return Optional.empty();
+    }
+    return find("packageName = ?1 and repoName is not null order by seq desc", packageName)
+        .firstResultOptional();
+  }
+
+  /**
    * Move every obligation of one repository onto its new public name, and answer how many moved.
    *
    * <p><b>A bulk JPQL update rather than a load-and-set loop</b>, because it is a statement about a

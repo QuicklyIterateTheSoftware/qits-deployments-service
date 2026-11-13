@@ -1503,6 +1503,14 @@ disagrees with is accepted and the answer's `note` says the next deployment move
 answer for the table). Roles: the operator's set **and `qits:agent`** on all three — the POST is the
 one write an agent may make here (qits-2187's agent runs it); never `qits:system`.
 
+**The live version's spec is read NAME-addressed, and the name comes from `pd_owed_release`**
+(`DatabaseMoves.named`, used by the door and the boot settle alike): the obligation of that exact
+(package, version), else the newest named obligation of the same `repo_id`, else of the same
+package. The fallback is not optional — a version last deployed through the manual door has a
+request row with no package and no obligation of its own (qits-orchestrator@2026.1113.141108), and
+the id route is a 403 for this caller. A repository no accepted release ever named is a 502 saying
+the name is unknown.
+
 The admin credential and the untrusted-input rules for the two names are in **Untrusted input**
 above. `PgResourceProvisionerTest` runs the matrix against a real postgres because the arms differ
 only in which statement runs — a fake there would be asserting the test's own model of the server.

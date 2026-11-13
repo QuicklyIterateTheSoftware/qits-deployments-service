@@ -1069,6 +1069,13 @@ public class DatabaseMoves {
           move.batchId, move.applicationName, e.getMessage());
       return;
     }
+    if (!live.repository().nameAddressed()) {
+      LOG.warnf(
+          "The name of %s's repository %s is unknown here — no release this deployer accepted names"
+              + " it — so the redeploy after the database move %s reads its spec by id, which the"
+              + " git host serves to qits-projects only",
+          move.applicationName, live.repository().repoId(), move.batchId);
+    }
     LOG.warnf(
         "Finished the interrupted database move %s past its switch; redeploying %s@%s so its stopped"
             + " service starts against the moved database",
@@ -1116,24 +1123,53 @@ public class DatabaseMoves {
       throw new ConflictException(
           application + "'s live deployment names no released version of a repository");
     }
-    String repoName =
-        request.packageName == null
-            ? null
-            : owed
-                .find(
-                    "packageName = ?1 and version = ?2 and repoName is not null",
-                    request.packageName,
-                    serving.version)
-                .firstResultOptional()
-                .map((PdOwedRelease o) -> o.repoName)
-                .orElse(null);
-    String released = PackageNames.applicationOf(request.packageName);
+    PdOwedRelease named = named(request, serving.version);
+    String packageName =
+        request.packageName != null ? request.packageName : named == null ? null : named.packageName;
+    String projectId =
+        request.projectId != null ? request.projectId : named == null ? null : named.projectId;
+    String released = PackageNames.applicationOf(packageName);
     return new Live(
         serving.version,
         request.variant,
-        new RepositoryRef(request.repoId, request.projectId, repoName),
+        new RepositoryRef(request.repoId, projectId, named == null ? null : named.repoName),
         released != null ? released : application,
-        request.packageName);
+        packageName);
+  }
+
+  /**
+   * The newest accepted release that names the live deployment's repository — the only place this
+   * component learns a repository's NAME, which the spec read needs: the git host serves {@code
+   * /git/<repoId>} to qits-projects alone, so an id-addressed read is a 403 for this caller.
+   *
+   * <p><b>Three tries, most exact first.</b> The release that put this very version live, by its
+   * package. Then any release of the same repository: the request row of a redeploy through the
+   * manual door ({@code POST /events/software-released} — qits-projects' "deploy again", a replay)
+   * records no package and opens no obligation, so an exact match is absent for exactly the
+   * deployments a person last touched (qits-2175, qits-orchestrator@2026.1113.141108). The rename
+   * subscriber keeps every row of a repository on its current name, so the newest is as good as the
+   * one that matched. Last, any release of the same package, for a repository whose own rows carry
+   * no name. Null when the deployer has never been told a name for it.
+   */
+  private PdOwedRelease named(PdDeploymentRequest request, String version) {
+    if (request.packageName != null) {
+      Optional<PdOwedRelease> exact =
+          owed.find(
+                  "packageName = ?1 and version = ?2 and repoName is not null",
+                  request.packageName,
+                  version)
+              .firstResultOptional();
+      if (exact.isPresent()) {
+        return exact.get();
+      }
+    }
+    Optional<PdOwedRelease> sameRepository = owed.newestNamedOfRepository(request.repoId);
+    if (sameRepository.isPresent()) {
+      return sameRepository.get();
+    }
+    return request.packageName == null
+        ? null
+        : owed.newestNamedOfPackage(request.packageName).orElse(null);
   }
 
   private SpecSource.DeploymentSpec liveSpec(Live live) {
@@ -1142,6 +1178,19 @@ public class DatabaseMoves {
           live.variant() == null ? SpecSource.SPEC_PATH : SpecSource.variantPath(live.variant());
       return specs.read(live.repository(), SpecSource.tagRev(live.version()), path).spec();
     } catch (RuntimeException unreadable) {
+      if (!live.repository().nameAddressed()) {
+        LOG.warnf(
+            "The spec of %s@%s was asked for by repository id %s, having no name on record: %s",
+            live.releasedName(), live.version(), live.repository().repoId(), unreadable.getMessage());
+        throw new BadGatewayException(
+            "could not read the spec of the live version "
+                + live.version()
+                + ": the name of its repository "
+                + live.repository().repoId()
+                + " is unknown here — no release this deployer accepted names it — and the git host"
+                + " serves a spec by repository id to qits-projects only",
+            unreadable);
+      }
       throw new BadGatewayException(
           "could not read the spec of the live version " + live.version() + ": " + unreadable.getMessage(),
           unreadable);
