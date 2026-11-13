@@ -177,8 +177,57 @@ public class DatabaseMoves {
       String renamedFrom,
       DeploymentDriver.Exposure exposure,
       List<ResourceProvisioning.Resolved> declared) {
+    return prepare(applicationName, environmentName, renamedFrom, exposure, declared).resolved();
+  }
+
+  /**
+   * What {@link #prepare} hands the deployment: the resources as provisioning must see them, and
+   * the moves this deployment SWITCHED — after which the old service cannot simply be scaled back
+   * up, because its binding names a source that is now renamed and fenced.
+   */
+  public record Prepared(List<ResourceProvisioning.Resolved> resolved, List<PdDatabaseMove> switched) {
+
+    /** One line naming every switched move and the service it stopped, for the failure path. */
+    public String describeSwitched() {
+      return switched.stream()
+          .map(
+              move ->
+                  "`"
+                      + move.resourceName
+                      + "` of "
+                      + move.applicationName
+                      + " moved from "
+                      + where(DatabaseServer.parse(move.sourceServer), move.sourceDatabase)
+                      + " to "
+                      + where(DatabaseServer.parse(move.targetServer), move.targetDatabase)
+                      + " (the source kept as "
+                      + move.keptDatabase
+                      + ", fenced), its service "
+                      + (move.serviceName == null ? "(none was running)" : move.serviceName)
+                      + " stopped")
+          .collect(Collectors.joining("; "));
+    }
+  }
+
+  /**
+   * {@link #beforeProvisioning}, also answering which moves switched.
+   *
+   * <p><b>An operator's held target is what provisioning sees for that resource</b> (qits-2175,
+   * observed live on qits-orchestrator): a move whose target the door overrode switches the claim to
+   * that target, so the resolved entry handed on must name it too — otherwise provisioning's backstop
+   * compares the switched claim against the spec's database, refuses it as a move that "has not
+   * run", and the deployment fails with its service stopped on a database that already moved. Every
+   * other resource keeps exactly the database {@code resolve()} answered, so the backstop still
+   * guards every other case.
+   */
+  public Prepared prepare(
+      String applicationName,
+      String environmentName,
+      String renamedFrom,
+      DeploymentDriver.Exposure exposure,
+      List<ResourceProvisioning.Resolved> declared) {
     if (declared == null || declared.isEmpty() || environmentName == null) {
-      return declared == null ? List.of() : declared;
+      return new Prepared(declared == null ? List.of() : declared, List.of());
     }
     // Abandonment first: a predecessor's resource the successor stopped declaring is refused before
     // any service is stopped, exactly as it was refused before anything was provisioned.
@@ -233,9 +282,14 @@ public class DatabaseMoves {
         continue;
       }
       planned.add(new Planned(applicationName, environmentName, name, claimed, targetServer, targetDatabase, heldRow));
+      // Provisioning finds the claim where the move puts it: the spec's database for a deployment's
+      // own move, the held target for an operator's override of it.
+      effective.set(
+          effective.size() - 1,
+          new ResourceProvisioning.Resolved(name, targetDatabase, resource.type()));
     }
     if (planned.isEmpty()) {
-      return List.copyOf(effective);
+      return new Prepared(List.copyOf(effective), List.of());
     }
 
     // Every refusal before anything stops.
@@ -246,8 +300,8 @@ public class DatabaseMoves {
         throw new ResourceException(refusal);
       }
     }
-    run(planned);
-    return List.copyOf(effective);
+    List<PdDatabaseMove> switched = run(planned);
+    return new Prepared(List.copyOf(effective), switched);
   }
 
   /** The one sentence a deferred move is told by — the deployment's WARN and the door's 409. */
@@ -394,8 +448,12 @@ public class DatabaseMoves {
 
   // --- the move itself --------------------------------------------------------------------------
 
-  /** Stop once, copy and verify every move, then switch them all — or abort them all. */
-  private void run(List<Planned> planned) {
+  /**
+   * Stop once, copy and verify every move, then switch them all — or abort them all.
+   *
+   * @return the switched rows, as they ended
+   */
+  private List<PdDatabaseMove> run(List<Planned> planned) {
     String batch = UUID.randomUUID().toString();
     List<String> ids = new ArrayList<>();
     for (Planned move : planned) {
@@ -410,9 +468,11 @@ public class DatabaseMoves {
       abortBatch(batch, failure.getMessage());
       throw new ResourceException(failure.getMessage());
     }
+    List<PdDatabaseMove> switched = new ArrayList<>();
     for (int i = 0; i < planned.size(); i++) {
-      finishSwitch(ids.get(i));
+      switched.add(finishSwitch(ids.get(i)));
     }
+    return List.copyOf(switched);
   }
 
   /** The row in {@code STOPPING}: a new one, or the operator's {@code QUEUED} one taken over. */
@@ -600,7 +660,7 @@ public class DatabaseMoves {
    * enters {@code SWITCHING}, then the source is renamed aside and the volume removed. Idempotent
    * from any point on, which is what lets a restart call it for a row it finds half-way.
    */
-  private void finishSwitch(String id) {
+  private PdDatabaseMove finishSwitch(String id) {
     PdDatabaseMove switched =
         QuarkusTransaction.requiringNew()
             .call(
@@ -660,6 +720,7 @@ public class DatabaseMoves {
         totalOf(done.targetCounts),
         done.keptDatabase,
         done.dropAfter);
+    return done;
   }
 
   /** The claim row takes the target server and database; its password is the one it had. */
@@ -1083,24 +1144,49 @@ public class DatabaseMoves {
     worker.redeploy(live.repository(), live.releasedName(), live.version(), live.packageName());
   }
 
+  /** The words of a deployment that served its place — what the door redeploys. */
+  private static final Set<PdDeploymentStatus> SERVED =
+      Set.of(PdDeploymentStatus.ACTIVE, PdDeploymentStatus.SCALED_TO_ZERO);
+
+  /**
+   * The words of an attempt that ended without going live — skipped, newest first, on the way to the
+   * deployment that served before it. A deployment that failed AFTER its move switched leaves the
+   * service stopped and a {@code FAILED} row on top (qits-orchestrator, 2026-11-13); the door has to
+   * see past it, or the one recovery an operator has — a move back, redeploying the version that
+   * served — would be a 409.
+   */
+  private static final Set<PdDeploymentStatus> DID_NOT_GO_LIVE =
+      Set.of(
+          PdDeploymentStatus.FAILED,
+          PdDeploymentStatus.ROLLED_BACK,
+          PdDeploymentStatus.IMAGE_MISSING);
+
+  /**
+   * The newest deployment of the place that served it: the newest row when it is {@code ACTIVE} or
+   * {@code SCALED_TO_ZERO}, else the first such row under a run of attempts that did not go live.
+   * Anything else on the way — a deployment in flight, a decommissioned or retired place — is a 409.
+   */
   private Live live(String application, PdEnvironment tier) {
     return QuarkusTransaction.joiningExisting()
         .call(
             () -> {
-              PdDeployment serving =
-                  deployments
-                      .newestForPlace(application, tier.id)
-                      .filter(
-                          row ->
-                              row.status == PdDeploymentStatus.ACTIVE
-                                  || row.status == PdDeploymentStatus.SCALED_TO_ZERO)
-                      .orElseThrow(
-                          () ->
-                              new ConflictException(
-                                  application
-                                      + " has no deployment serving in "
-                                      + tier.name
-                                      + " to redeploy against the moved database"));
+              PdDeployment serving = null;
+              for (PdDeployment row : deployments.listForPlaceNewestFirst(application, tier.id)) {
+                if (SERVED.contains(row.status)) {
+                  serving = row;
+                  break;
+                }
+                if (!DID_NOT_GO_LIVE.contains(row.status)) {
+                  break;
+                }
+              }
+              if (serving == null) {
+                throw new ConflictException(
+                    application
+                        + " has no deployment serving in "
+                        + tier.name
+                        + " to redeploy against the moved database");
+              }
               return coordinates(application, serving);
             });
   }

@@ -233,6 +233,115 @@ class PdDatabaseMoveFlowTest {
     assertEquals("private", all.get(0).get("sourceServer"));
   }
 
+  /** The URL the newest applied service spec was handed for its one resource. */
+  private String lastBoundUrl() {
+    DeploymentDriver.ServiceSpec applied = driver.applied().get(driver.applied().size() - 1);
+    return applied.resources().get(0).value("URL");
+  }
+
+  private static JsonPath requestMove(Map<String, Object> body) {
+    return given()
+        .header("Authorization", SuiteBearers.bearer("dbmove-agent", "qits:agent"))
+        .contentType(ContentType.JSON)
+        .body(body)
+        .when()
+        .post(MOVES)
+        .then()
+        .statusCode(202)
+        .extract()
+        .jsonPath();
+  }
+
+  @Test
+  void anOverrideToAnotherNameOnTheSameServerIsProvisionedThereAndTheNextReleaseMovesItBack()
+      throws Exception {
+    // Live on 2026-11-13 (qits-orchestrator): the override switched the claim, then provisioning's
+    // backstop compared it with the SPEC's database, refused, and left the service stopped.
+    String token = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+    String environment = "dbmv-o-" + token;
+    String environmentId = createDesignatedEnvironment(environment);
+    String application = "dbmv-ovr-" + token;
+    String database = "qits_dbmv_ovr_" + token;
+    String override = "qits_dbmv_held_" + token;
+    specs.script(application, declaring(DeploymentDriver.Exposure.PUBLIC));
+    driver.scriptRunningImage(environment + "-qits-oci-postgresql", "registry.example/qits/pg:1");
+    release(application, "2026.101.120000");
+    assertEquals(database, claim(application, environment).databaseName);
+    String password = claim(application, environment).password;
+    driver.scriptDeclaredReplicas(environment + "-" + application, 1);
+
+    JsonPath accepted = requestMove(Map.of("application", application, "database", override));
+    String id = accepted.getString("move.id");
+    assertEquals("public", accepted.getString("move.targetServer"));
+    assertEquals(override, accepted.getString("move.targetDatabase"));
+    assertTrue(
+        accepted.getString("note").contains("moves it back to public/" + database),
+        accepted.getString("note"));
+    deployService.awaitIdle();
+
+    assertEquals("MOVED", move(id).getString("move.state"));
+    PdResource held = claim(application, environment);
+    assertEquals("public", held.server);
+    assertEquals(override, held.databaseName);
+    assertEquals(password, held.password);
+    // The redeploy provisioned the override and went live on it.
+    assertEquals(List.of("ACTIVE", "DECOMMISSIONED"), statuses(environmentId));
+    assertEquals(
+        "jdbc:postgresql://" + environment + "-qits-oci-postgresql:5432/" + override,
+        lastBoundUrl());
+
+    // The next release follows its spec: the override is moved back to the spec's name.
+    release(application, "2026.102.120000");
+    assertEquals("ACTIVE", statuses(environmentId).get(0));
+    PdResource back = claim(application, environment);
+    assertEquals(database, back.databaseName);
+    assertEquals(password, back.password);
+    assertEquals(
+        "jdbc:postgresql://" + environment + "-qits-oci-postgresql:5432/" + database,
+        lastBoundUrl());
+  }
+
+  @Test
+  void theDoorRedeploysTheVersionThatServedWhenTheNewestDeploymentFailedAfterItsMove()
+      throws Exception {
+    // A redeploy that fails AFTER its move switched leaves the service stopped and a FAILED row on
+    // top. The door sees past it to the deployment that served, so a move back recovers the place.
+    String token = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+    String environment = "dbmv-f-" + token;
+    String environmentId = createDesignatedEnvironment(environment);
+    String application = "dbmv-fail-" + token;
+    String database = "qits_dbmv_fail_" + token;
+    String override = "qits_dbmv_away_" + token;
+    specs.script(application, declaring(DeploymentDriver.Exposure.PUBLIC));
+    driver.scriptRunningImage(environment + "-qits-oci-postgresql", "registry.example/qits/pg:1");
+    release(application, "2026.101.120000");
+    driver.scriptDeclaredReplicas(environment + "-" + application, 1);
+
+    driver.scriptPull(
+        new DeploymentDriver.PullResult(DeploymentDriver.PullOutcome.ERROR, "registry unreachable"));
+    String away = requestMove(Map.of("application", application, "database", override)).getString("move.id");
+    deployService.awaitIdle();
+    assertEquals("MOVED", move(away).getString("move.state"));
+    assertEquals(override, claim(application, environment).databaseName);
+    assertEquals(List.of("FAILED", "ACTIVE"), statuses(environmentId));
+
+    // The newest row is FAILED; the one under it served. The door takes that one.
+    driver.scriptPull(new DeploymentDriver.PullResult(DeploymentDriver.PullOutcome.OK, null));
+    JsonPath accepted = requestMove(Map.of("application", application));
+    assertEquals(database, accepted.getString("move.targetDatabase"));
+    assertNull(accepted.get("note"));
+    deployService.awaitIdle();
+
+    assertEquals("MOVED", move(accepted.getString("move.id")).getString("move.state"));
+    assertEquals(database, claim(application, environment).databaseName);
+    List<String> after = statuses(environmentId);
+    assertEquals("ACTIVE", after.get(0));
+    assertEquals(3, after.size());
+    assertEquals(
+        "jdbc:postgresql://" + environment + "-qits-oci-postgresql:5432/" + database,
+        lastBoundUrl());
+  }
+
   @Test
   void theDoorAnswers409WhileTheTargetServerIsNotDeployed() throws Exception {
     String token = UUID.randomUUID().toString().replace("-", "").substring(0, 8);

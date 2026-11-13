@@ -299,6 +299,15 @@ public class DeployService implements ReleaseAnnouncements {
   private final Map<String, Retirement> owedRetirements = new ConcurrentHashMap<>();
 
   /**
+   * The deployments in flight on this worker whose database moves have SWITCHED, by deployment id,
+   * with the sentence naming each move and the service it stopped (qits-2175). From the switch on the
+   * old service cannot just be scaled back up — its binding names a source that is renamed and
+   * fenced — so a failure after it leaves the application down, and {@link #finish} says so at ERROR
+   * rather than as one more WARN. Written and cleared on the worker around {@link #execute}.
+   */
+  private final Map<String, String> switchedMoves = new ConcurrentHashMap<>();
+
+  /**
    * The observation tick — a bare daemon thread, the worker's own shape, rather than the
    * quarkus-scheduler extension. It has one job (submit a runnable every n seconds), it must not run
    * the pass itself, and a scheduler extension would add a managed thread pool and a second
@@ -1695,6 +1704,8 @@ public class DeployService implements ReleaseAnnouncements {
         LOG.errorf(e, "Deployment %s failed unexpectedly", row.deploymentId());
         finish(
             row.deploymentId(), row.target(), PdDeploymentStatus.FAILED, "[unexpected: " + e + "]");
+      } finally {
+        switchedMoves.remove(row.deploymentId());
       }
     }
   }
@@ -2947,13 +2958,17 @@ public class DeployService implements ReleaseAnnouncements {
     // service back on its untouched data.
     List<ResourceProvisioning.Resolved> provisioned;
     try {
-      provisioned =
-          databaseMoves.beforeProvisioning(
+      DatabaseMoves.Prepared prepared =
+          databaseMoves.prepare(
               plan.applicationName(),
               plan.environmentName(),
               plan.renamedFrom(),
               plan.exposure(),
               plan.resources());
+      provisioned = prepared.resolved();
+      if (!prepared.switched().isEmpty()) {
+        switchedMoves.put(deploymentId, prepared.describeSwitched());
+      }
     } catch (RuntimeException e) {
       LOG.warnf("The database move of %s failed: %s", plan.applicationName(), e.getMessage());
       finish(
@@ -4164,6 +4179,21 @@ public class DeployService implements ReleaseAnnouncements {
                   deployment.finishedAt);
             },
             CUTOVER_BUDGET);
+    String switched = switchedMoves.remove(deploymentId);
+    if (switched != null && status != PdDeploymentStatus.ACTIVE) {
+      // The move switched and this deployment did not put the service back up: it is stopped, and
+      // scaling it back would point it at a renamed, fenced source. A person has to act — a move
+      // back through the door redeploys the version that served.
+      LOG.errorf(
+          "Deployment %s of %s ended %s AFTER its database move switched, so the application is"
+              + " DOWN: %s. Recover with POST /deployments/api/database-moves (a move back to the"
+              + " spec's target redeploys the version that served). Cause: %s",
+          deploymentId,
+          target.applicationName(),
+          status,
+          switched,
+          firstLine(detail));
+    }
     if (status != PdDeploymentStatus.ACTIVE) {
       LOG.warnf("Deployment %s ended %s: %s", deploymentId, status, firstLine(detail));
       if (finished != null) {
