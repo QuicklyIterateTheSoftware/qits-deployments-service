@@ -1,5 +1,13 @@
 package eu.wohlben.qits.deployments.swarmhost;
 
+import eu.wohlben.qits.containers.driver.docker.ContainerProcess;
+import eu.wohlben.qits.containers.driver.docker.DockerArgv;
+import eu.wohlben.qits.containers.driver.docker.SwarmArgv;
+import eu.wohlben.qits.containers.driver.swarm.ServiceSpec.Health;
+import eu.wohlben.qits.containers.driver.swarm.ServiceSpec.Mount;
+import eu.wohlben.qits.containers.driver.swarm.ServiceSpec.Publish;
+import eu.wohlben.qits.containers.driver.swarm.ServiceSpec.UpdatePolicy;
+import eu.wohlben.qits.containers.driver.swarm.ServiceUpdate;
 import eu.wohlben.qits.deployments.deployments.control.DeclaredShape;
 import eu.wohlben.qits.deployments.deployments.control.DeployedIdentity;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentDriver;
@@ -8,7 +16,7 @@ import eu.wohlben.qits.deployments.deployments.control.DeploymentIdentifiers;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentSpecParser;
 import eu.wohlben.qits.deployments.deployments.control.ExtrasSnapshot;
 import eu.wohlben.qits.deployments.deployments.control.HealthGate;
-import eu.wohlben.qits.deployments.deployments.control.PdProcess;
+import eu.wohlben.qits.deployments.deployments.control.DockerCredentialFile;
 import eu.wohlben.qits.deployments.deployments.control.ResourceProvisioning;
 import eu.wohlben.qits.deployments.deployments.control.ServiceExtras;
 import eu.wohlben.qits.deployments.environments.control.PdIdentifiers;
@@ -158,13 +166,19 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   private static final Duration NETWORK_REMOVE_WAIT = Duration.ofSeconds(1);
 
   /** Lines of service log kept as a failed convergence's diagnosis. */
-  private static final String LOG_TAIL_LINES = "200";
+  private static final int LOG_TAIL_LINES = 200;
 
   /**
    * Lines of ONE failed task's own log kept beside the service-wide tail — smaller, because there
    * are up to {@link #FAILED_TASKS_KEPT} of them and a task that died at boot says why in a few.
    */
-  private static final String TASK_LOG_TAIL_LINES = "100";
+  private static final int TASK_LOG_TAIL_LINES = 100;
+
+  /** {@code docker service ps}'s filter for the current generation's tasks. */
+  private static final String DESIRED_RUNNING = "desired-state=running";
+
+  /** {@code docker service ps}'s template for a task's state phrase alone. */
+  private static final String CURRENT_STATE_FORMAT = "{{.CurrentState}}";
 
   /** How many of the deployed image's failed tasks a failure detail names, newest first. */
   static final int FAILED_TASKS_KEPT = 3;
@@ -522,7 +536,23 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * Whether a service create and a service update carry {@code --with-registry-auth}. False
    * shipped, and then every argv here is what it was byte for byte.
    *
-   * <p>See {@link #registryAuthFlag} for what the flag does and why the key exists.
+   * <p><b>What the flag does.</b> It serialises the credential the CLI holds for the registry into
+   * the service spec, so the swarm agent authenticates the task's own pull. Without it only the
+   * warm-up {@link #pull} is authenticated — that one runs as this process, with this
+   * process's {@code DOCKER_CONFIG} — and the node-side pull the task then performs carries nothing
+   * and is refused. The image being present in the local image store is not a substitute: swarm
+   * re-pulls per node, and this platform being one node is a coincidence rather than a contract.
+   *
+   * <p><b>Why it is a key rather than always on.</b> The platform's registry reads are anonymous
+   * today, so the flag has nothing to serialise and would only put an empty auth block on every
+   * service spec. The key is what lets the deployer ship ahead of the flip and be turned on with
+   * the deployment that mounts a {@code config.json} — one restart rather than a release.
+   *
+   * <p><b>It does not conflict with {@code --no-resolve-image}.</b> The two answer different
+   * questions: no-resolve tells the CLI not to ask the registry to turn the tag into a digest (the
+   * manager keeps the tag as written, which is what the seed's registry-less {@code qits/*} tags
+   * need), and this one hands the agents a credential for the pull they perform later. Nothing
+   * about carrying auth makes the manager resolve a digest again.
    */
   @ConfigProperty(name = "qits.deployments.registry-auth")
   boolean registryAuth;
@@ -548,8 +578,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
 
   /**
    * Where this component's own docker credential is written when it was handed an idp client — see
-   * {@code DockerCredentialFile}. Every CLI call here passes it to {@link PdProcess}, which sets
-   * {@code DOCKER_CONFIG} to it only when a {@code config.json} is actually there, so the warm-up
+   * {@code DockerCredentialFile}. Every CLI call here hands {@link ContainerProcess} the environment
+   * {@link DockerCredentialFile#dockerEnvironment} derives from it — {@code DOCKER_CONFIG} set to it
+   * only when a {@code config.json} is actually there, so the warm-up
    * pull and the {@code --with-registry-auth} the create and update serialise for the agents read
    * the same credential.
    */
@@ -581,7 +612,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   @FunctionalInterface
   interface Cli {
-    PdProcess.Result run(List<String> argv, Duration timeout);
+    ContainerProcess.Result run(List<String> argv, Duration timeout);
   }
 
   private volatile Cli cli;
@@ -594,14 +625,14 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     this.cli = scripted;
   }
 
-  private PdProcess.Result run(List<String> argv, Duration timeout) {
+  private ContainerProcess.Result run(List<String> argv, Duration timeout) {
     Cli scripted = cli;
     return scripted != null
         ? scripted.run(argv, timeout)
-        : PdProcess.run(
+        : ContainerProcess.run(
             null,
             argv,
-            dockerConfigDir == null ? null : dockerConfigDir.map(Path::of).orElse(null),
+            DockerCredentialFile.dockerEnvironment(dockerConfigDir),
             timeout,
             outputMaxChars);
   }
@@ -686,9 +717,11 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       } else {
         argv = buildUpdateArgv(spec, target);
       }
-    } catch (ServiceExtras.Refused e) {
-      // Deployment config said something swarm cannot express. Nothing was applied — the argv is
-      // built before the command runs — so this deployment changed nothing.
+    } catch (ServiceExtras.Refused | IllegalArgumentException e) {
+      // Deployment config said something swarm cannot express — or a value failed one of
+      // qits-containers-driver's belts (SwarmIdentifiers), which is the same sentence one layer
+      // down. Nothing was applied — the argv is built before the command runs — so this deployment
+      // changed nothing.
       LOG.warnf("Refusing to deploy %s: %s", name, e.getMessage());
       return new ApplyResult(ApplyOutcome.REFUSED, e.getMessage());
     }
@@ -746,7 +779,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
         return new ApplyResult(ApplyOutcome.REFUSED, twinStillStopping);
       }
     }
-    PdProcess.Result result = run(argv, APPLY_TIMEOUT);
+    ContainerProcess.Result result = run(argv, APPLY_TIMEOUT);
     if (result.exitCode() != 0 || result.timedOut()) {
       LOG.warnf(
           "Could not %s service %s: %s", updating ? "update" : "create", name, result.output());
@@ -874,9 +907,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     String last = "(never inspected)";
     try {
       while (true) {
-        PdProcess.Result inspected =
+        ContainerProcess.Result inspected =
             run(
-                List.of(runtime, "service", "inspect", "--format", UPDATE_STATUS_FORMAT, name),
+                SwarmArgv.serviceInspect(runtime, name, UPDATE_STATUS_FORMAT),
                 INSPECT_TIMEOUT);
         if (inspected.exitCode() != 0) {
           // Not a state at all: swarm has no such service. There is nothing to keep waiting for.
@@ -1063,7 +1096,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   @Override
   public HealthGate.Poll observe(String name) {
-    PdProcess.Result listed = observeTasks(name);
+    ContainerProcess.Result listed = observeTasks(name);
     if (listed.exitCode() != 0) {
       // The application may live under the seed stack's name — the deployer's own self-update
       // keeps its stack-named service. Asking only the bare alias flipped a healthy self-updated
@@ -1090,16 +1123,16 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   @Override
   public OptionalInt desiredReplicas(String name) {
-    PdProcess.Result inspected = inspectReplicas(name);
+    ContainerProcess.Result inspected = inspectReplicas(name);
     if (inspected.exitCode() != 0) {
       inspected = inspectReplicas(SEED_STACK_PREFIX + name);
     }
     return inspected.exitCode() != 0 ? OptionalInt.empty() : parseReplicas(inspected.output());
   }
 
-  private PdProcess.Result inspectReplicas(String service) {
+  private ContainerProcess.Result inspectReplicas(String service) {
     return run(
-        List.of(runtime, "service", "inspect", "--format", REPLICAS_FORMAT, service),
+        SwarmArgv.serviceInspect(runtime, service, REPLICAS_FORMAT),
         INSPECT_TIMEOUT);
   }
 
@@ -1149,14 +1182,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     return issue(
         target,
         self,
-        List.of(
-            runtime,
-            "service",
-            "update",
-            "--detach",
-            "--replicas",
-            String.valueOf(replicas),
-            target),
+        SwarmArgv.serviceScale(runtime, target, replicas),
         "scale " + name + " to " + replicas);
   }
 
@@ -1184,7 +1210,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     return issue(
         target,
         isSelf(target),
-        List.of(runtime, "service", "update", "--detach", "--force", target),
+        SwarmArgv.serviceForceUpdate(runtime, target),
         "restart " + name);
   }
 
@@ -1198,7 +1224,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * {@code pd-deploy-worker}), so what is in the map at this point is always stale.
    */
   private ScaleResult issue(String target, boolean self, List<String> argv, String what) {
-    PdProcess.Result result = run(argv, APPLY_TIMEOUT);
+    ContainerProcess.Result result = run(argv, APPLY_TIMEOUT);
     if (result.exitCode() != 0 || result.timedOut()) {
       LOG.warnf("Could not %s: %s", what, result.output());
       return new ScaleResult(ScaleOutcome.REFUSED, safe(result.output()));
@@ -1260,18 +1286,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     return !own.isBlank() && own.equals(service);
   }
 
-  private PdProcess.Result observeTasks(String service) {
+  private ContainerProcess.Result observeTasks(String service) {
     return run(
-        List.of(
-            runtime,
-            "service",
-            "ps",
-            service,
-            "--filter",
-            "desired-state=running",
-            "--no-trunc",
-            "--format",
-            "{{.CurrentState}}"),
+        SwarmArgv.servicePs(
+            runtime, service, List.of(DESIRED_RUNNING), true, CURRENT_STATE_FORMAT),
         INSPECT_TIMEOUT);
   }
 
@@ -1323,7 +1341,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       LOG.infof("No service %s to remove: already absent", name);
       return;
     }
-    PdProcess.Result removed = run(List.of(runtime, "service", "rm", name), CLEANUP_TIMEOUT);
+    ContainerProcess.Result removed = run(SwarmArgv.serviceRm(runtime, name), CLEANUP_TIMEOUT);
     if (removed.exitCode() != 0 || removed.timedOut()) {
       LOG.warnf(
           "Could not remove service %s — remove it by hand (docker service rm %s): %s",
@@ -1344,9 +1362,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   @Override
   public Optional<RunningImage> runningImage(String name) {
-    PdProcess.Result inspected =
+    ContainerProcess.Result inspected =
         run(
-            List.of(runtime, "service", "inspect", "--format", RUNNING_IMAGE_FORMAT, name),
+            SwarmArgv.serviceInspect(runtime, name, RUNNING_IMAGE_FORMAT),
             INSPECT_TIMEOUT);
     if (inspected.exitCode() != 0) {
       // The application may live under the seed stack's name: the deployer's own self-update
@@ -1355,13 +1373,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       // row as "interrupted" while the service ran the row's exact image.
       inspected =
           run(
-              List.of(
-                  runtime,
-                  "service",
-                  "inspect",
-                  "--format",
-                  RUNNING_IMAGE_FORMAT,
-                  SEED_STACK_PREFIX + name),
+              SwarmArgv.serviceInspect(runtime, SEED_STACK_PREFIX + name, RUNNING_IMAGE_FORMAT),
               INSPECT_TIMEOUT);
     }
     if (inspected.exitCode() != 0) {
@@ -1398,14 +1410,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     if (hostname.isBlank()) {
       return "";
     }
-    PdProcess.Result inspected =
+    ContainerProcess.Result inspected =
         run(
-            List.of(
-                runtime,
-                "inspect",
-                "--format",
-                "{{index .Config.Labels \"" + SWARM_SERVICE_LABEL + "\"}}",
-                hostname),
+            SwarmArgv.containerInspect(
+                runtime, hostname, "{{index .Config.Labels \"" + SWARM_SERVICE_LABEL + "\"}}"),
             INSPECT_TIMEOUT);
     if (inspected.exitCode() != 0) {
       return "";
@@ -1436,7 +1444,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     if (!serviceExists(twin)) {
       return null;
     }
-    PdProcess.Result removed = run(List.of(runtime, "service", "rm", twin), CLEANUP_TIMEOUT);
+    ContainerProcess.Result removed = run(SwarmArgv.serviceRm(runtime, twin), CLEANUP_TIMEOUT);
     if (removed.exitCode() != 0) {
       LOG.warnf(
           "Could not remove the seed service %s — the successor may wait on its ports: %s",
@@ -1500,14 +1508,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   private boolean awaitTasksGone(String service, Duration deadline) {
     Instant started = clock.instant();
     while (true) {
-      PdProcess.Result tasks =
+      ContainerProcess.Result tasks =
           run(
-              List.of(
-                  runtime,
-                  "ps",
-                  "--quiet",
-                  "--filter",
-                  "label=" + SWARM_SERVICE_LABEL + "=" + service),
+              SwarmArgv.psQuiet(
+                  runtime, List.of(SwarmArgv.labelFilter(SWARM_SERVICE_LABEL, service))),
               INSPECT_TIMEOUT);
       if (tasks.exitCode() == 0 && safe(tasks.output()).strip().isEmpty()) {
         return true;
@@ -1558,12 +1562,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
           spec.name(), flatNetwork);
       return false;
     }
-    if (run(List.of(runtime, "network", "inspect", spec.name()), CLEANUP_TIMEOUT).exitCode() == 0) {
+    if (run(SwarmArgv.networkInspect(runtime, spec.name(), null), CLEANUP_TIMEOUT).exitCode()
+        == 0) {
       // Already there, labels and all — including one the bootstrap made. The labels are how this
       // component FINDS the networks it made, not a claim of ownership over every network.
       return false;
     }
-    PdProcess.Result created = run(buildNetworkCreateArgv(spec), CLEANUP_TIMEOUT);
+    ContainerProcess.Result created = run(buildNetworkCreateArgv(spec), CLEANUP_TIMEOUT);
     if (created.exitCode() != 0) {
       LOG.warnf("Could not ensure overlay '%s': %s", spec.name(), created.output());
       return false;
@@ -1583,35 +1588,23 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       // The private overlay is the platform's, not an environment's or an application's, so it
       // carries the one label that says what it is for. Encrypted at birth — see `privateNetwork` —
       // and on a fixed subnet the private edge's allow-list names.
-      return List.of(
+      return SwarmArgv.overlayNetworkCreate(
           runtime,
-          "network",
-          "create",
-          "-d",
-          "overlay",
-          "--attachable",
-          "--opt",
-          "encrypted",
-          "--subnet",
+          spec.name(),
+          true,
+          true,
           privateNetworkSubnet.strip(),
-          "--label",
-          NETWORK_LABEL + "=private",
-          spec.name());
+          List.of(NETWORK_LABEL + "=private"));
     }
-    List<String> argv =
-        new ArrayList<>(List.of(runtime, "network", "create", "-d", "overlay", "--attachable"));
-    argv.add("--label");
-    argv.add(NETWORK_LABEL + "=" + spec.kind().name().toLowerCase(Locale.ROOT));
+    List<String> labels = new ArrayList<>();
+    labels.add(NETWORK_LABEL + "=" + spec.kind().name().toLowerCase(Locale.ROOT));
     if (spec.environmentId() != null) {
-      argv.add("--label");
-      argv.add(ENVIRONMENT_LABEL + "=" + spec.environmentId());
+      labels.add(ENVIRONMENT_LABEL + "=" + spec.environmentId());
     }
     if (spec.applicationName() != null) {
-      argv.add("--label");
-      argv.add(APP_NAME_LABEL + "=" + spec.applicationName());
+      labels.add(APP_NAME_LABEL + "=" + spec.applicationName());
     }
-    argv.add(spec.name());
-    return List.copyOf(argv);
+    return SwarmArgv.overlayNetworkCreate(runtime, spec.name(), true, false, null, labels);
   }
 
   /**
@@ -1624,8 +1617,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   @Override
   public void removeNetwork(String network) {
     for (int attempt = 1; attempt <= NETWORK_REMOVE_ATTEMPTS; attempt++) {
-      PdProcess.Result removed =
-          run(List.of(runtime, "network", "rm", network), CLEANUP_TIMEOUT);
+      ContainerProcess.Result removed =
+          run(SwarmArgv.networkRm(runtime, network), CLEANUP_TIMEOUT);
       if (removed.exitCode() == 0) {
         return;
       }
@@ -1655,16 +1648,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   @Override
   public List<Network> networks() {
-    PdProcess.Result listed =
+    ContainerProcess.Result listed =
         run(
-            List.of(
-                runtime,
-                "network",
-                "ls",
-                "--filter",
-                "label=" + NETWORK_LABEL,
-                "--format",
-                "{{.Name}}|{{.Labels}}"),
+            SwarmArgv.networkLs(
+                runtime, List.of(SwarmArgv.labelFilter(NETWORK_LABEL)), "{{.Name}}|{{.Labels}}"),
             CLEANUP_TIMEOUT);
     if (listed.exitCode() != 0) {
       LOG.debugf("Could not list this component's networks: %s", listed.output());
@@ -1740,15 +1727,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   @Override
   public int removeEnvironmentContainers(String environmentId) {
-    PdProcess.Result listed =
+    ContainerProcess.Result listed =
         run(
-            List.of(
-                runtime,
-                "service",
-                "ls",
-                "-q",
-                "--filter",
-                "label=" + ENVIRONMENT_LABEL + "=" + environmentId),
+            SwarmArgv.serviceLsQuiet(
+                runtime, List.of(SwarmArgv.labelFilter(ENVIRONMENT_LABEL, environmentId))),
             CLEANUP_TIMEOUT);
     if (listed.exitCode() != 0) {
       LOG.debugf("Could not list services of environment %s: %s", environmentId, listed.output());
@@ -1758,9 +1740,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     if (ids.isEmpty()) {
       return 0;
     }
-    List<String> argv = new ArrayList<>(List.of(runtime, "service", "rm"));
-    argv.addAll(ids);
-    run(argv, CLEANUP_TIMEOUT);
+    run(SwarmArgv.serviceRm(runtime, ids), CLEANUP_TIMEOUT);
     return ids.size();
   }
 
@@ -1791,9 +1771,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     } catch (RuntimeException e) {
       return VolumePresence.unknown(e.getMessage());
     }
-    PdProcess.Result listed =
+    ContainerProcess.Result listed =
         run(
-            List.of(runtime, "volume", "ls", "-q", "--filter", "name=^" + volume + "$"),
+            DockerArgv.volumeLsByName(runtime, volume),
             INSPECT_TIMEOUT);
     if (listed.exitCode() != 0 || listed.timedOut()) {
       return VolumePresence.unknown(
@@ -1817,8 +1797,15 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   @Override
   public PullResult pull(String imageRef) {
-    PdProcess.Result result =
-        run(List.of(runtime, "pull", imageRef), Duration.ofSeconds(pullTimeoutSeconds));
+    List<String> argv;
+    try {
+      argv = DockerArgv.pull(runtime, imageRef);
+    } catch (IllegalArgumentException refused) {
+      // The library's image belt: a reference no registry could answer for. Nothing ran, and it is
+      // not a missing image — a deployment that names nothing pullable is an ERROR saying so.
+      return new PullResult(PullOutcome.ERROR, refused.getMessage());
+    }
+    ContainerProcess.Result result = run(argv, Duration.ofSeconds(pullTimeoutSeconds));
     if (result.exitCode() == 0 && !result.timedOut()) {
       return new PullResult(PullOutcome.OK, null);
     }
@@ -1859,55 +1846,38 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // socket's group when it binds the socket: from this line on there is one statement of what the
     // service needs from the host, and nothing below can render a target, a port or an alias twice.
     ServiceExtras extras = withSocketGroup(spec, shapeOf(spec, extrasOf(spec)));
-    List<String> argv =
-        new ArrayList<>(
-            List.of(
-                runtime,
-                "service",
-                "create",
-                "--detach",
-                "--name",
-                name,
-                "--replicas",
-                String.valueOf(DEPLOYED_REPLICAS),
-                "--no-resolve-image"));
-    registryAuthFlag(argv);
+    eu.wohlben.qits.containers.driver.swarm.ServiceSpec.Builder service =
+        eu.wohlben.qits.containers.driver.swarm.ServiceSpec.builder(name, spec.imageRef())
+            .replicas(DEPLOYED_REPLICAS)
+            .noResolveImage(true)
+            .withRegistryAuth(registryAuth);
     // The FULL membership, here and nowhere else: every later --network-add recreates the task.
-    networkFlags(argv, networks, extras.aliases());
+    networkFlags(service, networks, extras.aliases());
     // ...and who answers its lookups, for a service on the private overlay (qits-2117).
-    dnsFlags(argv, spec, name, resolvers);
+    dnsFlags(service, spec, name, resolvers);
     // A deployed application outlives the daemon's restart.
-    argv.add("--restart-condition");
-    argv.add("any");
+    service.restartCondition("any");
     // PID 1 in the image is this repository's own binary, not an init that reaps orphans: a
     // detached grandchild adopted by PID 1 — `git maintenance run --auto --detach`, which git
     // 2.47+ leaves behind on every fetch and commit — is never reaped and piles up as a zombie.
     // qits-projects held 3,639 of them after 3.5h (qits-1066); qits-ci hit the same mechanism
     // (qits-965). `--init` runs docker-init/tini as PID 1 instead, which reaps on every SIGCHLD.
     // Unconditional: there is no application here for which an unreaped grandchild is desired.
-    argv.add("--init");
-    capabilityFlags(argv, spec);
-    sysctlFlags(argv, spec, "--sysctl");
-    for (String label : labels(spec)) {
-      argv.add("--label");
-      argv.add(label);
-      // The task container carries the same labels, so `docker ps --filter label=` still reads the
-      // platform the way a person and the environment teardown both expect.
-      argv.add("--container-label");
-      argv.add(label);
-    }
-    healthFlags(argv, spec, "--health-cmd");
-    updateFlags(argv, spec, "--update-order");
-    for (String variable : environment(spec)) {
-      argv.add("--env");
-      argv.add(variable);
-    }
+    service.init(true);
+    capabilityFlags(service, spec);
+    sysctlFlags(service, spec);
+    // Each label lands on the service AND its task container (SwarmArgv renders the pair), so
+    // `docker ps --filter label=` still reads the platform the way a person and the environment
+    // teardown both expect.
+    service.labels(labels(spec));
+    healthFlags(service, spec);
+    updateFlags(service, spec);
+    service.env(environment(spec));
     // The repository's own volumes first, and what they cover is what deployment config no longer
     // contributes. See `volumeFlags` for why the order and the dedupe are the whole migration.
-    Set<String> declaredTargets = volumeFlags(argv, spec);
-    extras(argv, extras, spec.publishMode(), declaredTargets);
-    argv.add(spec.imageRef());
-    return List.copyOf(argv);
+    Set<String> declaredTargets = volumeFlags(service, spec);
+    extras(service, extras, spec.publishMode(), declaredTargets);
+    return SwarmArgv.serviceCreate(runtime, service.build());
   }
 
   /**
@@ -1932,18 +1902,15 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * value — which is the estate's two-step rule applied to this family:
    * ship the declaration, watch it change nothing, then retire the config entry.
    */
-  private Set<String> volumeFlags(List<String> argv, ServiceSpec spec) {
+  private Set<String> volumeFlags(
+      eu.wohlben.qits.containers.driver.swarm.ServiceSpec.Builder service, ServiceSpec spec) {
     Set<String> targets = new LinkedHashSet<>();
     for (VolumeMount volume : spec.volumes()) {
+      // This component's own belts first, so a refusal names the field the way it always did;
+      // Mount.volume belts the same two values again inside the library.
       String source = DeploymentIdentifiers.requireVolumeSource(volume.source());
       String target = DeploymentIdentifiers.requireMountTarget(volume.target());
-      argv.add("--mount");
-      argv.add(
-          "type=volume,source="
-              + source
-              + ",target="
-              + target
-              + (volume.readOnly() ? ",readonly" : ""));
+      service.mount(Mount.volume(source, target, volume.readOnly()));
       targets.add(target);
     }
     return targets;
@@ -2097,23 +2064,22 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * stance: a name that was asked for and quietly not registered is a peer resolving nothing, and
    * that failure surfaces as somebody else's outage hours later.
    */
-  private void networkFlags(List<String> argv, List<String> networks, List<String> aliases) {
+  private void networkFlags(
+      eu.wohlben.qits.containers.driver.swarm.ServiceSpec.Builder service,
+      List<String> networks,
+      List<String> aliases) {
     List<String> managed = managedNetworks();
     boolean carried = false;
     for (String network : networks) {
-      argv.add("--network");
       if (aliases.isEmpty() || !managed.contains(network)) {
-        argv.add(network);
+        // The short form, `--network <net>` — NetworkAttachment.createForm with no alias.
+        service.network(network);
         continue;
       }
       // EVERY attached managed network carries them — the flat one, the private one, or both: an
       // address has to resolve wherever the service is reachable, and a `both` service is
-      // reachable on the two.
-      StringBuilder attachment = new StringBuilder("name=").append(network);
-      for (String alias : aliases) {
-        attachment.append(",alias=").append(alias);
-      }
-      argv.add(attachment.toString());
+      // reachable on the two. The long form, `name=<net>,alias=<a>...`.
+      service.network(network, aliases);
       carried = true;
     }
     if (!aliases.isEmpty() && !carried) {
@@ -2232,9 +2198,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     }
     String network = privateNetwork.strip();
     String application = privateEdgeApplication.strip();
-    PdProcess.Result inspected =
+    ContainerProcess.Result inspected =
         run(
-            List.of(runtime, "network", "inspect", "--format", "{{.Id}}", network),
+            SwarmArgv.networkInspect(runtime, network, "{{.Id}}"),
             INSPECT_TIMEOUT);
     List<String> idLines = inspected.exitCode() == 0 ? lines(inspected.output()) : List.of();
     String networkId = idLines.isEmpty() ? "" : idLines.get(idLines.size() - 1);
@@ -2242,15 +2208,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       return new EdgeVip(
           null, "the network " + network + " has no id: " + safe(inspected.output()).strip());
     }
-    PdProcess.Result listed =
+    ContainerProcess.Result listed =
         run(
-            List.of(
-                runtime,
-                "service",
-                "ls",
-                "-q",
-                "--filter",
-                "label=" + APP_NAME_LABEL + "=" + application),
+            SwarmArgv.serviceLsQuiet(
+                runtime, List.of(SwarmArgv.labelFilter(APP_NAME_LABEL, application))),
             INSPECT_TIMEOUT);
     if (listed.exitCode() != 0) {
       return new EdgeVip(null, "docker service ls answered " + safe(listed.output()).strip());
@@ -2267,9 +2228,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
               + services.size());
     }
     String service = services.get(0);
-    PdProcess.Result vips =
+    ContainerProcess.Result vips =
         run(
-            List.of(runtime, "service", "inspect", "--format", VIPS_FORMAT, service),
+            SwarmArgv.serviceInspect(runtime, service, VIPS_FORMAT),
             INSPECT_TIMEOUT);
     if (vips.exitCode() != 0) {
       return new EdgeVip(
@@ -2399,9 +2360,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
 
   /** The live service's resolvers, in order — or empty when the inspect cannot answer. */
   private Optional<List<String>> liveNameservers(String service) {
-    PdProcess.Result inspected =
+    ContainerProcess.Result inspected =
         run(
-            List.of(runtime, "service", "inspect", "--format", SPEC_DNS_FORMAT, service),
+            SwarmArgv.serviceInspect(runtime, service, SPEC_DNS_FORMAT),
             INSPECT_TIMEOUT);
     if (inspected.exitCode() != 0) {
       return Optional.empty();
@@ -2433,7 +2394,11 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * went: INFO naming the resolvers, or WARN naming why there are none. Nothing at all for a service
    * the rule does not cover.
    */
-  private void dnsFlags(List<String> argv, ServiceSpec spec, String name, Resolvers resolvers) {
+  private void dnsFlags(
+      eu.wohlben.qits.containers.driver.swarm.ServiceSpec.Builder service,
+      ServiceSpec spec,
+      String name,
+      Resolvers resolvers) {
     if (resolvers == NOT_ASKED || !wantsPrivateEdgeResolvers(spec)) {
       return;
     }
@@ -2441,10 +2406,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       LOG.warnf("%s gets no private-edge resolver: %s", name, resolvers.why());
       return;
     }
-    for (String server : resolvers.servers()) {
-      argv.add("--dns");
-      argv.add(server);
-    }
+    service.dns(resolvers.servers());
     LOG.infof("%s resolves through the private edge: resolvers %s", name, resolvers.servers());
   }
 
@@ -2472,8 +2434,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   List<String> buildSelfUpdateArgv(
       ServiceSpec spec, String name, List<String> networks, Resolvers resolvers) {
-    List<String> argv = new ArrayList<>(buildUpdateArgv(spec, name));
-    String target = argv.remove(argv.size() - 1);
+    ServiceUpdate.Builder delta = ServiceUpdate.builder();
+    eu.wohlben.qits.containers.driver.swarm.ServiceSpec service = updateSpec(spec, name, delta);
     Optional<Set<String>> live = liveManagedNetworks(name, managedNetworkIds());
     if (live.isPresent()) {
       List<String> managed = managedNetworks();
@@ -2483,41 +2445,25 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       List<String> missing = wanted.stream().filter(net -> !live.get().contains(net)).toList();
       if (!extra.isEmpty() || !missing.isEmpty()) {
         LOG.infof("%s moves itself from %s to %s", spec.applicationName(), live.get(), wanted);
-        for (String network : extra) {
-          argv.add("--network-rm");
-          argv.add(network);
-        }
+        extra.forEach(delta::networkRemoval);
         List<String> aliases =
             missing.isEmpty() ? List.of() : shapeOf(spec, extrasOf(spec)).aliases();
-        for (String network : missing) {
-          StringBuilder attachment = new StringBuilder("name=").append(network);
-          for (String alias : aliases) {
-            attachment.append(",alias=").append(alias);
-          }
-          argv.add("--network-add");
-          argv.add(attachment.toString());
-        }
+        // Always the long form, `name=<net>[,alias=<a>]*` — what a --network-add is spelled as.
+        missing.forEach(network -> delta.networkAddition(network, aliases));
       }
     }
     if (resolvers.found()) {
       Optional<List<String>> liveDns = liveNameservers(name);
       if (liveDns.isPresent() && !liveDns.get().equals(resolvers.servers())) {
-        for (String server : liveDns.get()) {
-          argv.add("--dns-rm");
-          argv.add(server);
-        }
-        for (String server : resolvers.servers()) {
-          argv.add("--dns-add");
-          argv.add(server);
-        }
+        delta.dnsRemovals(liveDns.get());
+        delta.dnsAdditions(resolvers.servers());
         LOG.infof(
             "%s resolves through the private edge: resolvers %s", name, resolvers.servers());
       }
     } else if (wantsPrivateEdgeResolvers(spec)) {
       LOG.warnf("%s gets no private-edge resolver: %s", name, resolvers.why());
     }
-    argv.add(target);
-    return List.copyOf(argv);
+    return SwarmArgv.serviceUpdate(runtime, service, delta.build());
   }
 
   /**
@@ -2632,65 +2578,58 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * the service ends up carrying what config states and nothing else.
    */
   List<String> buildUpdateArgv(ServiceSpec spec, String name) {
-    List<String> argv =
-        new ArrayList<>(
-            List.of(
-                runtime,
-                "service",
-                "update",
-                "--detach",
-                "--no-resolve-image",
-                "--image",
-                spec.imageRef(),
-                // AND THE REPLICA COUNT, which is the one piece of desired state an update owns
-                // beside the image. An operator's scale-to-0 is a pause, and a service left at 0
-                // takes a `service update --image` without complaint: swarm has no task to
-                // converge, so the update completes at once and the deployment is recorded ACTIVE
-                // while nothing runs. Restating it is what makes a deployment mean "this
-                // application should be serving this image" rather than "this image is what it
-                // would run if it ran". Nothing here scales UP beyond one — see DEPLOYED_REPLICAS.
-                "--replicas",
-                String.valueOf(DEPLOYED_REPLICAS)));
-    registryAuthFlag(argv);
-    for (String label : labels(spec)) {
-      argv.add("--label-add");
-      argv.add(label);
-      argv.add("--container-label-add");
-      argv.add(label);
-    }
-    healthFlags(argv, spec, "--health-cmd");
-    updateFlags(argv, spec, "--update-order");
+    ServiceUpdate.Builder delta = ServiceUpdate.builder();
+    eu.wohlben.qits.containers.driver.swarm.ServiceSpec service = updateSpec(spec, name, delta);
+    return SwarmArgv.serviceUpdate(runtime, service, delta.build());
+  }
+
+  /**
+   * What {@link #buildUpdateArgv} restates, as the library's service, with {@code delta}'s {@code
+   * --env-rm}s filled in — the self-update adds its network and resolver moves to the same delta.
+   * The CLI calls it makes (the capability and environment inspects) happen here, in that order.
+   */
+  private eu.wohlben.qits.containers.driver.swarm.ServiceSpec updateSpec(
+      ServiceSpec spec, String name, ServiceUpdate.Builder delta) {
+    eu.wohlben.qits.containers.driver.swarm.ServiceSpec.Builder service =
+        eu.wohlben.qits.containers.driver.swarm.ServiceSpec.builder(name, spec.imageRef())
+            .noResolveImage(true)
+            // AND THE REPLICA COUNT, which is the one piece of desired state an update owns beside
+            // the image. An operator's scale-to-0 is a pause, and a service left at 0 takes a
+            // `service update --image` without complaint: swarm has no task to converge, so the
+            // update completes at once and the deployment is recorded ACTIVE while nothing runs.
+            // Restating it is what makes a deployment mean "this application should be serving
+            // this image" rather than "this image is what it would run if it ran". Nothing here
+            // scales UP beyond one — see DEPLOYED_REPLICAS.
+            .replicas(DEPLOYED_REPLICAS)
+            .withRegistryAuth(registryAuth)
+            // --label-add and --container-label-add, each.
+            .labels(labels(spec));
+    healthFlags(service, spec);
+    updateFlags(service, spec);
     // Unconditional, same as the create and for the same reason — see that flag's own comment: a
     // service created before this line shipped is still running its old PID 1, so the update has
     // to restate `--init` for an already-live service to converge onto a reaping one.
-    argv.add("--init");
+    service.init(true);
     // Capabilities ARE restated, unlike the rest of the shape: `--cap-add` of a cap the service
     // already holds is a no-op, so a cap a repository starts declaring reaches its live service
     // here, without a recreate. A cap it STOPS declaring is not dropped — see `capabilityRemovals`.
-    capabilityFlags(argv, spec);
+    capabilityFlags(service, spec);
     capabilityRemovals(spec, name);
     // Sysctls are restated for the same reason: `--sysctl-add` of a pair the service already has
     // is a no-op. One it STOPS declaring is left as it is, and deliberately not inspected for — an
     // extra inspect on every update would buy a WARN; `--sysctl-rm` by hand or a recreate does it.
-    sysctlFlags(argv, spec, "--sysctl-add");
-    for (String variable : environment(spec)) {
-      argv.add("--env-add");
-      argv.add(variable);
-    }
+    sysctlFlags(service, spec);
+    service.env(environment(spec));
     // One snapshot for this argv, as the create's is: an update states the environment and nothing
-    // else, so this is the whole of what deployment config contributes here.
+    // else, so this is the whole of what deployment config contributes here. Rendered after this
+    // component's own, which is the precedence rule: the last assignment of a key wins, so what
+    // config says outranks what this component defaults.
     ServiceExtras extras = extrasOf(spec);
-    for (String variable : extras.env()) {
-      // After this component's own, which is the precedence rule: the last assignment of a key
-      // wins, so what config says outranks what this component defaults.
-      argv.add("--env-add");
-      argv.add(variable);
-    }
+    service.envOverrides(extras.env());
     // ...and what the service still carries that nothing above states any more. See envRemovals:
     // an update that only ever added is why a deleted entry outlived every deployment.
-    envRemovals(argv, name, extras);
-    argv.add(name);
-    return List.copyOf(argv);
+    delta.envRemovals(envRemovals(name, extras));
+    return service.build();
   }
 
   /**
@@ -2698,14 +2637,14 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * Re-checked against the parser's closed list at the last line before the argv, the health path's
    * rule: a capability is a privilege, and nothing but the reviewed file may name one.
    */
-  private void capabilityFlags(List<String> argv, ServiceSpec spec) {
+  private void capabilityFlags(
+      eu.wohlben.qits.containers.driver.swarm.ServiceSpec.Builder service, ServiceSpec spec) {
     for (String capability : spec.shape().capAdd()) {
       if (!DeploymentSpecParser.ALLOWED_CAPABILITIES.contains(capability)) {
         throw new ServiceExtras.Refused(
             "cap_add: `" + capability + "` is not a capability this platform grants");
       }
-      argv.add("--cap-add");
-      argv.add(capability);
+      service.capAdd(capability);
     }
   }
 
@@ -2714,14 +2653,14 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * {@code --sysctl} on the create, {@code --sysctl-add} on the update. Re-checked against the
    * parser's closed list at the argv, as capabilities are: only turning forwarding off is allowed.
    */
-  private void sysctlFlags(List<String> argv, ServiceSpec spec, String flag) {
+  private void sysctlFlags(
+      eu.wohlben.qits.containers.driver.swarm.ServiceSpec.Builder service, ServiceSpec spec) {
     for (String sysctl : spec.shape().sysctls()) {
       if (!DeploymentSpecParser.ALLOWED_SYSCTLS.contains(sysctl)) {
         throw new ServiceExtras.Refused(
             "sysctls: `" + sysctl + "` is not a kernel parameter this platform sets");
       }
-      argv.add(flag);
-      argv.add(sysctl);
+      service.sysctl(sysctl);
     }
   }
 
@@ -2732,9 +2671,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * deleted line. An inspect that cannot answer says nothing.
    */
   private void capabilityRemovals(ServiceSpec spec, String name) {
-    PdProcess.Result inspected =
+    ContainerProcess.Result inspected =
         run(
-            List.of(runtime, "service", "inspect", "--format", SPEC_CAPABILITIES_FORMAT, name),
+            SwarmArgv.serviceInspect(runtime, name, SPEC_CAPABILITIES_FORMAT),
             INSPECT_TIMEOUT);
     if (inspected.exitCode() != 0) {
       return;
@@ -2760,7 +2699,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * --update-monitor}, and both want measuring per application rather than deriving from one
    * platform-wide number.
    */
-  private void healthFlags(List<String> argv, ServiceSpec spec, String cmdFlag) {
+  private void healthFlags(
+      eu.wohlben.qits.containers.driver.swarm.ServiceSpec.Builder service, ServiceSpec spec) {
     // Re-validated here, at the last line before the argv, because this is the value that lands
     // inside a shell string the CONTAINER runs. Which value that is depends on the gate: a
     // repository that named a health_cmd replaced the path-shaped probe, so the path is neither
@@ -2774,43 +2714,12 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
               + PdIdentifiers.requireHealthPath(spec.healthPath())
               + " || exit 1";
     }
-    argv.add(cmdFlag);
-    argv.add(command);
-    argv.add("--health-interval");
-    argv.add(healthIntervalSeconds + "s");
-    argv.add("--health-retries");
-    argv.add(String.valueOf(healthRetries));
-    argv.add("--health-start-period");
-    argv.add(healthStartPeriodSeconds + "s");
-  }
-
-  /**
-   * {@code --with-registry-auth}, on a create and on an update alike, when {@code
-   * qits.deployments.registry-auth} says so. Unset — the shipped state — this writes
-   * nothing and both argvs are what they were byte for byte.
-   *
-   * <p><b>What the flag does.</b> It serialises the credential the CLI holds for the registry into
-   * the service spec, so the swarm agent authenticates the task's own pull. Without it only the
-   * warm-up {@code docker pull} above is authenticated — that one runs as this process, with this
-   * process's {@code DOCKER_CONFIG} — and the node-side pull the task then performs carries nothing
-   * and is refused. The image being present in the local image store is not a substitute: swarm
-   * re-pulls per node, and this platform being one node is a coincidence rather than a contract.
-   *
-   * <p><b>Why it is a key rather than always on.</b> The platform's registry reads are anonymous
-   * today, so the flag has nothing to serialise and would only put an empty auth block on every
-   * service spec. The key is what lets the deployer ship ahead of the flip and be turned on with
-   * the deployment that mounts a {@code config.json} — one restart rather than a release.
-   *
-   * <p><b>It does not conflict with {@code --no-resolve-image}.</b> The two answer different
-   * questions: no-resolve tells the CLI not to ask the registry to turn the tag into a digest (the
-   * manager keeps the tag as written, which is what the seed's registry-less {@code qits/*} tags
-   * need), and this one hands the agents a credential for the pull they perform later. Nothing
-   * about carrying auth makes the manager resolve a digest again.
-   */
-  private void registryAuthFlag(List<String> argv) {
-    if (registryAuth) {
-      argv.add("--with-registry-auth");
-    }
+    service.health(
+        new Health(
+            command,
+            Duration.ofSeconds(healthIntervalSeconds),
+            healthRetries,
+            Duration.ofSeconds(healthStartPeriodSeconds)));
   }
 
   /**
@@ -2843,17 +2752,15 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * update forgot would be reset by nothing, and one the create forgot would be docker's default
    * until the first update.
    */
-  private void updateFlags(List<String> argv, ServiceSpec spec, String orderFlag) {
-    argv.add(orderFlag);
-    argv.add(spec.updateOrder().spelling());
-    argv.add("--rollback-order");
-    argv.add(spec.updateOrder().spelling());
-    argv.add("--update-monitor");
-    argv.add(updateMonitorSeconds + "s");
-    argv.add("--update-failure-action");
-    argv.add("rollback");
-    argv.add("--stop-grace-period");
-    argv.add(goDuration(spec.stopGracePeriod()));
+  private void updateFlags(
+      eu.wohlben.qits.containers.driver.swarm.ServiceSpec.Builder service, ServiceSpec spec) {
+    service.updatePolicy(
+        new UpdatePolicy(
+            spec.updateOrder().spelling(),
+            spec.updateOrder().spelling(),
+            Duration.ofSeconds(updateMonitorSeconds),
+            "rollback",
+            spec.stopGracePeriod()));
   }
 
   /**
@@ -2862,9 +2769,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * anything finer as milliseconds — the finest unit {@code stop_grace_period} can state.
    */
   static String goDuration(Duration duration) {
-    return duration.toMillisPart() == 0
-        ? duration.toSeconds() + "s"
-        : duration.toMillis() + "ms";
+    return SwarmArgv.goDuration(duration);
   }
 
   /**
@@ -2944,9 +2849,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   @Override
   public Optional<List<String>> liveEnvironment(String name) {
-    PdProcess.Result inspected =
-        run(List.of(runtime, "service", "inspect", "--format", SPEC_ENV_FORMAT, name),
-            INSPECT_TIMEOUT);
+    ContainerProcess.Result inspected =
+        run(SwarmArgv.serviceInspect(runtime, name, SPEC_ENV_FORMAT), INSPECT_TIMEOUT);
     if (inspected.exitCode() != 0) {
       return Optional.empty();
     }
@@ -3084,9 +2988,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       // The whole estate today. Not one CLI call is spent on a service that declares nothing.
       return null;
     }
-    PdProcess.Result inspected =
+    ContainerProcess.Result inspected =
         run(
-            List.of(runtime, "service", "inspect", "--format", SPEC_MOUNTS_FORMAT, name),
+            SwarmArgv.serviceInspect(runtime, name, SPEC_MOUNTS_FORMAT),
             INSPECT_TIMEOUT);
     if (inspected.exitCode() != 0) {
       LOG.warnf(
@@ -3165,9 +3069,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       // Every environment application that declares no alias of its own. Not one CLI call is spent.
       return null;
     }
-    PdProcess.Result inspected =
+    ContainerProcess.Result inspected =
         run(
-            List.of(runtime, "service", "inspect", "--format", SPEC_NETWORK_ALIASES_FORMAT, name),
+            SwarmArgv.serviceInspect(runtime, name, SPEC_NETWORK_ALIASES_FORMAT),
             INSPECT_TIMEOUT);
     if (inspected.exitCode() != 0) {
       LOG.warnf(
@@ -3201,7 +3105,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * ahead".
    */
   private String removeForRecreate(ServiceSpec spec, String name) {
-    PdProcess.Result removed = run(List.of(runtime, "service", "rm", name), CLEANUP_TIMEOUT);
+    ContainerProcess.Result removed = run(SwarmArgv.serviceRm(runtime, name), CLEANUP_TIMEOUT);
     if (removed.exitCode() != 0) {
       // The create that follows will fail on the name still being taken, and that is the honest
       // outcome: a REFUSED deployment naming what could not be removed, with the predecessor still
@@ -3233,9 +3137,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * environment because one CLI call failed, and the next deployment asks again.
    */
   private List<String> currentSpecEnvKeys(String name) {
-    PdProcess.Result inspected =
-        run(List.of(runtime, "service", "inspect", "--format", SPEC_ENV_FORMAT, name),
-            INSPECT_TIMEOUT);
+    ContainerProcess.Result inspected =
+        run(SwarmArgv.serviceInspect(runtime, name, SPEC_ENV_FORMAT), INSPECT_TIMEOUT);
     if (inspected.exitCode() != 0) {
       LOG.warnf(
           "Could not read the environment of %s, so this update removes nothing from it: %s",
@@ -3283,7 +3186,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * <p><b>Only an update does this.</b> A create has no predecessor to diff against, and {@code
    * service create} has no such flag.
    */
-  private void envRemovals(List<String> argv, String name, ServiceExtras extras) {
+  private List<String> envRemovals(String name, ServiceExtras extras) {
     Set<String> stated = new HashSet<>();
     for (String variable : extras.env()) {
       int equals = variable.indexOf('=');
@@ -3291,13 +3194,14 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     }
     // Sorted, so one deployment's argv is the same argv twice and a diff of two run logs is
     // readable. A HashSet's order is not a contract and a reader would read it as one.
+    List<String> removals = new ArrayList<>();
     for (String key : new TreeSet<>(currentSpecEnvKeys(name))) {
       if (stated.contains(key) || keptWhenUnstated(key)) {
         continue;
       }
-      argv.add("--env-rm");
-      argv.add(key);
+      removals.add(key);
     }
+    return removals;
   }
 
   /**
@@ -3312,7 +3216,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * nothing a person can act on.
    */
   private void extras(
-      List<String> argv,
+      eu.wohlben.qits.containers.driver.swarm.ServiceSpec.Builder service,
       ServiceExtras extras,
       PublishMode publishMode,
       Set<String> declaredTargets) {
@@ -3324,15 +3228,12 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       }
       // Swarm names the kind rather than inferring it from a leading slash, which is what config
       // states — so this is a spelling, not a decision.
-      argv.add("--mount");
-      argv.add(
-          "type="
-              + mount.kind().name().toLowerCase(Locale.ROOT)
-              + ",source="
-              + mount.source()
-              + ",target="
-              + mount.target()
-              + (mount.readOnly() ? ",readonly" : ""));
+      service.mount(
+          new Mount(
+              mount.kind().name().toLowerCase(Locale.ROOT),
+              mount.source(),
+              mount.target(),
+              mount.readOnly()));
     }
     for (ServiceExtras.Publish publish : extras.publishes()) {
       // The mode is the repository's `publish_mode`, and it defaults to host: the task binds the
@@ -3352,24 +3253,14 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
                 + publish.ip()
                 + ": a service publish has no ip field, so this port would be on every interface");
       }
-      argv.add("--publish");
-      argv.add(
-          "published="
-              + publish.published()
-              + ",target="
-              + publish.target()
-              + (publish.protocol() == null ? "" : ",protocol=" + publish.protocol())
-              + ",mode="
-              + publishMode.spelling());
+      service.publish(
+          new Publish(
+              publish.published(), publish.target(), publish.protocol(), publishMode.spelling()));
     }
-    for (String group : extras.groups()) {
-      argv.add("--group");
-      argv.add(group);
-    }
-    for (String variable : extras.env()) {
-      argv.add("--env");
-      argv.add(variable);
-    }
+    service.groups(extras.groups());
+    // Last, after the groups and right before the image: what config says outranks this
+    // component's own --env, because the last assignment of a key wins.
+    service.envOverrides(extras.env());
   }
 
   // --- reading swarm back ----------------------------------------------------------------------
@@ -3426,9 +3317,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * resolve" and decides nothing on it.
    */
   private String networkId(String network) {
-    PdProcess.Result inspected =
+    ContainerProcess.Result inspected =
         run(
-            List.of(runtime, "network", "inspect", "--format", "{{.ID}}", network),
+            SwarmArgv.networkInspect(runtime, network, "{{.ID}}"),
             INSPECT_TIMEOUT);
     if (inspected.exitCode() != 0) {
       return null;
@@ -3444,9 +3335,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * altogether (one this driver never attaches) and is left out rather than counted against it.
    */
   private Optional<Set<String>> liveManagedNetworks(String service, Map<String, String> ids) {
-    PdProcess.Result inspected =
+    ContainerProcess.Result inspected =
         run(
-            List.of(runtime, "service", "inspect", "--format", SPEC_NETWORK_TARGETS_FORMAT, service),
+            SwarmArgv.serviceInspect(runtime, service, SPEC_NETWORK_TARGETS_FORMAT),
             INSPECT_TIMEOUT);
     if (inspected.exitCode() != 0) {
       LOG.warnf(
@@ -3562,7 +3453,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
 
   private boolean serviceExists(String name) {
     return run(
-                List.of(runtime, "service", "inspect", "--format", "{{.ID}}", name),
+                SwarmArgv.serviceInspect(runtime, name, "{{.ID}}"),
                 INSPECT_TIMEOUT)
             .exitCode()
         == 0;
@@ -3570,18 +3461,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
 
   /** The state word of every task of the current generation, lowercased. */
   private List<String> runningGenerationStates(String name) {
-    PdProcess.Result listed =
+    ContainerProcess.Result listed =
         run(
-            List.of(
-                runtime,
-                "service",
-                "ps",
-                name,
-                "--filter",
-                "desired-state=running",
-                "--no-trunc",
-                "--format",
-                "{{.CurrentState}}"),
+            SwarmArgv.servicePs(runtime, name, List.of(DESIRED_RUNNING), true, CURRENT_STATE_FORMAT),
             INSPECT_TIMEOUT);
     return listed.exitCode() == 0 ? taskStates(listed.output()) : List.of();
   }
@@ -3603,16 +3485,16 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
 
   /** The tasks as a person would read them — a failed convergence's first diagnosis. */
   private String tasks(String name) {
-    PdProcess.Result listed =
-        run(List.of(runtime, "service", "ps", name, "--no-trunc"), INSPECT_TIMEOUT);
+    ContainerProcess.Result listed =
+        run(SwarmArgv.servicePs(runtime, name, List.of(), true, null), INSPECT_TIMEOUT);
     return safe(listed.output());
   }
 
   /** A bounded tail of the service's own output — the second half of the diagnosis. */
   private String logs(String name) {
-    PdProcess.Result result =
+    ContainerProcess.Result result =
         run(
-            List.of(runtime, "service", "logs", "--tail", LOG_TAIL_LINES, name), CLEANUP_TIMEOUT);
+            SwarmArgv.serviceLogsTail(runtime, name, LOG_TAIL_LINES), CLEANUP_TIMEOUT);
     return safe(result.output());
   }
 
@@ -3705,10 +3587,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   private String failedTaskEvidence(String name) {
     try {
-      PdProcess.Result listed =
+      ContainerProcess.Result listed =
           run(
-              List.of(
-                  runtime, "service", "ps", name, "--no-trunc", "--format", TASK_EVIDENCE_FORMAT),
+              SwarmArgv.servicePs(runtime, name, List.of(), true, TASK_EVIDENCE_FORMAT),
               INSPECT_TIMEOUT);
       if (listed.exitCode() != 0) {
         return "";
@@ -3732,9 +3613,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
           evidence.append(" — ").append(task.error());
         }
         evidence.append('\n');
-        PdProcess.Result logged =
+        ContainerProcess.Result logged =
             run(
-                List.of(runtime, "service", "logs", "--tail", TASK_LOG_TAIL_LINES, task.id()),
+                SwarmArgv.serviceLogsTail(runtime, task.id(), TASK_LOG_TAIL_LINES),
                 CLEANUP_TIMEOUT);
         String output = safe(logged.output()).strip();
         evidence.append(output.isEmpty() ? "(no output)" : output).append('\n');

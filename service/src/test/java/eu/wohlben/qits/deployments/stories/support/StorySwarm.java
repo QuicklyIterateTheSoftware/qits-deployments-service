@@ -22,9 +22,9 @@ import java.util.Set;
  *
  * <h2>Why an executable and not an HTTP mock</h2>
  *
- * <p>This component does not speak to dockerd over a socket: {@code deployments/control/PdProcess}
- * <b>spawns the docker CLI</b> and reads its pipes, and which binary that is arrives as one runtime
- * key, {@code qits.deployments.container-runtime}. So the honest stand-in for the one
+ * <p>This component does not speak to dockerd over a socket: qits-containers-driver's {@code
+ * ContainerProcess} <b>spawns the docker CLI</b> and reads its pipes, and which binary that is
+ * arrives as one runtime key, {@code qits.deployments.container-runtime}. So the honest stand-in for the one
  * dependency a deployment has is not a stubbed endpoint — it is an executable. Pointing that key at
  * the script this class writes makes the orchestrator hop <b>observable</b> rather than declared:
  * every call lands in a file with the exit code it answered, and enough state lives under {@code
@@ -522,7 +522,7 @@ public final class StorySwarm {
       # A RECORDING DOCKER/SWARM STAND-IN. Written by StorySwarm; never edited by hand.
       #
       # qits-platform-deployments shells out to whatever `qits.deployments.container-runtime`
-      # names, element by element, through PdProcess. Pointing that key here makes the orchestrator
+      # names, element by element, through ContainerProcess. Pointing that key here makes the orchestrator
       # hop observable: every call is appended to calls.log with the exit code it answered, and
       # enough state lives under state/ for SwarmDeploymentDriver's own reasoning to run for real.
       set -u

@@ -45,7 +45,8 @@ gives you a `native-image` and `./mvnw verify -Dnative` produces
 `service/target/qits-platform-deployments` and runs `PdPackagedSurfaceIT` against it. Consequences to
 keep in your head: a missing GraalVM does not fail the build (Quarkus falls back to a container build
 — grep the log for `Cannot find the native-image`); prefer what is already in the image
-(`ProcessBuilder` over a docker client library — the reason `PdProcess` shells out); every config
+(`ProcessBuilder` over a docker client library — the reason every docker call shells out to the CLI
+through qits-containers-driver's `ContainerProcess`); every config
 default the app boots with is part of the native surface (the AUTO_SERVER lesson, which now reads as:
 the datasource ships an *expression* over `QITS_RESOURCE_DB_*` and no fallback URL at all, so there
 is no default with a feature in it to lose); and anything returned as `Response.entity(...)` is invisible to the build-time
@@ -76,7 +77,7 @@ Four maven modules, package root `eu.wohlben.qits.deployments`:
   one database, declared once, in the module both others depend on.
 - **`deployments/`** (`…deployments.*`) — the execution: `DeployService`, `EnvironmentOperations`,
   `RollbackPins`, `DeploymentSpecParser`, `DeploymentIdentifiers` (what only reaches an argv),
-  `ImageRefs`, `ContainerNames`, `PdProcess`, `ResourceProvisioning` and `BootResourceRegistration`,
+  `ImageRefs`, `ContainerNames`, `ResourceProvisioning` and `BootResourceRegistration`,
   and the five seams `DeploymentDriver` / `SpecSource` / `ResourceProvisioner` /
   `DeploymentExtrasSource` / `IdpClientProvisioner` plus the announcement port
   `ReleaseAnnouncements` and the ordering
@@ -654,6 +655,20 @@ Three things about the shape, each easy to undo by accident:
   application. What a deployment does to a daemon is `SwarmDeploymentDriverTest`, plain JUnit over
   the package-private `Cli` seam, one argv at a time.
 
+**Every docker call goes through qits-containers-driver, and no argv is built by hand here**
+(qits-2210). The swarm vocabulary — `service create/update/scale/inspect/ps/logs/ls/rm`, the overlay
+networks, the task-container reads — is `SwarmArgv`, rendered from the library's `swarm.ServiceSpec`
+(plus a `ServiceUpdate` for the diffs only an update knows: `--env-rm`, a self-update's network and
+resolver moves); `pull`, `volume ls`, `wait` and the database move's one-shots are `DockerArgv`; and
+every argv runs through `ContainerProcess.run(null, argv, env, timeout, outputMaxChars)` with
+`DockerCredentialFile.dockerEnvironment` as the env. `PdProcess` is deleted. The library's flag
+order is this driver's old one, so `SwarmDeploymentDriverTest`'s expected argvs did not move. What stays
+here is POLICY — the allowed capabilities and sysctls, the publish-with-an-ip and
+aliases-without-a-network refusals, `DeploymentIdentifiers`' own belts asked first so a refusal
+still names the field as it always did. A value one of the library's own belts refuses
+(`SwarmIdentifiers`) is a REFUSED deployment, like a `ServiceExtras.Refused`, and a pull of an
+image reference it refuses is `PullOutcome.ERROR`. A new docker verb is a library change first.
+
 **Under swarm the topology is flat and that is a decision, not a simplification**: every
 `--network-add` recreates the task, so a service declares its whole membership at create time —
 `qits.deployments.swarm.flat-network` (an *attachable* overlay, which is what keeps CI
@@ -846,11 +861,12 @@ written here, and only from this component's OWN idp client** (qits-879): when t
 started with `QITS_RESOURCE_IDP_CLIENT_ID/_SECRET`, `DockerCredentialFile` writes
 `qits.deployments.docker-config-dir` (`/tmp/qits-docker`, 0700) `/config.json` (0600) — the
 bootstrap's `dockerConfigJson` shape, one entry for the derived registry host (`RegistryHost`,
-`registry.qits.<domain>`) and one for its `mirror.` sibling — and `PdProcess` hands every docker
-child `DOCKER_CONFIG=<that dir>` while the file exists. Without the pair nothing is written and
+`registry.qits.<domain>`) and one for its `mirror.` sibling — and every docker child is handed
+`DOCKER_CONFIG=<that dir>` while the file exists (`DockerCredentialFile.dockerEnvironment`, the env
+map both docker callers give `ContainerProcess.run`). Without the pair nothing is written and
 children keep the mounted value byte for byte.
-The `--with-registry-auth` argvs run through the same `PdProcess`, so the agents' pulls carry the
-same credential. It does not conflict with `--no-resolve-image` — one says do not turn the tag into a digest, the other hands
+The `--with-registry-auth` argvs run through the same `ContainerProcess` call, so the agents' pulls
+carry the same credential. It does not conflict with `--no-resolve-image` — one says do not turn the tag into a digest, the other hands
 the agents a credential for a later pull.
 
 **An auth refusal is `PullOutcome.AUTH_REFUSED`, and it is a `FAILED` deployment naming the
@@ -1470,8 +1486,8 @@ waiting in the queue behind the pass. The tick also runs `sweepExpired`, which d
 
 **The containers go through qits-containers-driver** (`service/dbhost/DockerDatabaseContainers`, the
 owner's ruling of 2026-11-13): `ContainerSpec` built, `DockerArgv.run` rendered under
-`LifecyclePolicy.ephemeral`, `ContainerProcess` run, then `docker wait` (the one hand-built argv —
-the library has none), `DockerArgv.logsTail` and `DockerArgv.rm`. The library renders env as `-e
+`LifecyclePolicy.ephemeral`, `ContainerProcess` run, then `DockerArgv.wait`, `DockerArgv.logsTail`
+and `DockerArgv.rm`; the drain check's task listing is `SwarmArgv.servicePs`. The library renders env as `-e
 K=V`, so `withheld` rewrites the SECRET keys to `-e K` and hands the values to the CLI's own
 environment; it has no stdin, so the script is `sh -c`'s argument and carries no secret. Labels are
 `qits.platform.deployments.dbmove.*`, never qits-containers' namespace (its volume sweep).
@@ -3224,7 +3240,7 @@ Six things about how they are built, each easy to undo by accident:
   `NetworkCapture.source`s: `MockIdp`'s recording, `stories.support.StoryPeers`' access log and
   `stories.support.StorySwarm`'s call log. `NetworkCapture.actor(...)` before a call is what names an
   edge's initiator, because a bearer cannot say whether the caller is qits-ci or an impostor.
-- **The orchestrator hop is EVIDENCE, not a claim.** `PdProcess` spawns the docker CLI, so
+- **The orchestrator hop is EVIDENCE, not a claim.** `ContainerProcess` spawns the docker CLI, so
   `StorySwarm` writes a recording POSIX-sh executable and the profile points
   `qits.deployments.container-runtime` at it. It keeps enough state — services, their
   environment, and *when an update was issued*, stamped in Go's own `time.Time.String()` spelling —

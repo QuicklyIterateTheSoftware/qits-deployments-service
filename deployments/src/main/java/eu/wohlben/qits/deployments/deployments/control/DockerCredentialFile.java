@@ -16,6 +16,7 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -38,7 +39,7 @@ import org.jboss.logging.Logger;
  *
  * <p><b>Nothing happens without the pair.</b> With either variable unset — today's deployer, which
  * declares no idp:client of its own, and every developer's jar — no file is written, {@link
- * PdProcess#dockerConfig} finds none, and every docker child keeps the {@code DOCKER_CONFIG} the
+ * #dockerConfig} finds none, and every docker child keeps the {@code DOCKER_CONFIG} the
  * container was started with. The volume file is never touched, read or deleted. A blank or
  * absent platform domain takes the same warn-only path: {@link RegistryHost#resolve} answers
  * empty, {@link #hosts} then derives nothing to write a credential for, and the write is skipped
@@ -67,6 +68,9 @@ public class DockerCredentialFile {
   /** What the docker CLI opens inside the directory {@code DOCKER_CONFIG} names. */
   public static final String FILE_NAME = "config.json";
 
+  /** The variable the docker CLI reads its config directory from. */
+  public static final String DOCKER_CONFIG = "DOCKER_CONFIG";
+
   static final String CLIENT_ID_VARIABLE = "QITS_RESOURCE_IDP_CLIENT_ID";
 
   static final String CLIENT_SECRET_VARIABLE = "QITS_RESOURCE_IDP_CLIENT_SECRET";
@@ -89,7 +93,7 @@ public class DockerCredentialFile {
 
   /**
    * Early — before the deploy worker's own startup sweep may shell out — though nothing depends on
-   * winning that race: {@link PdProcess} decides per child, so a docker call made before the file
+   * winning that race: {@link #dockerEnvironment} decides per child, so a docker call made before the file
    * exists simply keeps the mounted credential.
    */
   void onStart(@Observes @Priority(1) StartupEvent event) {
@@ -101,6 +105,34 @@ public class DockerCredentialFile {
         value(CLIENT_SECRET_VARIABLE),
         Path.of(directory),
         registryHost.resolve().orElse(null));
+  }
+
+  /**
+   * The {@code DOCKER_CONFIG} a docker child is given: {@code dir} when this class has written a
+   * {@code config.json} there, nothing otherwise — and nothing means the child inherits the
+   * container's own value. Decided per child rather than once at boot, so a call that races the
+   * startup write keeps the mounted credential instead of naming an empty directory, and the next
+   * one picks the file up.
+   */
+  public static Optional<String> dockerConfig(Path dir) {
+    if (dir == null || !Files.isRegularFile(dir.resolve(FILE_NAME))) {
+      return Optional.empty();
+    }
+    return Optional.of(dir.toString());
+  }
+
+  /**
+   * The variables ADDED to a docker child's environment ({@code ContainerProcess.run}'s {@code env}
+   * map): {@code DOCKER_CONFIG=<dir>} when {@link #dockerConfig} says so, and nothing otherwise, so
+   * the child inherits this process's environment untouched — the mounted {@code /work/config}.
+   */
+  public static Map<String, String> dockerEnvironment(Path dir) {
+    return dockerConfig(dir).map(value -> Map.of(DOCKER_CONFIG, value)).orElse(Map.of());
+  }
+
+  /** {@link #dockerEnvironment} over the optional config key both docker callers inject. */
+  public static Map<String, String> dockerEnvironment(Optional<String> dir) {
+    return dockerEnvironment(dir == null ? null : dir.map(Path::of).orElse(null));
   }
 
   /**

@@ -96,6 +96,14 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- Test scope only: DockerCredentialFileTest runs a real child through the same
+                 ContainerProcess the service/ module's docker calls use, to prove the
+                 DOCKER_CONFIG decision reaches it. This module itself shells out to nothing. -->
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-containers-driver</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <!-- PdSchemaTest runs the real migration against a real postgres. Zonky spawns the
                  binaries below as a child process, so `mvn verify` still needs no docker. -->
             <groupId>io.zonky.test</groupId>

@@ -57,10 +57,10 @@ import org.junit.jupiter.api.TestMethodOrder;
  *       something before it found out would have to undo it.
  * </ul>
  *
- * <p><b>The orchestrator edges are observed, not declared.</b> {@code deployments/control/PdProcess}
- * spawns the docker CLI and reads its pipes, so {@code stories.support.StorySwarm} stands in for the
- * binary and records every argv with the exit code it answered. The one edge that <b>is</b> declared
- * is this component's own postgres: no tap on this side can see a JDBC round trip, and the ordering
+ * <p><b>The orchestrator edges are observed, not declared.</b> qits-containers-driver's {@code
+ * ContainerProcess} spawns the docker CLI and reads its pipes, so {@code stories.support.StorySwarm}
+ * stands in for the binary and records every argv with the exit code it answered. The one edge
+ * that <b>is</b> declared is this component's own postgres: no tap on this side can see a JDBC round trip, and the ordering
  * it guarantees — the row is written before anything is attempted, which is what makes a failed
  * deployment diagnosable — is the invariant everything else here rests on.
  *

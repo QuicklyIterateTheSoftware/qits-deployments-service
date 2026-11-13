@@ -2,12 +2,13 @@ package eu.wohlben.qits.deployments.dbhost;
 
 import eu.wohlben.qits.containers.driver.docker.ContainerProcess;
 import eu.wohlben.qits.containers.driver.docker.DockerArgv;
+import eu.wohlben.qits.containers.driver.docker.SwarmArgv;
 import eu.wohlben.qits.containers.driver.spec.ContainerSpec;
 import eu.wohlben.qits.containers.driver.spec.LabelNamespace;
 import eu.wohlben.qits.containers.driver.spec.LifecyclePolicy;
 import eu.wohlben.qits.containers.driver.spec.VolumeSpec;
 import eu.wohlben.qits.deployments.deployments.control.DatabaseContainers;
-import eu.wohlben.qits.deployments.deployments.control.PdProcess;
+import eu.wohlben.qits.deployments.deployments.control.DockerCredentialFile;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -54,12 +55,13 @@ import org.jboss.logging.Logger;
  *       file paths and no secret, and reads both passwords from its environment ({@code PGPASSWORD},
  *       and psql's {@code \getenv} for the role's).
  *   <li><b>Waiting for the end.</b> The library never renders {@code --rm} (a self-removing container
- *       races the log capture) and has no {@code docker wait}. The one argv built here by hand is
- *       {@code docker wait <name>}, which answers the exit code; then {@link DockerArgv#logsTail} is
- *       the diagnosis and {@link DockerArgv#rm} the teardown, on every path.
- *   <li><b>A swarm task listing</b> for {@link #drained} is not container vocabulary at all, and is
- *       hand-built for the same reason the swarm driver builds its own.
+ *       races the log capture), so the run is followed by {@link DockerArgv#wait}, which answers the
+ *       exit code; then {@link DockerArgv#logsTail} is the diagnosis and {@link DockerArgv#rm} the
+ *       teardown, on every path.
  * </ul>
+ *
+ * <p>The swarm task listing {@link #drained} reads is {@link SwarmArgv#servicePs}. No argv here is
+ * built by hand.</p>
  *
  * <p>Its labels are the deployer's own namespace, {@value #NAMESPACE_PREFIX}, never another
  * embedder's: qits-containers' volume collection reads {@code qits.containers.}, and a move's volume
@@ -98,7 +100,7 @@ public class DockerDatabaseContainers implements DatabaseContainers {
   @ConfigProperty(name = "qits.deployments.output-max-chars")
   int outputMaxChars;
 
-  /** The credential directory {@code PdProcess} hands every docker child — see {@link #cliEnvironment}. */
+  /** The credential directory every docker child is handed — see {@link #cliEnvironment}. */
   @ConfigProperty(name = "qits.deployments.docker-config-dir")
   Optional<String> dockerConfigDir;
 
@@ -154,7 +156,7 @@ public class DockerDatabaseContainers implements DatabaseContainers {
           DatabaseContainers.redact("docker run failed: " + started.output(), secrets),
           started.timedOut());
     }
-    ContainerProcess.Result waited = call(List.of(runtime, "wait", name), Map.of(), timeout);
+    ContainerProcess.Result waited = call(DockerArgv.wait(runtime, name), Map.of(), timeout);
     String output = logs(name);
     remove(name);
     if (waited.timedOut()) {
@@ -215,8 +217,7 @@ public class DockerDatabaseContainers implements DatabaseContainers {
   /** The secrets, plus {@code DOCKER_CONFIG} when this process wrote its own credential file. */
   private Map<String, String> cliEnvironment(Map<String, String> secrets) {
     Map<String, String> environment = new HashMap<>(secrets);
-    PdProcess.dockerConfig(dockerConfigDir == null ? null : dockerConfigDir.map(Path::of).orElse(null))
-        .ifPresent(dir -> environment.put("DOCKER_CONFIG", dir));
+    environment.putAll(DockerCredentialFile.dockerEnvironment(dockerConfigDir));
     return environment;
   }
 
@@ -276,7 +277,7 @@ public class DockerDatabaseContainers implements DatabaseContainers {
   public Drain drained(String service) {
     ContainerProcess.Result listed =
         call(
-            List.of(runtime, "service", "ps", service, "--format", "{{.CurrentState}}"),
+            SwarmArgv.servicePs(runtime, service, List.of(), false, "{{.CurrentState}}"),
             Map.of(),
             CALL_TIMEOUT);
     return drainOf(listed);

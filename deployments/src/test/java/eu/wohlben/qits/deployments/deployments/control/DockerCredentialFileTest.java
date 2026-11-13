@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.containers.driver.docker.ContainerProcess;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -24,7 +25,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 /**
  * This component's own docker credential: the file {@link DockerCredentialFile} writes and the
- * {@code DOCKER_CONFIG} decision {@link PdProcess#dockerConfig} takes over it. Plain JUnit over the
+ * {@code DOCKER_CONFIG} decision {@link DockerCredentialFile#dockerConfig} takes over it. Plain JUnit over the
  * static halves — the startup observer is skipped under TEST, the {@code BootResourceRegistration}
  * arrangement.
  */
@@ -167,14 +168,14 @@ class DockerCredentialFileTest {
   void dockerConfigIsSetOnlyWhenTheFileExists() throws IOException {
     Path dir = tmp.resolve("decide");
 
-    assertEquals(Optional.empty(), PdProcess.dockerConfig(null), "no directory configured");
-    assertEquals(Optional.empty(), PdProcess.dockerConfig(dir), "no directory at all");
+    assertEquals(Optional.empty(), DockerCredentialFile.dockerConfig(null), "no directory configured");
+    assertEquals(Optional.empty(), DockerCredentialFile.dockerConfig(dir), "no directory at all");
     Files.createDirectories(dir);
-    assertEquals(Optional.empty(), PdProcess.dockerConfig(dir), "an empty directory is no config");
+    assertEquals(Optional.empty(), DockerCredentialFile.dockerConfig(dir), "an empty directory is no config");
 
     DockerCredentialFile.write(dir, List.of(REGISTRY), "dev-qits-deployments", SECRET);
 
-    assertEquals(Optional.of(dir.toString()), PdProcess.dockerConfig(dir));
+    assertEquals(Optional.of(dir.toString()), DockerCredentialFile.dockerConfig(dir));
   }
 
   @Test
@@ -184,12 +185,24 @@ class DockerCredentialFileTest {
     List<String> echo = List.of("sh", "-c", "echo \"DC=${DOCKER_CONFIG:-unset}\"");
     String inherited = "DC=" + Optional.ofNullable(System.getenv("DOCKER_CONFIG")).orElse("unset");
 
-    PdProcess.Result before = PdProcess.run(null, echo, dir, java.time.Duration.ofSeconds(10), 4096);
+    ContainerProcess.Result before =
+        ContainerProcess.run(
+            null,
+            echo,
+            DockerCredentialFile.dockerEnvironment(dir),
+            java.time.Duration.ofSeconds(10),
+            4096);
     assertEquals(inherited, before.output().strip(), "no file: the inherited value, untouched");
 
     DockerCredentialFile.write(dir, List.of(REGISTRY), "dev-qits-deployments", SECRET);
 
-    PdProcess.Result after = PdProcess.run(null, echo, dir, java.time.Duration.ofSeconds(10), 4096);
+    ContainerProcess.Result after =
+        ContainerProcess.run(
+            null,
+            echo,
+            DockerCredentialFile.dockerEnvironment(dir),
+            java.time.Duration.ofSeconds(10),
+            4096);
     assertEquals("DC=" + dir, after.output().strip());
   }
 

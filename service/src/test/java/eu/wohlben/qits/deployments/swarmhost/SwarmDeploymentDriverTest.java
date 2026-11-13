@@ -6,12 +6,12 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.containers.driver.docker.ContainerProcess;
 import eu.wohlben.qits.deployments.deployments.control.DeclaredShape;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentExtrasSource;
 import eu.wohlben.qits.deployments.deployments.control.ExtrasSnapshot;
 import eu.wohlben.qits.deployments.deployments.control.HealthGate;
-import eu.wohlben.qits.deployments.deployments.control.PdProcess;
 import eu.wohlben.qits.deployments.deployments.control.ResourceProvisioning;
 import eu.wohlben.qits.deployments.deployments.control.ServiceExtras;
 import eu.wohlben.qits.deployments.deployments.control.SettingsExtrasSource;
@@ -2879,8 +2879,8 @@ class SwarmDeploymentDriverTest {
     }
   }
 
-  private static PdProcess.Result result(int exitCode, String output) {
-    return new PdProcess.Result(exitCode, output, false, false);
+  private static ContainerProcess.Result result(int exitCode, String output) {
+    return new ContainerProcess.Result(exitCode, output, false, false);
   }
 
   /**
@@ -3429,7 +3429,7 @@ class SwarmDeploymentDriverTest {
     assertEquals(DeploymentDriver.VolumeState.UNKNOWN, presence.state());
     assertTrue(presence.detail().contains("Cannot connect"), presence.detail());
 
-    cli.script("volume ls", new PdProcess.Result(0, "", true, false));
+    cli.script("volume ls", new ContainerProcess.Result(0, "", true, false));
     assertEquals(
         DeploymentDriver.VolumeState.UNKNOWN, driver.volumeExists("qits-stt-data").state());
   }
@@ -4261,13 +4261,13 @@ class SwarmDeploymentDriverTest {
   }
 
   /** {@code stopping} polls that still see the task, then none. */
-  private static PdProcess.Result[] tasksFor(int stopping) {
-    List<PdProcess.Result> answers = new ArrayList<>();
+  private static ContainerProcess.Result[] tasksFor(int stopping) {
+    List<ContainerProcess.Result> answers = new ArrayList<>();
     for (int poll = 0; poll < stopping; poll++) {
       answers.add(result(0, "task0000000001\n"));
     }
     answers.add(result(0, ""));
-    return answers.toArray(PdProcess.Result[]::new);
+    return answers.toArray(ContainerProcess.Result[]::new);
   }
 
   /** A postgres-like spec: stop-first, its data on a private volume, the default 30 s grace. */
@@ -4467,19 +4467,19 @@ class SwarmDeploymentDriverTest {
   private static final class ScriptedCli implements SwarmDeploymentDriver.Cli {
 
     final List<List<String>> calls = Collections.synchronizedList(new ArrayList<>());
-    private final Map<String, Deque<PdProcess.Result>> scripted = new LinkedHashMap<>();
+    private final Map<String, Deque<ContainerProcess.Result>> scripted = new LinkedHashMap<>();
 
-    void script(String argvContains, PdProcess.Result... answers) {
+    void script(String argvContains, ContainerProcess.Result... answers) {
       scripted.put(argvContains, new ArrayDeque<>(List.of(answers)));
     }
 
     @Override
-    public PdProcess.Result run(List<String> argv, Duration timeout) {
+    public ContainerProcess.Result run(List<String> argv, Duration timeout) {
       calls.add(List.copyOf(argv));
       String joined = String.join(" ", argv);
-      for (Map.Entry<String, Deque<PdProcess.Result>> entry : scripted.entrySet()) {
+      for (Map.Entry<String, Deque<ContainerProcess.Result>> entry : scripted.entrySet()) {
         if (joined.contains(entry.getKey())) {
-          Deque<PdProcess.Result> answers = entry.getValue();
+          Deque<ContainerProcess.Result> answers = entry.getValue();
           return answers.size() == 1 ? answers.peek() : answers.poll();
         }
       }
