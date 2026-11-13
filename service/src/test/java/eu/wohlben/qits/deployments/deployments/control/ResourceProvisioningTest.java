@@ -236,8 +236,11 @@ public class ResourceProvisioningTest {
                 provisioning.ensureAll(
                     "prov-both-new", "prov-t", "prov-both-old", one("db", "qits_prov_both")));
 
-    assertTrue(refused.getMessage().contains("prov-both-old"), refused.getMessage());
-    assertTrue(refused.getMessage().contains("nowhere to move to"), refused.getMessage());
+    // Since qits-2175 the successor's OWN claim of `db` is what is compared first, and it names
+    // another database — so this is refused as an unmoved claim before the transfer is even tried.
+    // Either way: refused, nothing provisioned, nothing transferred.
+    assertTrue(refused.getMessage().contains("qits_prov_own"), refused.getMessage());
+    assertTrue(refused.getMessage().contains("database move"), refused.getMessage());
     assertEquals(List.of(), provisioner.requests(), "the seam was never even called");
     assertEquals(
         "prov-both-old",
@@ -249,9 +252,11 @@ public class ResourceProvisioningTest {
   }
 
   @Test
-  public void aRenameThatDropsThePredecessorsDatabaseIsRefusedBeforeAnythingIsProvisioned() {
-    // The successor declares a database of its own and not the one its predecessor holds. Without
-    // the refusal it would start green on a new, empty database while the data stayed behind.
+  public void aRenameThatResolvesThePredecessorsResourceElsewhereIsAMoveThatProvisioningRefuses() {
+    // The successor declares the predecessor's resource NAME and resolves it to another database.
+    // That is a database move (qits-2175), which DatabaseMoves runs before provisioning. Reaching
+    // provisioning without it — this test calls ensureAll alone — must not start the successor green
+    // on a new, empty database while the data stays behind.
     existingRow("prov-drop-old", "prov-v", "db", "qits_prov_drop_old", "the-predecessors-password");
 
     ResourceException refused =
@@ -262,9 +267,9 @@ public class ResourceProvisioningTest {
                     "prov-drop-new", "prov-v", "prov-drop-old", one("db", "qits_prov_drop_new")));
 
     assertEquals(
-        "the predecessor `prov-drop-old` holds the database `qits_prov_drop_old`, which this spec"
-            + " does not declare; a rename would start on a new, empty database — pin it in"
-            + " `resources:` (database: qits_prov_drop_old)",
+        "the resource `db` of prov-drop-old is the database `qits_prov_drop_old`, and this"
+            + " deployment resolves it to `qits_prov_drop_new` — that is a database move, and it has"
+            + " not run, so nothing is provisioned under the new name",
         refused.getMessage());
     assertEquals(List.of(), provisioner.requests(), "nothing was provisioned, not even the new one");
     assertTrue(row("prov-drop-new", "prov-v", "db").isEmpty(), "and nothing was written down");
@@ -275,6 +280,71 @@ public class ResourceProvisioningTest {
             .get(0)
             .applicationName,
         "the predecessor's claim is exactly where it was");
+  }
+
+  @Test
+  public void aRenameThatStopsDeclaringThePredecessorsResourceIsRefusedNamingIt() {
+    // Abandonment is by resource NAME now: the predecessor's `db` has no counterpart in a spec that
+    // only declares `cache`, so its data has nowhere to go.
+    existingRow("prov-name-old", "prov-v2", "db", "qits_prov_name_old", "the-predecessors-password");
+
+    ResourceException refused =
+        assertThrows(
+            ResourceException.class,
+            () ->
+                provisioning.ensureAll(
+                    "prov-name-new", "prov-v2", "prov-name-old", one("cache", "qits_prov_name_new")));
+
+    assertEquals(
+        "the predecessor `prov-name-old` holds the database `qits_prov_name_old` as its resource"
+            + " `db`, which this spec does not declare; a rename would leave that data behind —"
+            + " declare `db` in `resources:`",
+        refused.getMessage());
+    assertEquals(List.of(), provisioner.requests());
+  }
+
+  @Test
+  public void aPinRemovedIsNeverAnEmptyDatabaseUnderTheNewName() {
+    // The brief's reproduction (qits-2175): the claim says qits_platform_prov_x, the spec now
+    // resolves qits_prov_x. Provisioning alone used to create an EMPTY qits_prov_x, rewrite the row
+    // and leave the data orphaned; it refuses now, and the move that answers it runs first in a
+    // deployment.
+    existingRow("prov-x", "prov-pin", "db", "qits_platform_prov_x", "the-working-password");
+
+    assertThrows(
+        ResourceException.class,
+        () -> provisioning.ensureAll("prov-x", "prov-pin", one("db", "qits_prov_x")));
+
+    assertEquals(List.of(), provisioner.requests(), "nothing was provisioned");
+    PdResource row = row("prov-x", "prov-pin", "db").orElseThrow();
+    assertEquals("qits_platform_prov_x", row.databaseName, "and the claim is where it was");
+    assertEquals("the-working-password", row.password);
+  }
+
+  @Test
+  public void recordedBindingsAddressTheServerTheClaimIsOn() {
+    existingRow("prov-srv-pub", "prov-srv", "db", "qits_prov_srv_pub", "p1");
+    existingRow("prov-srv-priv", "prov-srv", "db", "qits_prov_srv_priv", "p2");
+    QuarkusTransaction.requiringNew()
+        .run(
+            () ->
+                resources.findOne("prov-srv-priv", "prov-srv", "db").orElseThrow().server = "private");
+
+    assertEquals(
+        "jdbc:postgresql://prov-srv-qits-oci-postgresql:5432/qits_prov_srv_pub",
+        provisioning.recordedBindings("prov-srv-pub", "prov-srv").get(0).value("URL"));
+    assertEquals(
+        "jdbc:postgresql://prov-srv-qits-oci-postgresql-private:5432/qits_prov_srv_priv",
+        provisioning.recordedBindings("prov-srv-priv", "prov-srv").get(0).value("URL"));
+  }
+
+  @Test
+  public void aNewClaimOfAPublicOrBothApplicationIsOnThePublicServer() {
+    provisioning.ensureAll(
+        "prov-both", "prov-srv2", null, DeploymentDriver.Exposure.BOTH, one("db", "qits_prov_both2"), null);
+
+    assertEquals("public", row("prov-both", "prov-srv2", "db").orElseThrow().server);
+    assertEquals("prov-srv2-qits-oci-postgresql", provisioner.requests().get(0).host());
   }
 
   @Test

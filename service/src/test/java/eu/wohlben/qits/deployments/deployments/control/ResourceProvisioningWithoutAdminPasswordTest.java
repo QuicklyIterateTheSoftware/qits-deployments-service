@@ -59,6 +59,23 @@ public class ResourceProvisioningWithoutAdminPasswordTest {
   }
 
   @Test
+  public void thePrivatePostgresFailsNamingTheKeyEvenDeclaringNothing() {
+    // qits-2175: the deployer initialises qits-oci-postgresql-private with its own admin password
+    // (POSTGRES_PASSWORD), so without one that application's deployment has nothing to start it
+    // with — refused naming the key, like a declared database.
+    ResourceException refused =
+        assertThrows(
+            ResourceException.class,
+            () ->
+                provisioning.ensureAll(
+                    ResourceProvisioning.PRIVATE_POSTGRES_APPLICATION, "no-admin-env", List.of()));
+
+    assertTrue(
+        refused.getMessage().contains("qits.deployments.postgres.admin-password"),
+        refused.getMessage());
+  }
+
+  @Test
   public void anIdpOnlyDeclarationNeedsNoAdminPasswordAtAll() {
     // The admin password is postgres' own credential; an idp:client resource never reads it. This
     // is the proof rather than an inference: the key is unset in this profile and the call still

@@ -80,6 +80,12 @@
              header supplier carries the `qits` oidc client's current bearer, so spans, logs and
              metrics reach qits-observability at its edge host. Published by
              qits-integrations-quarkus, like qits-http-core above. -->
+        <!-- qits-containers-driver (qits-2175): the platform's docker layer as a plain-Java jar —
+             ContainerSpec, DockerArgv and ContainerProcess. The database move's one-shot containers
+             (extract, ingest, the private server's psql) are built and run through it rather than
+             through a hand-assembled argv, the owner's ruling of 2026-11-13. Published by
+             qits-containers-javalib; no Quarkus and no CDI in it, so it is native-image neutral. -->
+        <qits.containers-driver.version>2026.1110.32907</qits.containers-driver.version>
         <qits.telemetry-core.version>2026.1106.507</qits.telemetry-core.version>
         <!-- The user-story framework (test scope): this repo's story catalogue is written as
              @UserStory methods, so a `mvn verify -DskipITs=false` also regenerates
@@ -264,6 +270,12 @@
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-db-core</artifactId>
                 <version>${qits.db-core.version}</version>
+            </dependency>
+            <dependency>
+                <!-- The docker layer the database move's one-shot containers run through. -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-containers-driver</artifactId>
+                <version>${qits.containers-driver.version}</version>
             </dependency>
             <dependency>
                 <!-- QitsHttpClients, CallerServerFilter/CallerClientFilter and @RawHttpClient. -->

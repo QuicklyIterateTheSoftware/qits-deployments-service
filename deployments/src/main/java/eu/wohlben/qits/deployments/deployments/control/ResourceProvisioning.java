@@ -62,6 +62,14 @@ public class ResourceProvisioning {
   static final String POSTGRES_APPLICATION = "qits-oci-postgresql";
 
   /**
+   * The private postgres' application (qits-2175) — the {@code private} variant of the same image,
+   * on qits-private only. {@link DatabaseServer#PRIVATE} addresses it, and the deployer hands it its
+   * superuser password itself ({@link DeploymentDriver#SERVER_PASSWORD_VARIABLE}): one admin
+   * credential for both servers is a rule in code, not a setting somebody keeps in step.
+   */
+  public static final String PRIVATE_POSTGRES_APPLICATION = "qits-oci-postgresql-private";
+
+  /**
    * Postgres' own port, inside the network. It is a constant rather than a config key because the
    * address it belongs to is derived too: the only reachable postgres is the one this component
    * deploys, under the alias its own naming rule produced.
@@ -95,7 +103,15 @@ public class ResourceProvisioning {
   private static final int PASSWORD_BYTES = 16;
 
   @Inject PdResourceRepository resources;
+
+  /** The PUBLIC server's provisioner: plain JDBC from this process ({@code PgResourceProvisioner}). */
   @Inject ResourceProvisioner provisioner;
+
+  /**
+   * The PRIVATE server's (qits-2175): the same statements, by {@code psql} in a one-shot container on
+   * qits-private, because this process cannot reach that server itself.
+   */
+  @Inject ContainerResourceProvisioner privateProvisioner;
   @Inject IdpClientProvisioner idpClients;
 
   @ConfigProperty(name = "qits.deployments.postgres.admin-username")
@@ -290,9 +306,39 @@ public class ResourceProvisioning {
       String renamedFrom,
       List<Resolved> declared,
       Runnable alongsideTransfer) {
+    return ensureAll(
+        applicationName, environmentName, renamedFrom, null, declared, alongsideTransfer);
+  }
+
+  /**
+   * The whole form (qits-2175): {@code exposure} is the deployment's own {@code exposure:}, and it
+   * decides the server a NEW claim is provisioned on — {@link DatabaseServer#forExposure}, the one
+   * rule. An existing claim is provisioned where it IS ({@code pd_resource.server}); getting it to
+   * where the rule says is a move, which {@code DatabaseMoves} runs before this is called. Null is
+   * {@code public}, which is every caller that predates the private server.
+   */
+  public List<DeploymentDriver.ResourceBinding> ensureAll(
+      String applicationName,
+      String environmentName,
+      String renamedFrom,
+      DeploymentDriver.Exposure exposure,
+      List<Resolved> declared,
+      Runnable alongsideTransfer) {
+    if (PRIVATE_POSTGRES_APPLICATION.equals(applicationName)) {
+      // The private server is initialised with the deployer's own admin password, which the driver
+      // writes as its POSTGRES_PASSWORD. Without one there is nothing to initialise it with — and
+      // nothing the deployer could ever provision on it — so its deployment fails naming the key.
+      requireAdminPassword();
+    }
     AtomicReference<Runnable> pending = new AtomicReference<>(alongsideTransfer);
     List<DeploymentDriver.ResourceBinding> bindings =
-        provisionAll(applicationName, environmentName, renamedFrom, declared, pending);
+        provisionAll(
+            applicationName,
+            environmentName,
+            renamedFrom,
+            DatabaseServer.forExposure(exposure),
+            declared,
+            pending);
     Runnable leftover = pending.getAndSet(null);
     if (leftover != null) {
       QuarkusTransaction.requiringNew().run(leftover);
@@ -304,13 +350,14 @@ public class ResourceProvisioning {
       String applicationName,
       String environmentName,
       String renamedFrom,
+      DatabaseServer ruleServer,
       List<Resolved> declared,
       AtomicReference<Runnable> alongsideTransfer) {
     if (renamedFrom != null && environmentName != null) {
       // Up front, before the empty-declaration return and before any seam is called: a rename that
       // declares nothing at all abandons the predecessor's databases just as surely as one that
       // declares a different one.
-      refuseAbandonedPredecessorDatabases(
+      refuseAbandonedPredecessorClaims(
           applicationName, environmentName, renamedFrom, declared == null ? List.of() : declared);
     }
     if (declared == null || declared.isEmpty()) {
@@ -324,7 +371,6 @@ public class ResourceProvisioning {
 
     boolean needsPostgres =
         declared.stream().anyMatch(r -> r.type() == ResourceSpec.Type.POSTGRESQL);
-    String host = needsPostgres ? PdNetworks.alias(environmentName, POSTGRES_APPLICATION) : null;
     String admin = needsPostgres ? requireAdminPassword() : null;
 
     List<DeploymentDriver.ResourceBinding> bindings = new ArrayList<>();
@@ -336,7 +382,7 @@ public class ResourceProvisioning {
                     applicationName,
                     environmentName,
                     renamedFrom,
-                    host,
+                    ruleServer,
                     admin,
                     resource,
                     alongsideTransfer);
@@ -347,47 +393,56 @@ public class ResourceProvisioning {
   }
 
   /**
-   * The rename's other half: a predecessor's database the successor does not carry over is a
-   * refusal, never a silent abandonment. Reads the predecessor's {@code postgresql} claims in THIS
-   * tier — the tier the successor is deploying into, which is the only one whose data this
-   * deployment would start without — and throws, naming the first database the resolved list does
-   * not declare, before anything is provisioned and before any claim moves.
+   * The rename's other half: a predecessor's claim the successor does not carry over is a refusal,
+   * never a silent abandonment. Reads the predecessor's {@code postgresql} claims in THIS tier — the
+   * tier the successor is deploying into, which is the only one whose data this deployment would
+   * start without — and throws, naming the first one whose RESOURCE NAME the successor no longer
+   * declares, before anything is provisioned and before any claim moves.
    *
-   * <p>Declaring your own name as the predecessor is inert here exactly as it is in the transfer:
-   * an application's own claims are not a rename's to carry.
+   * <p><b>By resource name, not by database (qits-2175).</b> A successor that still declares the
+   * resource but resolves it to another database — the convention follows the application name, so
+   * every rename that does not pin does exactly that — is not abandoning anything: its claim is the
+   * predecessor's claim for that name, and the difference is a MOVE ({@code DatabaseMoves}), which
+   * copies the data across before anything is provisioned. What is still refused is a resource the
+   * successor stopped declaring at all: that data has nowhere to go.
+   *
+   * <p>Package-private so {@code DatabaseMoves} asks it first, before any service is stopped.
+   * Declaring your own name as the predecessor is inert here exactly as it is in the transfer: an
+   * application's own claims are not a rename's to carry.
    */
-  private void refuseAbandonedPredecessorDatabases(
+  void refuseAbandonedPredecessorClaims(
       String applicationName, String environmentName, String renamedFrom, List<Resolved> declared) {
-    if (renamedFrom.equals(applicationName)) {
+    if (renamedFrom == null || environmentName == null || renamedFrom.equals(applicationName)) {
       return;
     }
-    Set<String> declaredDatabases = new HashSet<>();
+    Set<String> declaredNames = new HashSet<>();
     for (Resolved resource : declared) {
-      if (resource.type() == ResourceSpec.Type.POSTGRESQL && resource.database() != null) {
-        declaredDatabases.add(resource.database());
+      if (resource.type() == ResourceSpec.Type.POSTGRESQL) {
+        declaredNames.add(resource.name());
       }
     }
-    List<String> held =
+    List<PdResource> held =
         QuarkusTransaction.requiringNew()
             .call(
                 () ->
                     resources.listByApplication(renamedFrom, environmentName).stream()
                         .filter(claim -> RESOURCE_TYPE.equals(claim.resourceType))
-                        .map(claim -> claim.databaseName)
-                        .filter(database -> database != null)
-                        .sorted()
+                        .filter(claim -> claim.databaseName != null)
+                        .sorted(java.util.Comparator.comparing(claim -> claim.resourceName))
                         .toList());
-    for (String database : held) {
-      if (!declaredDatabases.contains(database)) {
+    for (PdResource claim : held) {
+      if (!declaredNames.contains(claim.resourceName)) {
         throw new ResourceException(
             "the predecessor `"
                 + renamedFrom
                 + "` holds the database `"
-                + database
-                + "`, which this spec does not declare; a rename would start on a new, empty"
-                + " database — pin it in `resources:` (database: "
-                + database
-                + ")");
+                + claim.databaseName
+                + "` as its resource `"
+                + claim.resourceName
+                + "`, which this spec does not declare; a rename would leave that data behind —"
+                + " declare `"
+                + claim.resourceName
+                + "` in `resources:`");
       }
     }
   }
@@ -416,20 +471,27 @@ public class ResourceProvisioning {
                 row.clientId,
                 row.password));
       } else if (RESOURCE_TYPE.equals(row.resourceType) && row.databaseName != null) {
+        // The claim's own server (qits-2175): the address a container is handed is where its data
+        // IS, which after a move is not where it was provisioned first.
         bindings.add(
             DeploymentDriver.ResourceBinding.postgres(
                 row.resourceName,
-                "jdbc:postgresql://"
-                    + PdNetworks.alias(environmentName, POSTGRES_APPLICATION)
-                    + ":"
-                    + POSTGRES_PORT
-                    + "/"
-                    + row.databaseName,
+                jdbcUrl(DatabaseServer.parse(row.server), environmentName, row.databaseName),
                 row.databaseName,
                 row.password));
       }
     }
     return List.copyOf(bindings);
+  }
+
+  /** {@code jdbc:postgresql://<the server's alias>:5432/<database>} — one spelling for both uses. */
+  static String jdbcUrl(DatabaseServer server, String environmentName, String database) {
+    return "jdbc:postgresql://"
+        + server.host(environmentName)
+        + ":"
+        + POSTGRES_PORT
+        + "/"
+        + database;
   }
 
   private String requireAdminPassword() {
@@ -447,7 +509,7 @@ public class ResourceProvisioning {
       String applicationName,
       String environmentName,
       String renamedFrom,
-      String host,
+      DatabaseServer ruleServer,
       String admin,
       Resolved resource,
       AtomicReference<Runnable> alongsideTransfer) {
@@ -458,10 +520,17 @@ public class ResourceProvisioning {
     // worker thread has no session of its own, and the answer is a plain String that outlives the
     // transaction. The ORDER inside it is load-bearing — the transfer has to commit before the
     // findOne below, or the successor reads no row and rotates a password its predecessor is using.
-    String stored =
+    Claim claimed =
         QuarkusTransaction.requiringNew()
             .call(
                 () -> {
+                  // The belt behind the move (qits-2175). A claim of this resource that names
+                  // ANOTHER database — this application's own, or on a rename the predecessor's for
+                  // the same name — is data that has to be moved, and DatabaseMoves does that before
+                  // this runs. Reaching here with one means the move did not happen, and the one
+                  // outcome to refuse is the old one: an empty database under the new name and the
+                  // data orphaned under the old.
+                  refuseUnmovedClaim(applicationName, environmentName, renamedFrom, name, database);
                   for (PdResource claim : resources.listByDatabase(database)) {
                     if (claim.applicationName.equals(applicationName)) {
                       continue;
@@ -493,14 +562,19 @@ public class ResourceProvisioning {
                   // every deploy.
                   return resources
                       .findOne(applicationName, environmentName, name)
-                      .map(row -> row.password)
-                      .orElse(null);
+                      .map(row -> new Claim(row.password, DatabaseServer.parse(row.server)))
+                      .orElse(new Claim(null, ruleServer));
                 });
+    String stored = claimed.password();
+    // An existing claim is provisioned where it IS; a new one where the rule puts it.
+    DatabaseServer server = claimed.server();
+    String host = server.host(environmentName);
 
     // OUTSIDE any transaction, deliberately — see the class javadoc.
     String fresh = freshPassword();
+    ResourceProvisioner seam = server == DatabaseServer.PRIVATE ? privateProvisioner : provisioner;
     ResourceProvisioner.Result result =
-        provisioner.ensure(
+        seam.ensure(
             new ResourceProvisioner.Request(
                 host,
                 POSTGRES_PORT,
@@ -529,6 +603,8 @@ public class ResourceProvisioning {
                 row.environmentName = environmentName;
                 row.resourceName = name;
                 row.createdAt = Instant.now();
+                // Only a NEW claim takes the server here; an existing one keeps where it is.
+                row.server = server.wire();
               }
               row.resourceType = RESOURCE_TYPE;
               row.databaseName = database;
@@ -547,7 +623,50 @@ public class ResourceProvisioning {
         "Resource %s of %s (%s) is database %s on %s",
         name, applicationName, environmentName, database, host);
     return DeploymentDriver.ResourceBinding.postgres(
-        name, "jdbc:postgresql://" + host + ":" + POSTGRES_PORT + "/" + database, database, inEffect);
+        name, jdbcUrl(server, environmentName, database), database, inEffect);
+  }
+
+  /** What the registry bracket hands out: the stored password, and the server the claim is on. */
+  private record Claim(String password, DatabaseServer server) {}
+
+  /**
+   * The claim this deployment would provision for {@code name} — its own, or on a rename with no
+   * claim of its own the predecessor's for the same name — when it names a database other than
+   * {@code database}: refused, because that difference is a move and the move has not happened.
+   * Runs inside the caller's registry bracket.
+   */
+  private void refuseUnmovedClaim(
+      String applicationName,
+      String environmentName,
+      String renamedFrom,
+      String name,
+      String database) {
+    Optional<PdResource> claim =
+        resources
+            .findOne(applicationName, environmentName, name)
+            .filter(row -> RESOURCE_TYPE.equals(row.resourceType));
+    if (claim.isEmpty() && renamedFrom != null && !renamedFrom.equals(applicationName)) {
+      claim =
+          resources
+              .findOne(renamedFrom, environmentName, name)
+              .filter(row -> RESOURCE_TYPE.equals(row.resourceType));
+    }
+    claim
+        .filter(row -> row.databaseName != null && !row.databaseName.equals(database))
+        .ifPresent(
+            row -> {
+              throw new ResourceException(
+                  "the resource `"
+                      + name
+                      + "` of "
+                      + row.applicationName
+                      + " is the database `"
+                      + row.databaseName
+                      + "`, and this deployment resolves it to `"
+                      + database
+                      + "` — that is a database move, and it has not run, so nothing is"
+                      + " provisioned under the new name");
+            });
   }
 
   /**

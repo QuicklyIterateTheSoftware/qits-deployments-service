@@ -1,0 +1,1202 @@
+package eu.wohlben.qits.deployments.deployments.control;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import eu.wohlben.qits.deployments.deployments.control.SpecSource.DeploymentSpec.ResourceSpec;
+import eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove;
+import eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState;
+import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
+import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentRequest;
+import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentStatus;
+import eu.wohlben.qits.deployments.deployments.entity.PdOwedRelease;
+import eu.wohlben.qits.deployments.deployments.entity.PdResource;
+import eu.wohlben.qits.deployments.deployments.persistence.PdDatabaseMoveRepository;
+import eu.wohlben.qits.deployments.deployments.persistence.PdDeploymentRepository;
+import eu.wohlben.qits.deployments.deployments.persistence.PdDeploymentRequestRepository;
+import eu.wohlben.qits.deployments.deployments.persistence.PdOwedReleaseRepository;
+import eu.wohlben.qits.deployments.deployments.persistence.PdResourceRepository;
+import eu.wohlben.qits.deployments.environments.control.EnvironmentService;
+import eu.wohlben.qits.deployments.environments.control.PdIdentifiers;
+import eu.wohlben.qits.deployments.environments.control.PdNetworks;
+import eu.wohlben.qits.deployments.environments.entity.PdEnvironment;
+import eu.wohlben.qits.deployments.environments.error.BadGatewayException;
+import eu.wohlben.qits.deployments.environments.error.BadRequestException;
+import eu.wohlben.qits.deployments.environments.error.ConflictException;
+import eu.wohlben.qits.deployments.environments.error.NotFoundException;
+import io.quarkus.narayana.jta.QuarkusTransaction;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
+
+/**
+ * Moving a postgres claim from one (server, database) to another (qits-2175) — between the two
+ * servers, between two names on one server, or both — with the data, verified, and with nobody on the
+ * host.
+ *
+ * <p><b>Why it exists: a changed target used to be an EMPTY database, silently.</b> {@link
+ * ResourceProvisioning} finds a claim by (application, tier, resource NAME), so when the database a
+ * deployment resolves changed — a {@code resources:} pin edited or removed, an application renamed
+ * through {@code renamed_from} so the convention name followed — it reused the stored password,
+ * created a new role and an empty database under the new name, rewrote the row, and started the
+ * service green on nothing. The old database stayed behind, orphaned. A changed SERVER (an {@code
+ * exposure:} that became {@code private}) has the same shape one column over. Neither is a provisioning
+ * question: both are this class's, and both run before provisioning in the same deployment.
+ *
+ * <p><b>When — {@link #beforeProvisioning}.</b> For each declared {@code postgresql} resource the
+ * CLAIM is the application's own claim for that resource name, or — on a {@code renamed_from} deploy
+ * with no claim of its own — the predecessor's claim for the same name. The TARGET is the rule's
+ * server ({@link DatabaseServer#forExposure}) and the database {@code resolve()} answers. No claim:
+ * provisioning as before. The same (server, database): as before, no move. Anything else: a move.
+ *
+ * <p><b>How — the five steps, each recorded durably in {@code pd_database_move}.</b>
+ *
+ * <ol>
+ *   <li><b>Stop.</b> The service holding the claim is scaled to zero ({@link DeploymentDriver#scale})
+ *       and waited for until no task of it is left running; the source is closed to new connections
+ *       and the rest are terminated.
+ *   <li><b>Extract.</b> A container on the SOURCE server's network only, with a fresh volume {@code
+ *       qits-dbmove-<id>}: {@code pg_dump -Fc} into it, and an exact {@code count(*)} of every table
+ *       into a manifest beside it.
+ *   <li><b>Ingest.</b> A container on the TARGET server's network only, with the same volume: the
+ *       target role with the claim's stored password (the service's credential does not change) and
+ *       the target database owned by it, {@code pg_restore --no-owner --role=<role>}, the same
+ *       manifest of the target.
+ *   <li><b>Compare.</b> The same tables and the same count in each, or the move ABORTS: the target is
+ *       dropped, the source re-opened, the service scaled back up on data nothing touched, and the
+ *       deployment fails naming the first table that differed.
+ *   <li><b>Switch.</b> The claim takes the target (password unchanged); the source is renamed {@code
+ *       <database>_moved_<yyyyMMddHHmm>}, still closed; the volume goes; {@code drop_after} is now plus
+ *       {@code qits.deployments.database-move.retention}. The deployment then carries on against the
+ *       target, which is where provisioning finds the claim.
+ * </ol>
+ *
+ * <p><b>Every container joins exactly ONE network</b> — the server's own — so a move between the
+ * servers is two containers that share a volume rather than one container that spans two networks,
+ * and a move between two names on one server runs both on that one network. See {@link
+ * DatabaseContainers} for the seam's other two rules: no secret in an argv, redacted output.
+ *
+ * <p><b>The moves of one deployment are one batch</b>: the service is stopped once, every database is
+ * copied and verified, and only then does any claim switch. An application with two databases that
+ * came back up with one moved and one not would be pointed at a store it left behind.
+ *
+ * <p><b>Refused before anything stops</b>: a move of this deployer's own databases (it cannot stop
+ * itself, and its own pools are the connections the close would terminate), a target database another
+ * claim already holds, and a target database that already exists on the target server and is not an
+ * earlier aborted attempt of this same move.
+ *
+ * <p><b>It runs on {@code pd-deploy-worker} and nowhere else</b> — inside the deployment, or as the
+ * operator's queued redeploy ({@link #request}) — so a move never interleaves with a cutover, an
+ * observation, or another move. A restart mid-move is {@link #settleInterrupted}: before the switch it
+ * aborts, from the switch on it finishes. Never forgotten.
+ */
+@ApplicationScoped
+public class DatabaseMoves {
+
+  private static final Logger LOG = Logger.getLogger(DatabaseMoves.class);
+
+  /** The volume a move's two containers share: {@code qits-dbmove-<move id>}. */
+  static final String VOLUME_PREFIX = "qits-dbmove-";
+
+  /** How often the stop polls the service's tasks while it waits for them to be gone. */
+  private static final Duration DRAIN_POLL = Duration.ofSeconds(2);
+
+  /** How many moves a listing answers — one screen, the deployment listing's own stance. */
+  static final int LIST_LIMIT = 200;
+
+  private static final TypeReference<TreeMap<String, Long>> COUNTS = new TypeReference<>() {};
+
+  @Inject PdDatabaseMoveRepository moves;
+  @Inject PdResourceRepository resources;
+  @Inject PdDeploymentRepository deployments;
+  @Inject PdDeploymentRequestRepository requests;
+  @Inject PdOwedReleaseRepository owed;
+  @Inject ResourceProvisioning provisioning;
+  @Inject DatabaseContainers containers;
+  @Inject PostgresAdmin admin;
+  @Inject DeploymentDriver driver;
+  @Inject SpecSource specs;
+  @Inject EnvironmentService environments;
+  @Inject DeployService worker;
+  @Inject ObjectMapper json;
+
+  /** How long a moved source is kept, closed, before the sweep drops it. {@code P7D} shipped. */
+  @ConfigProperty(name = "qits.deployments.database-move.retention")
+  Duration retention;
+
+  /** The deadline of each extract or ingest container. */
+  @ConfigProperty(name = "qits.deployments.database-move.timeout")
+  Duration timeout;
+
+  /** How long the stop waits for the service's tasks to be gone. */
+  @ConfigProperty(name = "qits.deployments.database-move.stop-timeout")
+  Duration stopTimeout;
+
+  /**
+   * The operator's moves whose redeploy is running right now, by {@link #key} — what {@link
+   * #beforeProvisioning} reads the target from instead of the rule. Written and read on the worker
+   * alone; concurrent only for the request thread's sake, which never touches it.
+   */
+  private final Map<String, String> held = new ConcurrentHashMap<>();
+
+  // --- the deployment's half --------------------------------------------------------------------
+
+  /**
+   * Run every move this deployment's declared resources need, before anything is provisioned — or
+   * nothing, which is every deployment whose claims already are where its spec says.
+   *
+   * @throws ResourceException with the operator-facing sentence when a move was refused or aborted;
+   *     the deployment fails on it, and an abort has already put the old service back
+   */
+  public void beforeProvisioning(
+      String applicationName,
+      String environmentName,
+      String renamedFrom,
+      DeploymentDriver.Exposure exposure,
+      List<ResourceProvisioning.Resolved> declared) {
+    if (declared == null || declared.isEmpty() || environmentName == null) {
+      return;
+    }
+    // Abandonment first: a predecessor's resource the successor stopped declaring is refused before
+    // any service is stopped, exactly as it was refused before anything was provisioned.
+    provisioning.refuseAbandonedPredecessorClaims(
+        applicationName, environmentName, renamedFrom, declared);
+    DatabaseServer rule = DatabaseServer.forExposure(exposure);
+
+    List<Planned> planned = new ArrayList<>();
+    for (ResourceProvisioning.Resolved resource : declared) {
+      if (resource.type() != ResourceSpec.Type.POSTGRESQL) {
+        continue;
+      }
+      String name = PdIdentifiers.requireResourceName(resource.name());
+      String database = PdIdentifiers.requireDatabaseName(resource.database());
+      Optional<Claimed> claim = claimFor(applicationName, environmentName, renamedFrom, name);
+      String heldId = held.get(key(applicationName, environmentName, name));
+      PdDatabaseMove heldRow = heldId == null ? null : read(heldId);
+      if (claim.isEmpty()) {
+        if (heldRow != null) {
+          refuse(heldRow, "there is no claim of `" + name + "` left to move");
+        }
+        continue;
+      }
+      DatabaseServer targetServer =
+          heldRow != null ? DatabaseServer.parse(heldRow.targetServer) : rule;
+      String targetDatabase = heldRow != null ? heldRow.targetDatabase : database;
+      Claimed claimed = claim.get();
+      if (claimed.server() == targetServer && claimed.database().equals(targetDatabase)) {
+        if (heldRow != null) {
+          refuse(heldRow, "nothing to move: `" + name + "` already is " + where(targetServer, targetDatabase));
+        }
+        continue;
+      }
+      planned.add(new Planned(applicationName, environmentName, name, claimed, targetServer, targetDatabase, heldRow));
+    }
+    if (planned.isEmpty()) {
+      return;
+    }
+
+    // Every refusal before anything stops.
+    for (Planned move : planned) {
+      String refusal = refusal(move);
+      if (refusal != null) {
+        recordRefusal(move, refusal);
+        throw new ResourceException(refusal);
+      }
+    }
+    run(planned);
+  }
+
+  /** A claim, read out of its transaction: the row's id and what the move needs of it. */
+  record Claimed(
+      String id, String applicationName, String database, DatabaseServer server, String password) {}
+
+  /** One move this deployment will run, decided and not yet started. */
+  private record Planned(
+      String applicationName,
+      String environmentName,
+      String resourceName,
+      Claimed claim,
+      DatabaseServer targetServer,
+      String targetDatabase,
+      PdDatabaseMove operatorRow) {
+
+    DatabaseServer sourceServer() {
+      return claim.server();
+    }
+
+    String sourceDatabase() {
+      return claim.database();
+    }
+  }
+
+  /**
+   * The claim a deployment of {@code applicationName} compares against for resource {@code name}:
+   * its own, or on a rename with no claim of its own the predecessor's for the same name.
+   */
+  private Optional<Claimed> claimFor(
+      String applicationName, String environmentName, String renamedFrom, String name) {
+    return QuarkusTransaction.requiringNew()
+        .call(
+            () -> {
+              Optional<PdResource> own = postgresClaim(applicationName, environmentName, name);
+              if (own.isEmpty() && renamedFrom != null && !renamedFrom.equals(applicationName)) {
+                own = postgresClaim(renamedFrom, environmentName, name);
+              }
+              return own.map(
+                  row ->
+                      new Claimed(
+                          row.id,
+                          row.applicationName,
+                          row.databaseName,
+                          DatabaseServer.parse(row.server),
+                          row.password));
+            });
+  }
+
+  private Optional<PdResource> postgresClaim(String application, String environment, String name) {
+    return resources
+        .findOne(application, environment, name)
+        .filter(row -> ResourceProvisioning.RESOURCE_TYPE.equals(row.resourceType))
+        .filter(row -> row.databaseName != null);
+  }
+
+  /** Why this move must not start, or null. Asked of every move of the batch before any starts. */
+  private String refusal(Planned move) {
+    if (BootResourceRegistration.APPLICATION.equals(move.applicationName())
+        || BootResourceRegistration.APPLICATION.equals(move.claim().applicationName())) {
+      return "refusing to move "
+          + where(move.sourceServer(), move.sourceDatabase())
+          + ": it is "
+          + BootResourceRegistration.APPLICATION
+          + "'s own database, and the deployer cannot stop itself to copy it — move it by hand"
+          + " with the deployer stopped";
+    }
+    String elsewhere =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () ->
+                    resources.listByDatabase(move.targetDatabase()).stream()
+                        .filter(row -> !row.id.equals(move.claim().id()))
+                        .map(row -> row.applicationName)
+                        .findFirst()
+                        .orElse(null));
+    if (elsewhere != null) {
+      return "refusing to move "
+          + where(move.sourceServer(), move.sourceDatabase())
+          + " to `"
+          + move.targetDatabase()
+          + "`: that database is already provisioned for "
+          + elsewhere;
+    }
+    Boolean exists;
+    try {
+      String image = admin.image(move.targetServer(), move.environmentName());
+      DatabaseContainers.Outcome asked =
+          containers.run(
+              admin.shot(
+                  "check",
+                  move.targetServer(),
+                  move.environmentName(),
+                  image,
+                  null,
+                  Map.of(),
+                  DatabaseScripts.exists(move.targetDatabase())),
+              ContainerResourceProvisioner.TIMEOUT);
+      exists = asked.ok() ? DatabaseScripts.existsAnswer(asked.output()) : null;
+      if (exists == null) {
+        return "could not ask the "
+            + move.targetServer().wire()
+            + " postgres whether `"
+            + move.targetDatabase()
+            + "` exists, so nothing was moved: "
+            + tail(asked.output());
+      }
+    } catch (ResourceException unreachable) {
+      return unreachable.getMessage() + ", so nothing was moved";
+    }
+    if (exists && !leftover(move)) {
+      return "refusing to move "
+          + where(move.sourceServer(), move.sourceDatabase())
+          + " onto "
+          + where(move.targetServer(), move.targetDatabase())
+          + ": that database already exists there, and no earlier move of this claim left it — drop"
+          + " or rename it by hand first";
+    }
+    return null;
+  }
+
+  private boolean leftover(Planned move) {
+    return QuarkusTransaction.requiringNew()
+        .call(
+            () ->
+                moves.abortedBefore(
+                    move.claim().applicationName(),
+                    move.environmentName(),
+                    move.resourceName(),
+                    move.targetServer().wire(),
+                    move.targetDatabase())
+                    || moves.abortedBefore(
+                        move.applicationName(),
+                        move.environmentName(),
+                        move.resourceName(),
+                        move.targetServer().wire(),
+                        move.targetDatabase()));
+  }
+
+  // --- the move itself --------------------------------------------------------------------------
+
+  /** Stop once, copy and verify every move, then switch them all — or abort them all. */
+  private void run(List<Planned> planned) {
+    String batch = UUID.randomUUID().toString();
+    List<String> ids = new ArrayList<>();
+    for (Planned move : planned) {
+      ids.add(start(batch, move));
+    }
+    try {
+      stopServices(planned, ids);
+      for (int i = 0; i < planned.size(); i++) {
+        copy(planned.get(i), ids.get(i));
+      }
+    } catch (MoveFailure failure) {
+      abortBatch(batch, failure.getMessage());
+      throw new ResourceException(failure.getMessage());
+    }
+    for (int i = 0; i < planned.size(); i++) {
+      finishSwitch(ids.get(i));
+    }
+  }
+
+  /** The row in {@code STOPPING}: a new one, or the operator's {@code QUEUED} one taken over. */
+  private String start(String batch, Planned move) {
+    return QuarkusTransaction.requiringNew()
+        .call(
+            () -> {
+              PdDatabaseMove row =
+                  move.operatorRow() != null ? moves.findById(move.operatorRow().id) : null;
+              if (row == null) {
+                row = new PdDatabaseMove();
+                row.id = UUID.randomUUID().toString();
+                row.origin = PdDatabaseMove.Origin.DEPLOYMENT;
+                row.createdAt = Instant.now();
+              }
+              row.batchId = batch;
+              row.applicationName = move.applicationName();
+              row.environmentName = move.environmentName();
+              row.resourceName = move.resourceName();
+              row.sourceServer = move.sourceServer().wire();
+              row.sourceDatabase = move.sourceDatabase();
+              row.targetServer = move.targetServer().wire();
+              row.targetDatabase = move.targetDatabase();
+              row.state = PdDatabaseMoveState.STOPPING;
+              row.startedAt = Instant.now();
+              if (move.operatorRow() == null) {
+                moves.persist(row);
+              }
+              return row.id;
+            });
+  }
+
+  /**
+   * Scale every service holding a claim of the batch to zero and wait for its tasks to be gone. The
+   * service is the claim holder's wire alias — its swarm name — and what it ran is recorded on each
+   * of its moves so an abort, or a restart's abort, scales it back to exactly that.
+   */
+  private void stopServices(List<Planned> planned, List<String> ids) {
+    Map<String, List<String>> byService = new LinkedHashMap<>();
+    for (int i = 0; i < planned.size(); i++) {
+      Planned move = planned.get(i);
+      String service = PdNetworks.alias(move.environmentName(), move.claim().applicationName());
+      byService.computeIfAbsent(service, s -> new ArrayList<>()).add(ids.get(i));
+    }
+    for (Map.Entry<String, List<String>> entry : byService.entrySet()) {
+      String service = entry.getKey();
+      OptionalInt desired = driver.desiredReplicas(service);
+      if (desired.isEmpty() || desired.getAsInt() == 0) {
+        LOG.infof("Nothing runs as %s, so the move stops nothing", service);
+        continue;
+      }
+      int replicas = desired.getAsInt();
+      DeploymentDriver.ScaleResult scaled = driver.scale(service, 0);
+      if (!scaled.applied()) {
+        throw new MoveFailure("could not stop " + service + " for the move: " + scaled.detail());
+      }
+      for (String id : entry.getValue()) {
+        update(
+            id,
+            row -> {
+              row.serviceName = service;
+              row.serviceReplicas = replicas;
+            });
+      }
+      awaitDrained(service);
+    }
+    for (int i = 0; i < planned.size(); i++) {
+      Planned move = planned.get(i);
+      DatabaseContainers.Outcome closed =
+          admin(move.sourceServer(), move.environmentName(), DatabaseScripts.close(move.sourceDatabase()));
+      if (!closed.ok()) {
+        throw new MoveFailure(
+            "could not close " + where(move.sourceServer(), move.sourceDatabase()) + ": " + tail(closed.output()));
+      }
+    }
+  }
+
+  private void awaitDrained(String service) {
+    long deadline = System.nanoTime() + stopTimeout.toNanos();
+    DatabaseContainers.Drain last = DatabaseContainers.Drain.UNKNOWN;
+    while (true) {
+      last = containers.drained(service);
+      if (last == DatabaseContainers.Drain.DRAINED) {
+        return;
+      }
+      if (System.nanoTime() >= deadline) {
+        throw new MoveFailure(
+            service
+                + " still had a task "
+                + (last == DatabaseContainers.Drain.RUNNING ? "running" : "the runtime could not account for")
+                + " after "
+                + stopTimeout.toSeconds()
+                + "s");
+      }
+      try {
+        Thread.sleep(DRAIN_POLL.toMillis());
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new MoveFailure("interrupted while " + service + " stopped");
+      }
+    }
+  }
+
+  /** Extract, ingest and compare one move, recording each step. */
+  private void copy(Planned move, String id) {
+    String volume = VOLUME_PREFIX + id;
+    String image;
+    try {
+      // One image for both containers: the SOURCE server's, so the pg_dump is never older than the
+      // server it reads and the pg_restore reads what that pg_dump wrote.
+      image = admin.image(move.sourceServer(), move.environmentName());
+    } catch (ResourceException unreachable) {
+      throw new MoveFailure(unreachable.getMessage());
+    }
+    update(id, row -> row.state = PdDatabaseMoveState.EXTRACTING);
+    if (!containers.createVolume(volume)) {
+      throw new MoveFailure("could not create the volume " + volume);
+    }
+    DatabaseContainers.Outcome extracted =
+        containers.run(
+            admin.shot(
+                "extract",
+                move.sourceServer(),
+                move.environmentName(),
+                image,
+                volume,
+                Map.of(),
+                DatabaseScripts.extract(move.sourceDatabase())),
+            timeout);
+    Map<String, Long> source = extracted.ok() ? DatabaseScripts.manifest(extracted.output()) : null;
+    if (source == null) {
+      throw new MoveFailure(
+          "the extract of "
+              + where(move.sourceServer(), move.sourceDatabase())
+              + " failed ("
+              + verdict(extracted)
+              + "): "
+              + tail(extracted.output()));
+    }
+    String sourceJson = write(source);
+    update(
+        id,
+        row -> {
+          row.sourceCounts = sourceJson;
+          row.state = PdDatabaseMoveState.INGESTING;
+        });
+
+    DatabaseContainers.Outcome ingested =
+        containers.run(
+            admin.shot(
+                "ingest",
+                move.targetServer(),
+                move.environmentName(),
+                image,
+                volume,
+                Map.of(DatabaseScripts.ROLE_PASSWORD, move.claim().password()),
+                DatabaseScripts.ingest(move.targetDatabase(), move.targetDatabase(), leftover(move))),
+            timeout);
+    Map<String, Long> target = ingested.ok() ? DatabaseScripts.manifest(ingested.output()) : null;
+    if (target == null) {
+      throw new MoveFailure(
+          "the ingest into "
+              + where(move.targetServer(), move.targetDatabase())
+              + " failed ("
+              + verdict(ingested)
+              + "): "
+              + tail(ingested.output()));
+    }
+    String targetJson = write(target);
+    update(id, row -> row.targetCounts = targetJson);
+
+    String difference = DatabaseScripts.firstDifference(source, target);
+    if (difference != null) {
+      throw new MoveFailure(
+          "the copy of "
+              + where(move.sourceServer(), move.sourceDatabase())
+              + " does not match: "
+              + difference);
+    }
+    update(id, row -> row.state = PdDatabaseMoveState.VERIFIED);
+  }
+
+  /**
+   * The switch, for one verified move: the claim takes the target in the same transaction the row
+   * enters {@code SWITCHING}, then the source is renamed aside and the volume removed. Idempotent
+   * from any point on, which is what lets a restart call it for a row it finds half-way.
+   */
+  private void finishSwitch(String id) {
+    PdDatabaseMove switched =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  PdDatabaseMove row = moves.findById(id);
+                  if (row.state == PdDatabaseMoveState.VERIFIED) {
+                    switchClaim(row);
+                    row.keptDatabase = DatabaseScripts.keptName(row.sourceDatabase, Instant.now());
+                    row.state = PdDatabaseMoveState.SWITCHING;
+                  }
+                  return row;
+                });
+    DatabaseServer source = DatabaseServer.parse(switched.sourceServer);
+    DatabaseContainers.Outcome renamed =
+        admin(
+            source,
+            switched.environmentName,
+            DatabaseScripts.rename(switched.sourceDatabase, switched.keptDatabase));
+    String note = null;
+    if (!renamed.ok()) {
+      // The claim already points at the target, so this is not a failed move: the source is still
+      // closed under its old name, and the retention sweep will try to drop it under the kept one
+      // and find nothing. Said so, on the row and in the log.
+      note =
+          "the source could not be renamed to "
+              + switched.keptDatabase
+              + " and is still "
+              + switched.sourceDatabase
+              + ", closed: "
+              + tail(renamed.output());
+      LOG.warnf("Database move %s: %s", id, note);
+    }
+    containers.removeVolume(VOLUME_PREFIX + id);
+    String detail = note;
+    PdDatabaseMove done =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  PdDatabaseMove row = moves.findById(id);
+                  row.state = PdDatabaseMoveState.MOVED;
+                  row.finishedAt = Instant.now();
+                  row.dropAfter = row.finishedAt.plus(retention);
+                  if (detail != null) {
+                    row.detail = detail;
+                  }
+                  return row;
+                });
+    LOG.infof(
+        "Moved the database %s of %s (%s): %s with %d rows → %s with %d rows; the source is kept"
+            + " as %s until %s",
+        done.resourceName,
+        done.applicationName,
+        done.environmentName,
+        where(DatabaseServer.parse(done.sourceServer), done.sourceDatabase),
+        totalOf(done.sourceCounts),
+        where(DatabaseServer.parse(done.targetServer), done.targetDatabase),
+        totalOf(done.targetCounts),
+        done.keptDatabase,
+        done.dropAfter);
+  }
+
+  /** The claim row takes the target server and database; its password is the one it had. */
+  private void switchClaim(PdDatabaseMove move) {
+    PdResource claim =
+        resources
+            .findOne(move.applicationName, move.environmentName, move.resourceName)
+            .filter(row -> ResourceProvisioning.RESOURCE_TYPE.equals(row.resourceType))
+            .filter(row -> move.sourceDatabase.equals(row.databaseName))
+            .orElse(null);
+    if (claim == null) {
+      // A rename's first deploy: the claim is still the predecessor's, under the same resource name
+      // and the source database. The transfer onto the successor is provisioning's, a step later.
+      claim =
+          resources.listByDatabase(move.sourceDatabase).stream()
+              .filter(row -> ResourceProvisioning.RESOURCE_TYPE.equals(row.resourceType))
+              .filter(row -> move.environmentName.equals(row.environmentName))
+              .filter(row -> move.resourceName.equals(row.resourceName))
+              .findFirst()
+              .orElse(null);
+    }
+    if (claim == null) {
+      LOG.warnf(
+          "Database move %s switched with no claim of %s left on %s — nothing to repoint",
+          move.id, move.resourceName, move.sourceDatabase);
+      return;
+    }
+    claim.server = move.targetServer;
+    claim.databaseName = move.targetDatabase;
+    claim.roleName = move.targetDatabase;
+    claim.lastProvisionedAt = Instant.now();
+  }
+
+  // --- the abort --------------------------------------------------------------------------------
+
+  /**
+   * Undo every move of the batch that has not switched: drop what the ingest created, re-open the
+   * source, remove the volume, record {@code ABORTED} with the reason — then scale each stopped
+   * service back to what it ran. Each step is idempotent and a failed one is a WARN and the next
+   * one still runs: an abort that stopped half-way would leave the application down.
+   */
+  void abortBatch(String batch, String reason) {
+    List<PdDatabaseMove> rows =
+        QuarkusTransaction.requiringNew().call(() -> moves.list("batchId = ?1 order by createdAt", batch));
+    Map<String, Integer> services = new LinkedHashMap<>();
+    for (PdDatabaseMove row : rows) {
+      if (row.state.switched() || PdDatabaseMoveState.TERMINAL.contains(row.state)) {
+        continue;
+      }
+      List<String> problems = new ArrayList<>();
+      DatabaseServer source = DatabaseServer.parse(row.sourceServer);
+      DatabaseServer target = DatabaseServer.parse(row.targetServer);
+      if (row.state == PdDatabaseMoveState.INGESTING || row.state == PdDatabaseMoveState.VERIFIED) {
+        String role = targetRoleUnclaimed(row) ? row.targetDatabase : null;
+        DatabaseContainers.Outcome dropped =
+            safely(() -> admin(target, row.environmentName, DatabaseScripts.drop(row.targetDatabase, role)));
+        if (!dropped.ok()) {
+          problems.add("the target " + row.targetDatabase + " was not dropped: " + tail(dropped.output()));
+        }
+      }
+      if (row.state != PdDatabaseMoveState.QUEUED) {
+        DatabaseContainers.Outcome reopened =
+            safely(() -> admin(source, row.environmentName, DatabaseScripts.reopen(row.sourceDatabase)));
+        if (!reopened.ok()) {
+          problems.add("the source " + row.sourceDatabase + " was not re-opened: " + tail(reopened.output()));
+        }
+        containers.removeVolume(VOLUME_PREFIX + row.id);
+      }
+      if (row.serviceName != null && row.serviceReplicas != null && row.serviceReplicas > 0) {
+        services.putIfAbsent(row.serviceName, row.serviceReplicas);
+      }
+      String detail =
+          problems.isEmpty() ? reason : reason + "\n[the abort is incomplete: " + String.join("; ", problems) + "]";
+      update(
+          row.id,
+          moved -> {
+            moved.state = PdDatabaseMoveState.ABORTED;
+            moved.finishedAt = Instant.now();
+            moved.detail = detail;
+          });
+      LOG.warnf(
+          "Aborted the move of %s (%s) from %s to %s: %s",
+          row.applicationName,
+          row.resourceName,
+          where(source, row.sourceDatabase),
+          where(target, row.targetDatabase),
+          detail);
+    }
+    services.forEach(
+        (service, replicas) -> {
+          DeploymentDriver.ScaleResult scaled = driver.scale(service, replicas);
+          if (!scaled.applied()) {
+            LOG.warnf("Could not scale %s back to %d after an aborted move: %s", service, replicas, scaled.detail());
+          }
+        });
+  }
+
+  /** Whether no claim on the target server is the target role — so an abort may drop it. */
+  private boolean targetRoleUnclaimed(PdDatabaseMove row) {
+    return QuarkusTransaction.requiringNew()
+        .call(
+            () ->
+                resources.list("roleName = ?1 and server = ?2", row.targetDatabase, row.targetServer).isEmpty());
+  }
+
+  // --- a restart, and the retention -------------------------------------------------------------
+
+  /**
+   * Settle every move a previous process left in a word it never leaves (boot, and every observation
+   * tick after it for whatever boot could not finish): a batch with a move past the switch FINISHES,
+   * every other batch ABORTS — the service scaled back up on its untouched source. An operator's move
+   * still {@code QUEUED} lost the redeploy it was waiting for with the queue, and is refused. Runs on
+   * the deploy worker, where no move of this process can be in flight.
+   */
+  public void settleInterrupted(boolean atBoot) {
+    List<PdDatabaseMove> unfinished =
+        QuarkusTransaction.requiringNew().call(() -> moves.listUnfinished());
+    Set<String> batches = new LinkedHashSet<>();
+    for (PdDatabaseMove row : unfinished) {
+      if (row.state == PdDatabaseMoveState.QUEUED) {
+        // Only at boot: between ticks, a QUEUED row is an operator's move waiting in the worker's
+        // queue behind this very pass.
+        if (atBoot) {
+          refuse(row, "the deployer restarted before the redeploy this move was waiting for ran");
+        }
+        continue;
+      }
+      batches.add(row.batchId);
+    }
+    for (String batch : batches) {
+      List<PdDatabaseMove> rows =
+          QuarkusTransaction.requiringNew().call(() -> moves.list("batchId = ?1 order by createdAt", batch));
+      boolean switched = rows.stream().anyMatch(row -> row.state.switched());
+      try {
+        if (switched) {
+          for (PdDatabaseMove row : rows) {
+            if (row.state == PdDatabaseMoveState.VERIFIED || row.state == PdDatabaseMoveState.SWITCHING) {
+              finishSwitch(row.id);
+            }
+          }
+          LOG.warnf(
+              "Finished the interrupted database move %s past its switch. The service it stopped is"
+                  + " left stopped: its running spec still names the old database, and the next"
+                  + " deployment of %s starts it against the new one",
+              batch,
+              rows.get(0).applicationName);
+        } else {
+          abortBatch(batch, "the deployer restarted mid-move, so the move was undone");
+        }
+      } catch (RuntimeException e) {
+        LOG.warnf(e, "Could not settle the interrupted database move %s; the next pass tries again", batch);
+      }
+    }
+  }
+
+  /**
+   * Drop every kept copy whose retention is over — and, when no claim on that server still uses it,
+   * the role that owned it — and stamp {@code dropped_at}. A failure is a WARN and the next tick
+   * tries again; nothing is stamped that was not dropped.
+   */
+  public void sweepExpired() {
+    List<PdDatabaseMove> expired =
+        QuarkusTransaction.requiringNew().call(() -> moves.listExpired(Instant.now()));
+    for (PdDatabaseMove row : expired) {
+      DatabaseServer source = DatabaseServer.parse(row.sourceServer);
+      boolean roleUnused =
+          QuarkusTransaction.requiringNew()
+              .call(
+                  () ->
+                      resources.list("roleName = ?1 and server = ?2", row.sourceDatabase, row.sourceServer).isEmpty());
+      DatabaseContainers.Outcome dropped =
+          safely(
+              () ->
+                  admin(
+                      source,
+                      row.environmentName,
+                      DatabaseScripts.drop(row.keptDatabase, roleUnused ? row.sourceDatabase : null)));
+      if (!dropped.ok()) {
+        LOG.warnf(
+            "Could not drop the kept copy %s of a database move (%s): %s",
+            row.keptDatabase, row.id, tail(dropped.output()));
+        continue;
+      }
+      update(row.id, moved -> moved.droppedAt = Instant.now());
+      LOG.infof(
+          "Dropped %s, the copy %s left behind when it moved to %s%s",
+          where(source, row.keptDatabase),
+          row.applicationName,
+          where(DatabaseServer.parse(row.targetServer), row.targetDatabase),
+          roleUnused ? ", and its role " + row.sourceDatabase : "");
+    }
+  }
+
+  // --- the operator's door ----------------------------------------------------------------------
+
+  /** What the door answers: the queued move, and a note when it overrides the spec. */
+  public record Accepted(PdDatabaseMove move, String note) {}
+
+  /**
+   * An operator's move, queued: {@code POST /database-moves}. Decided here, on the request thread, so
+   * every refusal is an answer rather than a log line under a 202 — then queued on the deploy worker
+   * as a REDEPLOY of the version that is live, whose provisioning step runs the move against this
+   * target and whose deployment then starts the service against it.
+   *
+   * <p><b>A redeploy, because a moved database is only half a move.</b> The running service's spec
+   * holds the old address; nothing short of a deployment hands it the new one. And a deployment is
+   * where a move already runs — so this door does not run a move of its own, it hands the deployment
+   * a target ({@link #held}) for one resource.
+   *
+   * <p>The target defaults to the rule and {@code resolve()} of the LIVE version's spec, read from
+   * the git host now. {@code server} and {@code database} override it; an override the spec disagrees
+   * with is accepted, and the answer says the next deployment moves it back.
+   */
+  public Accepted request(
+      String applicationName, String resourceName, String server, String database, String actor) {
+    String application = PdIdentifiers.requireName(applicationName, "application name");
+    String resource = resourceName == null ? null : PdIdentifiers.requireResourceName(resourceName);
+    DatabaseServer overrideServer;
+    try {
+      overrideServer = server == null ? null : DatabaseServer.parse(server);
+    } catch (IllegalArgumentException wrong) {
+      throw new BadRequestException(wrong.getMessage());
+    }
+    String overrideDatabase = database == null ? null : PdIdentifiers.requireDatabaseName(database);
+    if (BootResourceRegistration.APPLICATION.equals(application)) {
+      throw new ConflictException(
+          BootResourceRegistration.APPLICATION
+              + "'s own databases are not moved by the deployer: it cannot stop itself to copy them");
+    }
+    PdEnvironment tier =
+        environments
+            .platformEnvironment()
+            .orElseThrow(
+                () -> new ConflictException("no environment is designated, so nothing is deployed to move"));
+
+    List<PdResource> claims =
+        QuarkusTransaction.joiningExisting()
+            .call(
+                () ->
+                    resources.listByApplication(application, tier.name).stream()
+                        .filter(row -> ResourceProvisioning.RESOURCE_TYPE.equals(row.resourceType))
+                        .filter(row -> row.databaseName != null)
+                        .toList());
+    if (claims.isEmpty()) {
+      throw new NotFoundException(application + " holds no database in " + tier.name);
+    }
+    PdResource claim;
+    if (resource != null) {
+      claim =
+          claims.stream()
+              .filter(row -> row.resourceName.equals(resource))
+              .findFirst()
+              .orElseThrow(
+                  () ->
+                      new NotFoundException(
+                          application + " holds no database as `" + resource + "` in " + tier.name));
+    } else if (claims.size() == 1) {
+      claim = claims.get(0);
+    } else {
+      throw new BadRequestException(
+          application
+              + " holds "
+              + claims.size()
+              + " databases ("
+              + claims.stream().map(row -> row.resourceName).sorted().collect(Collectors.joining(", "))
+              + ") — name one with `resource`");
+    }
+
+    Live live = live(application, tier);
+    SpecSource.DeploymentSpec spec = liveSpec(live);
+    DatabaseServer specServer = DatabaseServer.forExposure(spec.exposure());
+    String specDatabase =
+        ResourceProvisioning.resolve(application, spec.resources()).stream()
+            .filter(r -> r.type() == ResourceSpec.Type.POSTGRESQL)
+            .filter(r -> r.name().equals(claim.resourceName))
+            .map(ResourceProvisioning.Resolved::database)
+            .findFirst()
+            .orElseThrow(
+                () ->
+                    new ConflictException(
+                        application
+                            + "@"
+                            + live.version()
+                            + " no longer declares `"
+                            + claim.resourceName
+                            + "`, so a redeploy would not provision it"));
+    DatabaseServer targetServer = overrideServer != null ? overrideServer : specServer;
+    String targetDatabase = overrideDatabase != null ? overrideDatabase : specDatabase;
+    DatabaseServer claimServer = DatabaseServer.parse(claim.server);
+    if (claimServer == targetServer && claim.databaseName.equals(targetDatabase)) {
+      throw new ConflictException(
+          "nothing to move: `" + claim.resourceName + "` of " + application + " already is " + where(targetServer, targetDatabase));
+    }
+    resources.listByDatabase(targetDatabase).stream()
+        .filter(row -> !row.id.equals(claim.id))
+        .findFirst()
+        .ifPresent(
+            row -> {
+              throw new ConflictException(
+                  "`" + targetDatabase + "` is already provisioned for " + row.applicationName);
+            });
+
+    PdDatabaseMove row = new PdDatabaseMove();
+    row.id = UUID.randomUUID().toString();
+    row.batchId = row.id;
+    row.applicationName = application;
+    row.environmentName = tier.name;
+    row.resourceName = claim.resourceName;
+    row.sourceServer = claimServer.wire();
+    row.sourceDatabase = claim.databaseName;
+    row.targetServer = targetServer.wire();
+    row.targetDatabase = targetDatabase;
+    row.specServer = specServer.wire();
+    row.specDatabase = specDatabase;
+    row.origin = PdDatabaseMove.Origin.OPERATOR;
+    row.requestedBy = actor;
+    row.state = PdDatabaseMoveState.QUEUED;
+    row.createdAt = Instant.now();
+    QuarkusTransaction.requiringNew().run(() -> moves.persist(row));
+
+    String key = key(application, tier.name, claim.resourceName);
+    String moveId = row.id;
+    worker.enqueueOperation(
+        "The database move " + moveId + " of " + application,
+        () -> {
+          held.put(key, moveId);
+          try {
+            worker.redeploy(live.repository(), live.releasedName(), live.version(), live.packageName());
+          } finally {
+            held.remove(key);
+            settleUnconsumed(moveId, application, tier.id, live.version());
+          }
+        });
+    LOG.infof(
+        "%s asked to move `%s` of %s from %s to %s; queued as move %s with a redeploy of %s",
+        actor == null ? "An operator" : actor,
+        claim.resourceName,
+        application,
+        where(claimServer, claim.databaseName),
+        where(targetServer, targetDatabase),
+        moveId,
+        live.version());
+    String note =
+        targetServer == specServer && targetDatabase.equals(specDatabase)
+            ? null
+            : "this overrides the spec: the next deployment of "
+                + application
+                + " moves it back to "
+                + where(specServer, specDatabase)
+                + ", which its spec resolves to";
+    return new Accepted(row, note);
+  }
+
+  /** What is live for an application in a tier, and the coordinates to redeploy it by. */
+  private record Live(
+      String version,
+      String variant,
+      RepositoryRef repository,
+      String releasedName,
+      String packageName) {}
+
+  private Live live(String application, PdEnvironment tier) {
+    return QuarkusTransaction.joiningExisting()
+        .call(
+            () -> {
+              PdDeployment serving =
+                  deployments
+                      .newestForPlace(application, tier.id)
+                      .filter(
+                          row ->
+                              row.status == PdDeploymentStatus.ACTIVE
+                                  || row.status == PdDeploymentStatus.SCALED_TO_ZERO)
+                      .orElseThrow(
+                          () ->
+                              new ConflictException(
+                                  application
+                                      + " has no deployment serving in "
+                                      + tier.name
+                                      + " to redeploy against the moved database"));
+              PdDeploymentRequest request =
+                  requests
+                      .find("deploymentId = ?1", serving.id)
+                      .firstResultOptional()
+                      .orElseThrow(
+                          () ->
+                              new ConflictException(
+                                  "no release request is on record for "
+                                      + application
+                                      + "@"
+                                      + serving.version
+                                      + ", so there is nothing to redeploy"));
+              if (request.repoId == null || serving.version == null) {
+                throw new ConflictException(
+                    application + "'s live deployment names no released version of a repository");
+              }
+              String repoName =
+                  request.packageName == null
+                      ? null
+                      : owed
+                          .find(
+                              "packageName = ?1 and version = ?2 and repoName is not null",
+                              request.packageName,
+                              serving.version)
+                          .firstResultOptional()
+                          .map((PdOwedRelease o) -> o.repoName)
+                          .orElse(null);
+              String released = PackageNames.applicationOf(request.packageName);
+              return new Live(
+                  serving.version,
+                  request.variant,
+                  new RepositoryRef(request.repoId, request.projectId, repoName),
+                  released != null ? released : application,
+                  request.packageName);
+            });
+  }
+
+  private SpecSource.DeploymentSpec liveSpec(Live live) {
+    try {
+      String path =
+          live.variant() == null ? SpecSource.SPEC_PATH : SpecSource.variantPath(live.variant());
+      return specs.read(live.repository(), SpecSource.tagRev(live.version()), path).spec();
+    } catch (RuntimeException unreadable) {
+      throw new BadGatewayException(
+          "could not read the spec of the live version " + live.version() + ": " + unreadable.getMessage(),
+          unreadable);
+    }
+  }
+
+  /** An operator's move its redeploy never reached: refused, naming what the deployment said. */
+  private void settleUnconsumed(String moveId, String application, String environmentId, String version) {
+    PdDatabaseMove row = read(moveId);
+    if (row == null || row.state != PdDatabaseMoveState.QUEUED) {
+      return;
+    }
+    String what =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () ->
+                    deployments
+                        .newestForPlace(application, environmentId)
+                        .map(d -> d.status + (d.detail == null ? "" : ": " + d.detail))
+                        .orElse("no deployment"));
+    refuse(row, "the redeploy of " + application + "@" + version + " never reached its provisioning — " + what);
+  }
+
+  // --- the read surface -------------------------------------------------------------------------
+
+  public List<PdDatabaseMove> list(String applicationName) {
+    return QuarkusTransaction.joiningExisting()
+        .call(
+            () ->
+                applicationName == null
+                    ? moves.listAll(LIST_LIMIT)
+                    : moves.listByApplication(applicationName, LIST_LIMIT));
+  }
+
+  public Optional<PdDatabaseMove> find(String id) {
+    return QuarkusTransaction.joiningExisting().call(() -> moves.findByIdOptional(id));
+  }
+
+  // --- small things -----------------------------------------------------------------------------
+
+  /** One statement against a server's {@code postgres} database, as the admin, in a one-shot. */
+  private DatabaseContainers.Outcome admin(DatabaseServer server, String environmentName, String script) {
+    String image = admin.image(server, environmentName);
+    return containers.run(
+        admin.shot("admin", server, environmentName, image, null, Map.of(), script),
+        ContainerResourceProvisioner.TIMEOUT);
+  }
+
+  private static DatabaseContainers.Outcome safely(java.util.function.Supplier<DatabaseContainers.Outcome> step) {
+    try {
+      return step.get();
+    } catch (RuntimeException e) {
+      return new DatabaseContainers.Outcome(-1, String.valueOf(e.getMessage()), false);
+    }
+  }
+
+  private void recordRefusal(Planned move, String refusal) {
+    if (move.operatorRow() != null) {
+      refuse(move.operatorRow(), refusal);
+      return;
+    }
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              PdDatabaseMove row = new PdDatabaseMove();
+              row.id = UUID.randomUUID().toString();
+              row.batchId = row.id;
+              row.applicationName = move.applicationName();
+              row.environmentName = move.environmentName();
+              row.resourceName = move.resourceName();
+              row.sourceServer = move.sourceServer().wire();
+              row.sourceDatabase = move.sourceDatabase();
+              row.targetServer = move.targetServer().wire();
+              row.targetDatabase = move.targetDatabase();
+              row.origin = PdDatabaseMove.Origin.DEPLOYMENT;
+              row.state = PdDatabaseMoveState.REFUSED;
+              row.detail = refusal;
+              row.createdAt = Instant.now();
+              row.finishedAt = row.createdAt;
+              moves.persist(row);
+            });
+  }
+
+  private void refuse(PdDatabaseMove row, String detail) {
+    update(
+        row.id,
+        moved -> {
+          moved.state = PdDatabaseMoveState.REFUSED;
+          moved.finishedAt = Instant.now();
+          moved.detail = detail;
+        });
+    LOG.warnf("Database move %s of %s refused: %s", row.id, row.applicationName, detail);
+  }
+
+  private PdDatabaseMove read(String id) {
+    return QuarkusTransaction.requiringNew().call(() -> moves.findById(id));
+  }
+
+  private void update(String id, java.util.function.Consumer<PdDatabaseMove> change) {
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              PdDatabaseMove row = moves.findById(id);
+              if (row != null) {
+                change.accept(row);
+              }
+            });
+  }
+
+  private String write(Map<String, Long> counts) {
+    try {
+      return json.writeValueAsString(new TreeMap<>(counts));
+    } catch (JsonProcessingException e) {
+      throw new IllegalStateException("a manifest that will not serialise", e);
+    }
+  }
+
+  private long totalOf(String counts) {
+    if (counts == null) {
+      return 0;
+    }
+    try {
+      return DatabaseScripts.total(json.readValue(counts, COUNTS));
+    } catch (JsonProcessingException e) {
+      return -1;
+    }
+  }
+
+  static String key(String application, String environment, String resource) {
+    return application + "|" + environment + "|" + resource;
+  }
+
+  static String where(DatabaseServer server, String database) {
+    return server.wire() + "/" + database;
+  }
+
+  private static String verdict(DatabaseContainers.Outcome outcome) {
+    return outcome.timedOut() ? "timed out" : "exit " + outcome.exitCode();
+  }
+
+  private static String tail(String output) {
+    String text = output == null ? "" : output.strip();
+    return text.length() <= 800 ? text : "…" + text.substring(text.length() - 800);
+  }
+
+  /** A step of the move failed; the batch aborts with this sentence. */
+  private static final class MoveFailure extends RuntimeException {
+    MoveFailure(String message) {
+      super(message, null, false, false);
+    }
+  }
+}

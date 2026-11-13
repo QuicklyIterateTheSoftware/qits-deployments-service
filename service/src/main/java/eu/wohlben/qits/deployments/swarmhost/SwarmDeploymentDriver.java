@@ -9,6 +9,7 @@ import eu.wohlben.qits.deployments.deployments.control.DeploymentSpecParser;
 import eu.wohlben.qits.deployments.deployments.control.ExtrasSnapshot;
 import eu.wohlben.qits.deployments.deployments.control.HealthGate;
 import eu.wohlben.qits.deployments.deployments.control.PdProcess;
+import eu.wohlben.qits.deployments.deployments.control.ResourceProvisioning;
 import eu.wohlben.qits.deployments.deployments.control.ServiceExtras;
 import eu.wohlben.qits.deployments.environments.control.PdIdentifiers;
 import eu.wohlben.qits.deployments.environments.control.PdNetworks;
@@ -525,6 +526,15 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   @ConfigProperty(name = "qits.deployments.registry-auth")
   boolean registryAuth;
+
+  /**
+   * The admin password the deployer provisions with on both postgres servers — and therefore the
+   * superuser password the private one is initialised with, which this driver writes as {@link
+   * DeploymentDriver#SERVER_PASSWORD_VARIABLE} for that one application (qits-2175). Absent, its
+   * deployment has already failed naming the key in {@code ResourceProvisioning.ensureAll}.
+   */
+  @ConfigProperty(name = "qits.deployments.postgres.admin-password")
+  Optional<String> postgresAdminPassword = Optional.empty();
 
   /**
    * The host HTTP port this installation was bootstrapped on — what {@code ${QITS_PORT}} in a
@@ -3019,6 +3029,15 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // repository-authored input being spliced into an environment-variable key. The idp resource's
     // name is the reserved constant `idp`, so it passes trivially — the check still runs, because
     // this loop has no reason to know which resource type it is looking at.
+    // The private postgres' superuser password, for that application alone (qits-2175): the same
+    // value this deployer provisions with, so one admin credential serves both servers by
+    // construction. Written like a resource password — a value on the argv, never in a log line.
+    if (ResourceProvisioning.PRIVATE_POSTGRES_APPLICATION.equals(spec.applicationName())) {
+      postgresAdminPassword
+          .map(String::strip)
+          .filter(password -> !password.isEmpty())
+          .ifPresent(password -> variables.add(SERVER_PASSWORD_VARIABLE + "=" + password));
+    }
     for (ResourceBinding binding : spec.resources()) {
       String key =
           PdIdentifiers.requireResourceName(binding.name())

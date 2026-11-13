@@ -124,6 +124,15 @@ public interface DeploymentDriver {
   String RESOURCE_PREFIX = "QITS_RESOURCE_";
 
   /**
+   * The superuser password the private postgres ({@code ResourceProvisioning
+   * .PRIVATE_POSTGRES_APPLICATION}) is initialised with (qits-2175): the deployer writes it for that
+   * one application, from its own {@code qits.deployments.postgres.admin-password}, because both
+   * servers share one admin credential and that is a rule in code rather than a settings row. Its
+   * name says PASSWORD, so the settings preview masks it like every resource password.
+   */
+  String SERVER_PASSWORD_VARIABLE = "POSTGRES_PASSWORD";
+
+  /**
    * This component's own eight, written on an argv before the deployment's own and therefore never
    * stated by config. They are the exception the update diff needs: measured against the extras
    * alone, every deployment would remove and immediately re-add them.

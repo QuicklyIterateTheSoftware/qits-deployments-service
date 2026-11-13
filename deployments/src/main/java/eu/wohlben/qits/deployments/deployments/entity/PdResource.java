@@ -82,6 +82,15 @@ public class PdResource extends PanacheEntityBase {
   public String clientId;
 
   /**
+   * Which postgres the database is on — {@code public} or {@code private}, {@code
+   * DatabaseServer.wire()} (V20, qits-2175). Every row before the column is {@code public}, the one
+   * server there was. A new claim takes the rule's server and an existing one changes only through a
+   * {@code pd_database_move}. Meaningless for an idp-client row, which keeps the default.
+   */
+  @Column(name = "server", nullable = false, length = 16)
+  public String server = "public";
+
+  /**
    * Generated here for a postgres row, issued by qits-idp for an idp-client row — either way stored
    * only here, and never logged. See the class javadoc.
    */

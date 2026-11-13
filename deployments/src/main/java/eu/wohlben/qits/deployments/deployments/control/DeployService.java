@@ -199,6 +199,12 @@ public class DeployService implements ReleaseAnnouncements {
   @Inject ResourceProvisioning resourceProvisioning;
   @Inject DeploymentObserver observer;
 
+  /**
+   * The database moves a deployment runs before it provisions (qits-2175), the operator's queued
+   * ones, and the retention sweep that drops what a move kept — all on this worker.
+   */
+  @Inject DatabaseMoves databaseMoves;
+
   /** The settings store a rename cutover copies onto its successor and retires for its predecessor. */
   @Inject Settings settings;
 
@@ -337,6 +343,17 @@ public class DeployService implements ReleaseAnnouncements {
     } catch (RuntimeException e) {
       LOG.warnf(e, "Could not settle the spec retries a previous process was holding");
     }
+    // A database move a previous process left half-way (qits-2175): aborted before its switch,
+    // finished after it — on the worker, ahead of anything this process queues, because an abort
+    // scales a stopped service back up and must not race a deployment of it.
+    worker.submit(
+        () -> {
+          try {
+            databaseMoves.settleInterrupted(true);
+          } catch (RuntimeException e) {
+            LOG.warnf(e, "Could not settle the database moves a previous process left unfinished");
+          }
+        });
     startObserving();
   }
 
@@ -423,6 +440,14 @@ public class DeployService implements ReleaseAnnouncements {
           } catch (RuntimeException e) {
             LOG.warnf(e, "The owed rename retirements failed to run; the next tick tries again");
           }
+          // And the database moves' two leftovers (qits-2175): a move boot could not settle, and a
+          // kept copy whose retention is over. One query each on a tick with nothing to do.
+          try {
+            databaseMoves.settleInterrupted(false);
+            databaseMoves.sweepExpired();
+          } catch (RuntimeException e) {
+            LOG.warnf(e, "The database move sweep failed; the next tick tries again");
+          }
         });
   }
 
@@ -443,6 +468,19 @@ public class DeployService implements ReleaseAnnouncements {
    *
    * @param description what a failure names in the log — the action, not the outcome
    */
+  /**
+   * Redeploy a released version through the ordinary path, ON this worker — the operator's database
+   * move (qits-2175, {@link DatabaseMoves#request}), whose own step runs inside the provisioning of
+   * this deployment. The manual door's semantics: it is somebody naming a version, so a release that
+   * carries no spec file is still deployed with the defaults rather than refused.
+   *
+   * <p>Package-private and called only from inside an {@link #enqueueOperation} task, which is what
+   * puts it on the worker: it calls {@link #deploy} directly rather than queueing behind itself.
+   */
+  void redeploy(RepositoryRef repository, String releasedName, String version, String packageName) {
+    deploy(null, repository, releasedName, version, packageName, null, null, Door.MANUAL);
+  }
+
   void enqueueOperation(String description, Runnable action) {
     worker.submit(
         () -> {
@@ -2901,6 +2939,29 @@ public class DeployService implements ReleaseAnnouncements {
     //     single `finish` and the previous deployment is untouched;
     //   * on plain values, because Plan is plain values — no transaction and no open session spans
     //     the DDL call to another server.
+    // THE DATABASE MOVES GO FIRST (qits-2175): a claim whose (server, database) is not where this
+    // spec puts it — a pin edited or dropped, an application renamed, an exposure that became
+    // private — is copied there, verified and switched before provisioning reads it. Without this,
+    // provisioning would answer the new name with an EMPTY database and the service would start
+    // green on it. A refused or aborted move fails this row; an abort has already put the old
+    // service back on its untouched data.
+    try {
+      databaseMoves.beforeProvisioning(
+          plan.applicationName(),
+          plan.environmentName(),
+          plan.renamedFrom(),
+          plan.exposure(),
+          plan.resources());
+    } catch (RuntimeException e) {
+      LOG.warnf("The database move of %s failed: %s", plan.applicationName(), e.getMessage());
+      finish(
+          deploymentId,
+          target,
+          PdDeploymentStatus.FAILED,
+          "[database move failed: " + e.getMessage() + "]");
+      return;
+    }
+
     List<DeploymentDriver.ResourceBinding> bindings;
     try {
       bindings =
@@ -2911,6 +2972,8 @@ public class DeployService implements ReleaseAnnouncements {
               // application to every keyed thing here, and the one thing that MOVES is the resource
               // claim; the only other use is the retirement announced after cutover.
               plan.renamedFrom(),
+              // The class this application is exposed as decides the server a NEW claim lands on.
+              plan.exposure(),
               plan.resources(),
               // A rename's FIRST deployment carries the predecessor's settings over, in the claim
               // transfer's own transaction. Not on a later one: a successor already deployed has
