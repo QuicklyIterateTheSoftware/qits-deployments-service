@@ -114,7 +114,7 @@
         <qits.bootstrap-cli-pacts-qits-deployments-service.version>2026.1019.84610</qits.bootstrap-cli-pacts-qits-deployments-service.version>
         <qits.orchestrator-service-pacts-qits-deployments-service.version>2026.1018.172917</qits.orchestrator-service-pacts-qits-deployments-service.version>
         <qits.projects-service-pacts-qits-deployments-service.version>2026.1018.195756</qits.projects-service-pacts-qits-deployments-service.version>
-        <qits.platform-access-monorepo-pacts-qits-deployments-service.version>2026.1109.214128</qits.platform-access-monorepo-pacts-qits-deployments-service.version>
+        <qits.platform-access-monorepo-pacts-qits-deployments-service.version>2026.1113.154308</qits.platform-access-monorepo-pacts-qits-deployments-service.version>
         <!-- The one golden-master reader for Java consumers, from qits-integrations-quarkus. -->
         <qits.pact-consumer.version>2026.1106.507</qits.pact-consumer.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
