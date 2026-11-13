@@ -160,17 +160,25 @@ public class DatabaseMoves {
    * Run every move this deployment's declared resources need, before anything is provisioned — or
    * nothing, which is every deployment whose claims already are where its spec says.
    *
+   * <p><b>A target server that is not deployed DEFERS the move rather than failing the
+   * deployment</b> — the rollout gap between this deployer and {@code qits-oci-postgresql-private}.
+   * The claim stays where it is, the deployment provisions against it exactly as before (the
+   * answer's entry for that resource names the CLAIM's database), and one WARN says so; the first
+   * deployment after the server exists moves it.
+   *
+   * @return the declared resources as provisioning should see them: unchanged, except that a
+   *     deferred move's resource names the database its claim still holds
    * @throws ResourceException with the operator-facing sentence when a move was refused or aborted;
    *     the deployment fails on it, and an abort has already put the old service back
    */
-  public void beforeProvisioning(
+  public List<ResourceProvisioning.Resolved> beforeProvisioning(
       String applicationName,
       String environmentName,
       String renamedFrom,
       DeploymentDriver.Exposure exposure,
       List<ResourceProvisioning.Resolved> declared) {
     if (declared == null || declared.isEmpty() || environmentName == null) {
-      return;
+      return declared == null ? List.of() : declared;
     }
     // Abandonment first: a predecessor's resource the successor stopped declaring is refused before
     // any service is stopped, exactly as it was refused before anything was provisioned.
@@ -179,7 +187,9 @@ public class DatabaseMoves {
     DatabaseServer rule = DatabaseServer.forExposure(exposure);
 
     List<Planned> planned = new ArrayList<>();
+    List<ResourceProvisioning.Resolved> effective = new ArrayList<>();
     for (ResourceProvisioning.Resolved resource : declared) {
+      effective.add(resource);
       if (resource.type() != ResourceSpec.Type.POSTGRESQL) {
         continue;
       }
@@ -204,10 +214,28 @@ public class DatabaseMoves {
         }
         continue;
       }
+      if (claimed.server() != targetServer && !admin.deployed(targetServer, environmentName)) {
+        String deferred = deferral(targetServer, environmentName);
+        LOG.warnf(
+            "%s keeps the database %s on %s — moving it to %s is %s",
+            applicationName,
+            claimed.database(),
+            where(claimed.server(), claimed.database()),
+            where(targetServer, targetDatabase),
+            deferred);
+        if (heldRow != null) {
+          refuse(heldRow, deferred);
+        }
+        // Provisioning finds the claim where it is, under the name it has.
+        effective.set(
+            effective.size() - 1,
+            new ResourceProvisioning.Resolved(name, claimed.database(), resource.type()));
+        continue;
+      }
       planned.add(new Planned(applicationName, environmentName, name, claimed, targetServer, targetDatabase, heldRow));
     }
     if (planned.isEmpty()) {
-      return;
+      return List.copyOf(effective);
     }
 
     // Every refusal before anything stops.
@@ -219,6 +247,12 @@ public class DatabaseMoves {
       }
     }
     run(planned);
+    return List.copyOf(effective);
+  }
+
+  /** The one sentence a deferred move is told by — the deployment's WARN and the door's 409. */
+  static String deferral(DatabaseServer server, String environmentName) {
+    return "deferred: the " + server.wire() + " postgres is not deployed in " + environmentName;
   }
 
   /** A claim, read out of its transaction: the row's id and what the move needs of it. */
@@ -283,8 +317,8 @@ public class DatabaseMoves {
           + where(move.sourceServer(), move.sourceDatabase())
           + ": it is "
           + BootResourceRegistration.APPLICATION
-          + "'s own database, and the deployer cannot stop itself to copy it — move it by hand"
-          + " with the deployer stopped";
+          + "'s own database, and the deployer cannot stop itself to copy it; the deployer moving"
+          + " its own databases is qits-2209";
     }
     String elsewhere =
         QuarkusTransaction.requiringNew()
@@ -448,7 +482,7 @@ public class DatabaseMoves {
     for (int i = 0; i < planned.size(); i++) {
       Planned move = planned.get(i);
       DatabaseContainers.Outcome closed =
-          admin(move.sourceServer(), move.environmentName(), DatabaseScripts.close(move.sourceDatabase()));
+          admin(move.sourceServer(), move.environmentName(), DatabaseScripts.close(move.sourceDatabase(), move.sourceDatabase()));
       if (!closed.ok()) {
         throw new MoveFailure(
             "could not close " + where(move.sourceServer(), move.sourceDatabase()) + ": " + tail(closed.output()));
@@ -688,7 +722,7 @@ public class DatabaseMoves {
       }
       if (row.state != PdDatabaseMoveState.QUEUED) {
         DatabaseContainers.Outcome reopened =
-            safely(() -> admin(source, row.environmentName, DatabaseScripts.reopen(row.sourceDatabase)));
+            safely(() -> admin(source, row.environmentName, DatabaseScripts.reopen(row.sourceDatabase, row.sourceDatabase)));
         if (!reopened.ok()) {
           problems.add("the source " + row.sourceDatabase + " was not re-opened: " + tail(reopened.output()));
         }
@@ -766,12 +800,16 @@ public class DatabaseMoves {
               finishSwitch(row.id);
             }
           }
-          LOG.warnf(
-              "Finished the interrupted database move %s past its switch. The service it stopped is"
-                  + " left stopped: its running spec still names the old database, and the next"
-                  + " deployment of %s starts it against the new one",
-              batch,
-              rows.get(0).applicationName);
+          // The service the move stopped is still at zero, and its running spec names the OLD
+          // database — so it is not scaled back up, it is REDEPLOYED, here, the way the operator's
+          // door redeploys. Nothing else reliably does it: the startup sweep marks the interrupted
+          // row `interrupted` (sweepInFlight, V16), but only OwedReleaseSweep re-drives such a row,
+          // and only for a release that came through the bus door and left a pd_owed_release
+          // obligation — Door.MANUAL writes none, so an operator's move (whose redeploy is MANUAL)
+          // or a hand-announced version would leave the service down with nobody to start it. A
+          // bus release may therefore be re-driven twice; the second finds its claims already where
+          // the spec says and is an ordinary, idempotent redeploy.
+          redeployAfterSwitch(rows.get(0));
         } else {
           abortBatch(batch, "the deployer restarted mid-move, so the move was undone");
         }
@@ -919,6 +957,15 @@ public class DatabaseMoves {
       throw new ConflictException(
           "nothing to move: `" + claim.resourceName + "` of " + application + " already is " + where(targetServer, targetDatabase));
     }
+    if (targetServer != claimServer && !admin.deployed(targetServer, tier.name)) {
+      throw new ConflictException(
+          "the move of `"
+              + claim.resourceName
+              + "` of "
+              + application
+              + " is "
+              + deferral(targetServer, tier.name));
+    }
     resources.listByDatabase(targetDatabase).stream()
         .filter(row -> !row.id.equals(claim.id))
         .findFirst()
@@ -987,6 +1034,48 @@ public class DatabaseMoves {
       String releasedName,
       String packageName) {}
 
+  /**
+   * Redeploy, on this worker, the version the interrupted deployment of {@code move}'s application
+   * was putting live — its newest deployment row in that tier, whatever the startup sweep settled it
+   * as. A WARN and nothing else when no release is on record to redeploy.
+   */
+  private void redeployAfterSwitch(PdDatabaseMove move) {
+    Live live;
+    try {
+      PdEnvironment tier =
+          environments.list().stream()
+              .filter(environment -> move.environmentName.equals(environment.name))
+              .findFirst()
+              .orElseThrow(() -> new ConflictException("the tier " + move.environmentName + " is gone"));
+      live =
+          QuarkusTransaction.requiringNew()
+              .call(
+                  () ->
+                      coordinates(
+                          move.applicationName,
+                          deployments
+                              .newestForPlace(move.applicationName, tier.id)
+                              .orElseThrow(
+                                  () ->
+                                      new ConflictException(
+                                          "nothing was ever deployed for "
+                                              + move.applicationName
+                                              + " in "
+                                              + move.environmentName))));
+    } catch (RuntimeException e) {
+      LOG.errorf(
+          "The database move %s of %s switched before a restart, its service is stopped, and it"
+              + " cannot be redeployed: %s",
+          move.batchId, move.applicationName, e.getMessage());
+      return;
+    }
+    LOG.warnf(
+        "Finished the interrupted database move %s past its switch; redeploying %s@%s so its stopped"
+            + " service starts against the moved database",
+        move.batchId, move.applicationName, live.version());
+    worker.redeploy(live.repository(), live.releasedName(), live.version(), live.packageName());
+  }
+
   private Live live(String application, PdEnvironment tier) {
     return QuarkusTransaction.joiningExisting()
         .call(
@@ -1005,41 +1094,46 @@ public class DatabaseMoves {
                                       + " has no deployment serving in "
                                       + tier.name
                                       + " to redeploy against the moved database"));
-              PdDeploymentRequest request =
-                  requests
-                      .find("deploymentId = ?1", serving.id)
-                      .firstResultOptional()
-                      .orElseThrow(
-                          () ->
-                              new ConflictException(
-                                  "no release request is on record for "
-                                      + application
-                                      + "@"
-                                      + serving.version
-                                      + ", so there is nothing to redeploy"));
-              if (request.repoId == null || serving.version == null) {
-                throw new ConflictException(
-                    application + "'s live deployment names no released version of a repository");
-              }
-              String repoName =
-                  request.packageName == null
-                      ? null
-                      : owed
-                          .find(
-                              "packageName = ?1 and version = ?2 and repoName is not null",
-                              request.packageName,
-                              serving.version)
-                          .firstResultOptional()
-                          .map((PdOwedRelease o) -> o.repoName)
-                          .orElse(null);
-              String released = PackageNames.applicationOf(request.packageName);
-              return new Live(
-                  serving.version,
-                  request.variant,
-                  new RepositoryRef(request.repoId, request.projectId, repoName),
-                  released != null ? released : application,
-                  request.packageName);
+              return coordinates(application, serving);
             });
+  }
+
+  /** The coordinates to redeploy one deployment row's version by, off its deployment request. */
+  private Live coordinates(String application, PdDeployment serving) {
+    PdDeploymentRequest request =
+        requests
+            .find("deploymentId = ?1", serving.id)
+            .firstResultOptional()
+            .orElseThrow(
+                () ->
+                    new ConflictException(
+                        "no release request is on record for "
+                            + application
+                            + "@"
+                            + serving.version
+                            + ", so there is nothing to redeploy"));
+    if (request.repoId == null || serving.version == null) {
+      throw new ConflictException(
+          application + "'s live deployment names no released version of a repository");
+    }
+    String repoName =
+        request.packageName == null
+            ? null
+            : owed
+                .find(
+                    "packageName = ?1 and version = ?2 and repoName is not null",
+                    request.packageName,
+                    serving.version)
+                .firstResultOptional()
+                .map((PdOwedRelease o) -> o.repoName)
+                .orElse(null);
+    String released = PackageNames.applicationOf(request.packageName);
+    return new Live(
+        serving.version,
+        request.variant,
+        new RepositoryRef(request.repoId, request.projectId, repoName),
+        released != null ? released : application,
+        request.packageName);
   }
 
   private SpecSource.DeploymentSpec liveSpec(Live live) {

@@ -133,32 +133,47 @@ final class DatabaseScripts {
   }
 
   /**
-   * Close the source: no new connection may open (a superuser's aside), and every one still open is
-   * terminated. The service is already scaled to zero; this is what makes the dump the last word.
+   * Fence the source: its role — and {@code PUBLIC}, already revoked at provisioning and revoked
+   * again idempotently — lose {@code CONNECT}, and every backend still open is terminated. The
+   * service is already scaled to zero; this is what makes the dump the last word.
+   *
+   * <p><b>By privilege, never by {@code ALLOW_CONNECTIONS false}.</b> That flag shuts out EVERYONE,
+   * superusers included, so the {@code pg_dump} that follows — which connects as the admin — died
+   * with {@code database "x" is not currently accepting connections}. A superuser bypasses the
+   * {@code CONNECT} privilege, so the fence keeps the application out and lets the dump in.
    */
-  static String close(String database) {
-    String db = id(database);
-    return psql(
-        ADMIN_DATABASE,
-        "ALTER DATABASE "
-            + db
-            + " WITH ALLOW_CONNECTIONS false;\n"
-            + "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE datname = '"
-            + db
-            + "' AND pid <> pg_backend_pid();");
+  static String close(String database, String role) {
+    return psql(ADMIN_DATABASE, closeSql(database, role));
   }
 
-  /** Re-open the source, when it is still there — an abort's last word to postgres. */
-  static String reopen(String database) {
+  /** {@link #close}'s statements, plain SQL — what the real-postgres test runs over JDBC. */
+  static String closeSql(String database, String role) {
     String db = id(database);
-    return psql(
-        ADMIN_DATABASE,
-        "SELECT 'ALTER DATABASE "
-            + db
-            + " WITH ALLOW_CONNECTIONS true' WHERE EXISTS (SELECT 1 FROM pg_database WHERE datname"
-            + " = '"
-            + db
-            + "')\n\\gexec");
+    String r = id(role);
+    return "REVOKE CONNECT ON DATABASE "
+        + db
+        + " FROM PUBLIC;\n"
+        + "REVOKE CONNECT ON DATABASE "
+        + db
+        + " FROM "
+        + r
+        + ";\n"
+        + "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE datname = '"
+        + db
+        + "' AND pid <> pg_backend_pid();";
+  }
+
+  /**
+   * Re-open the source to its role — an abort's last word to postgres. An abort only ever happens
+   * before the switch, so the source is still there under its own name.
+   */
+  static String reopen(String database, String role) {
+    return psql(ADMIN_DATABASE, reopenSql(database, role));
+  }
+
+  /** {@link #reopen}'s statement, plain SQL. */
+  static String reopenSql(String database, String role) {
+    return "GRANT CONNECT ON DATABASE " + id(database) + " TO " + id(role) + ";";
   }
 
   /**
@@ -230,7 +245,12 @@ final class DatabaseScripts {
         + printManifest(manifest);
   }
 
-  /** The switch's last statement to the source: rename it aside, still closed to connections. */
+  /**
+   * The switch's last statement to the source: rename it aside, still fenced — and then, since
+   * nothing ever connects to a kept copy again, {@code ALLOW_CONNECTIONS false} on it as well. The
+   * retention sweep's {@code DROP ... WITH (FORCE)} needs no connection to it. Idempotent: a source
+   * already renamed renames nothing, and the kept copy is closed whether or not this run renamed it.
+   */
   static String rename(String from, String to) {
     String source = id(from);
     String kept = id(to);
@@ -242,6 +262,12 @@ final class DatabaseScripts {
             + kept
             + "' WHERE EXISTS (SELECT 1 FROM pg_database WHERE datname = '"
             + source
+            + "')\n\\gexec\n"
+            + "SELECT 'ALTER DATABASE "
+            + kept
+            + " WITH ALLOW_CONNECTIONS false' WHERE EXISTS (SELECT 1 FROM pg_database WHERE datname"
+            + " = '"
+            + kept
             + "')\n\\gexec");
   }
 

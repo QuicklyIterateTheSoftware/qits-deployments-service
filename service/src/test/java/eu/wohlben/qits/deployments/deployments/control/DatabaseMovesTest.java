@@ -177,6 +177,58 @@ class DatabaseMovesTest {
   }
 
   @Test
+  void aMoveOntoAServerThatIsNotDeployedIsDeferredAndTheDeploymentUsesTheClaimAsItIs() {
+    // The rollout gap: this deployer is live before qits-oci-postgresql-private is. Only the public
+    // server runs in mv-o.
+    driver.scriptRunningImage("mv-o-qits-oci-postgresql", PUBLIC_IMAGE);
+    claim("qits-mvdefer", "mv-o", "db", "qits_platform_mvdefer", "public");
+    driver.scriptDeclaredReplicas("mv-o-qits-mvdefer", 1);
+
+    List<ResourceProvisioning.Resolved> effective =
+        moves.beforeProvisioning(
+            "qits-mvdefer", "mv-o", null, DeploymentDriver.Exposure.PRIVATE, one("db", "qits_mvdefer"));
+
+    assertEquals(List.of(), containers.shots(), "nothing was asked of any postgres");
+    assertTrue(driver.calls().stream().noneMatch(call -> call.startsWith("scale:")));
+    assertEquals(List.of(), movesOf("qits-mvdefer"));
+    assertEquals("qits_platform_mvdefer", effective.get(0).database(), "the claim, as it is");
+    PdResource claim = claimOf("qits-mvdefer", "mv-o", "db");
+    assertEquals("public", claim.server);
+    assertEquals("qits_platform_mvdefer", claim.databaseName);
+
+    // ...and provisioning deploys against it exactly as before the move existed.
+    List<DeploymentDriver.ResourceBinding> bindings =
+        provisioning.ensureAll("qits-mvdefer", "mv-o", null, DeploymentDriver.Exposure.PRIVATE, effective, null);
+    assertEquals(PASSWORD, provisioner.requests().get(0).storedPassword());
+    assertEquals(
+        "jdbc:postgresql://mv-o-qits-oci-postgresql:5432/qits_platform_mvdefer",
+        bindings.get(0).value("URL"));
+
+    // The next deployment after the server exists moves it.
+    driver.scriptRunningImage("mv-o-qits-oci-postgresql-private", PRIVATE_IMAGE);
+    moves.beforeProvisioning(
+        "qits-mvdefer", "mv-o", null, DeploymentDriver.Exposure.PRIVATE, one("db", "qits_mvdefer"));
+    PdResource moved = claimOf("qits-mvdefer", "mv-o", "db");
+    assertEquals("private", moved.server);
+    assertEquals("qits_mvdefer", moved.databaseName);
+  }
+
+  @Test
+  void aNewClaimOfAPrivateApplicationStillFailsWhenThePrivateServerIsNotDeployed() {
+    driver.scriptRunningImage("mv-p-qits-oci-postgresql", PUBLIC_IMAGE);
+
+    ResourceException refused =
+        assertThrows(
+            ResourceException.class,
+            () ->
+                provisioning.ensureAll(
+                    "qits-mvnoprivate", "mv-p", null, DeploymentDriver.Exposure.PRIVATE,
+                    one("db", "qits_mvnoprivate"), null));
+
+    assertTrue(refused.getMessage().contains("private postgres is not deployed"), refused.getMessage());
+  }
+
+  @Test
   void aClaimAlreadyWhereTheSpecSaysMovesNothing() {
     serversRunningIn("mv-c");
     claim("qits-mvsame", "mv-c", "db", "qits_mvsame", "public");
@@ -279,7 +331,7 @@ class DatabaseMovesTest {
         admin.stream().anyMatch(s -> s.contains("DROP DATABASE IF EXISTS qits_mvbad WITH (FORCE)")),
         admin.toString());
     assertTrue(
-        admin.stream().anyMatch(s -> s.contains("ALTER DATABASE qits_mvbad_old WITH ALLOW_CONNECTIONS true")),
+        admin.stream().anyMatch(s -> s.contains("GRANT CONNECT ON DATABASE qits_mvbad_old TO qits_mvbad_old")),
         admin.toString());
     assertTrue(admin.stream().noneMatch(s -> s.contains("RENAME TO")), "nothing was renamed");
     // ...and the service came back up on the untouched source.

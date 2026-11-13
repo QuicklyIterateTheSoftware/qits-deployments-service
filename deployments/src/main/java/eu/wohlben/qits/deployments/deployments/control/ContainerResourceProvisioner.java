@@ -58,7 +58,10 @@ public class ContainerResourceProvisioner implements ResourceProvisioner {
       return new Result(
           false,
           null,
-          "no service " + request.host() + " is running, so there is no private postgres to reach");
+          "the private postgres is not deployed (no service "
+              + request.host()
+              + " is running), so there is nowhere to provision a database for a private"
+              + " application");
     }
     String inEffect =
         request.storedPassword() != null ? request.storedPassword() : request.freshPassword();

@@ -50,6 +50,19 @@ public class PostgresAdmin {
     return server == DatabaseServer.PRIVATE ? privateNetwork : flatNetwork;
   }
 
+  /**
+   * Whether {@code server} is deployed in that tier: the orchestrator has a service under its wire
+   * alias ({@link DeploymentDriver#runningImage}, the startup sweep's own "what runs here" read). A
+   * move onto a server that is not deployed is deferred, not attempted.
+   */
+  public boolean deployed(DatabaseServer server, String environmentName) {
+    return driver
+        .runningImage(server.host(environmentName))
+        .map(DeploymentDriver.RunningImage::imageRef)
+        .filter(image -> !image.isBlank())
+        .isPresent();
+  }
+
   /** The admin role's name — not a secret, and the same on both servers. */
   public String adminUsername() {
     return adminUsername;

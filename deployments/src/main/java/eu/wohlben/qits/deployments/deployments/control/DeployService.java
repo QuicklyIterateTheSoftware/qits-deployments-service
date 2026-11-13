@@ -2945,13 +2945,15 @@ public class DeployService implements ReleaseAnnouncements {
     // provisioning would answer the new name with an EMPTY database and the service would start
     // green on it. A refused or aborted move fails this row; an abort has already put the old
     // service back on its untouched data.
+    List<ResourceProvisioning.Resolved> provisioned;
     try {
-      databaseMoves.beforeProvisioning(
-          plan.applicationName(),
-          plan.environmentName(),
-          plan.renamedFrom(),
-          plan.exposure(),
-          plan.resources());
+      provisioned =
+          databaseMoves.beforeProvisioning(
+              plan.applicationName(),
+              plan.environmentName(),
+              plan.renamedFrom(),
+              plan.exposure(),
+              plan.resources());
     } catch (RuntimeException e) {
       LOG.warnf("The database move of %s failed: %s", plan.applicationName(), e.getMessage());
       finish(
@@ -2974,7 +2976,9 @@ public class DeployService implements ReleaseAnnouncements {
               plan.renamedFrom(),
               // The class this application is exposed as decides the server a NEW claim lands on.
               plan.exposure(),
-              plan.resources(),
+              // What the moves left: the declared resources, with a deferred move's resource still
+              // naming the database its claim holds.
+              provisioned,
               // A rename's FIRST deployment carries the predecessor's settings over, in the claim
               // transfer's own transaction. Not on a later one: a successor already deployed has
               // been configured since, and a key-wise copy would resurrect what was removed.

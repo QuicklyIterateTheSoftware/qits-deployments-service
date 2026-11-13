@@ -40,6 +40,7 @@ class PdDatabaseMoveFlowTest {
   @Inject FakeResourceProvisioner provisioner;
   @Inject FakeDatabaseContainers containers;
   @Inject DeployService deployService;
+  @Inject DatabaseMoves databaseMoves;
   @Inject PdResourceRepository resources;
 
   @BeforeEach
@@ -230,6 +231,82 @@ class PdDatabaseMoveFlowTest {
     assertEquals("DEPLOYMENT", all.get(0).get("origin"));
     assertEquals("MOVED", all.get(0).get("state"));
     assertEquals("private", all.get(0).get("sourceServer"));
+  }
+
+  @Test
+  void theDoorAnswers409WhileTheTargetServerIsNotDeployed() throws Exception {
+    String token = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+    String environment = "dbmv-d-" + token;
+    createDesignatedEnvironment(environment);
+    String application = "dbmv-defer-" + token;
+    specs.script(application, declaring(DeploymentDriver.Exposure.PUBLIC));
+    driver.scriptRunningImage(environment + "-qits-oci-postgresql", "registry.example/qits/pg:1");
+    release(application, "2026.101.120000");
+
+    String refusal =
+        given()
+            .header("Authorization", SuiteBearers.operator())
+            .contentType(ContentType.JSON)
+            .body(Map.of("application", application, "server", "private"))
+            .when()
+            .post(MOVES)
+            .then()
+            .statusCode(409)
+            .extract()
+            .asString();
+    assertTrue(
+        refusal.contains("deferred: the private postgres is not deployed in " + environment),
+        refusal);
+    assertEquals("public", claim(application, environment).server);
+  }
+
+  @Test
+  void aMoveARestartInterruptedAfterItsSwitchRedeploysTheStoppedService() throws Exception {
+    // The restart finished the switch, so the claim points at the private server while the
+    // service, stopped for the move, still runs nothing. The boot settle redeploys it.
+    String token = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+    String environment = "dbmv-s-" + token;
+    String environmentId = createDesignatedEnvironment(environment);
+    String application = "dbmv-switch-" + token;
+    String database = "qits_dbmv_switch_" + token;
+    specs.script(application, declaring(DeploymentDriver.Exposure.PRIVATE));
+    driver.scriptRunningImage(environment + "-qits-oci-postgresql", "registry.example/qits/pg:1");
+    driver.scriptRunningImage(environment + "-qits-oci-postgresql-private", "registry.example/qits/pg:1");
+    release(application, "2026.101.120000");
+    assertEquals("private", claim(application, environment).server);
+    // Stage what a restart mid-switch leaves: the source still public, the row SWITCHING.
+    String id = UUID.randomUUID().toString();
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove row =
+                  new eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove();
+              row.id = id;
+              row.batchId = id;
+              row.applicationName = application;
+              row.environmentName = environment;
+              row.resourceName = "db";
+              row.sourceServer = "public";
+              row.sourceDatabase = database;
+              row.targetServer = "private";
+              row.targetDatabase = database;
+              row.keptDatabase = database + "_moved_202601010000";
+              row.origin = eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove.Origin.DEPLOYMENT;
+              row.state = eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState.SWITCHING;
+              row.serviceName = environment + "-" + application;
+              row.serviceReplicas = 1;
+              row.createdAt = java.time.Instant.now();
+              row.persist();
+            });
+    int appliedBefore = driver.applied().size();
+
+    databaseMoves.settleInterrupted(true);
+    deployService.awaitIdle();
+
+    assertEquals("MOVED", move(id).getString("move.state"));
+    assertEquals(appliedBefore + 1, driver.applied().size(), "the stopped service was redeployed");
+    assertEquals("ACTIVE", statuses(environmentId).get(0));
+    assertEquals(2, statuses(environmentId).size());
   }
 
   @Test
