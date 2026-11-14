@@ -110,4 +110,67 @@ class DatabaseScriptsPostgresTest {
       }
     }
   }
+
+  private static boolean exists(Connection admin, String database) throws SQLException {
+    try (Statement asked = admin.createStatement();
+        ResultSet rows = asked.executeQuery("SELECT 1 FROM pg_database WHERE datname = '" + database + "'")) {
+      return rows.next();
+    }
+  }
+
+  /** {@link DatabaseScripts#renameInPlace}'s transaction, the password a literal for the test. */
+  private static void renameInPlace(Connection admin, String from, String to) throws SQLException {
+    try (Statement statement = admin.createStatement()) {
+      statement.execute("BEGIN");
+      try {
+        statement.execute(DatabaseScripts.renameInPlaceSql(from, to));
+        statement.execute("ALTER ROLE " + to + " WITH LOGIN PASSWORD 'role-password'");
+        statement.execute(DatabaseScripts.reopenSql(to, to));
+        statement.execute("COMMIT");
+      } catch (SQLException failed) {
+        statement.execute("ROLLBACK");
+        throw failed;
+      }
+    }
+  }
+
+  @Test
+  void aRenameInPlaceMovesTheDatabaseAndItsRoleAndIsTheWayBackToo() throws SQLException {
+    // qits-2193: two names on one server are a rename, in a transaction, with the source fenced.
+    String database = provisioned();
+    String target = database + "_new";
+    try (Connection admin = admin("postgres")) {
+      execute(admin, DatabaseScripts.closeSql(database, database));
+      renameInPlace(admin, database, target);
+      assertFalse(exists(admin, database));
+      assertTrue(exists(admin, target));
+      // Idempotent: the answer lost, the same script again renames nothing and re-opens it.
+      renameInPlace(admin, database, target);
+    }
+    // The renamed role owns the renamed database, connects with its password and reads its data.
+    try (Connection owner = asRole(target, target);
+        Statement read = owner.createStatement();
+        ResultSet counted = read.executeQuery("SELECT count(*) FROM items")) {
+      counted.next();
+      assertEquals(3, counted.getLong(1), "the same data under another name");
+    }
+    assertThrows(SQLException.class, () -> asRole(target, database).close(), "the old role is gone");
+
+    // The way back is the same script, names swapped.
+    try (Connection admin = admin("postgres")) {
+      execute(admin, DatabaseScripts.closeSql(target, target));
+      renameInPlace(admin, target, database);
+      assertTrue(exists(admin, database));
+      assertFalse(exists(admin, target));
+    }
+    asRole(database, database).close();
+
+    // Both names present is refused, and the transaction leaves both as they were.
+    try (Connection admin = admin("postgres")) {
+      execute(admin, "CREATE DATABASE " + target + ";\n");
+      assertThrows(SQLException.class, () -> renameInPlace(admin, database, target));
+      assertTrue(exists(admin, database));
+      execute(admin, "DROP DATABASE " + target + ";\n");
+    }
+  }
 }

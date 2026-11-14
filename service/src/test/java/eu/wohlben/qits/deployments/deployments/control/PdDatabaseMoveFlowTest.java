@@ -178,6 +178,11 @@ class PdDatabaseMoveFlowTest {
     assertEquals(5L, moved.getLong("move.sourceRows"));
     assertEquals(5L, moved.getLong("move.targetRows"));
     assertNotNull(moved.getString("move.dropAfter"));
+    assertTrue(moved.getString("move.keptDatabase").startsWith(database + "_moved_"));
+    // Between the servers it is still a dump and a restore.
+    assertEquals(1, containers.shots("extract").size());
+    assertEquals(1, containers.shots("ingest").size());
+    assertEquals(List.of(), containers.shots("rename"));
     assertNull(moved.get("note"));
     PdResource onPrivate = claim(application, environment);
     assertEquals("private", onPrivate.server);
@@ -279,7 +284,18 @@ class PdDatabaseMoveFlowTest {
         accepted.getString("note"));
     deployService.awaitIdle();
 
-    assertEquals("MOVED", move(id).getString("move.state"));
+    JsonPath renamed = move(id);
+    assertEquals("MOVED", renamed.getString("move.state"));
+    // Two names on one server (qits-2193): renamed in place — no dump, no restore, no kept copy.
+    assertEquals(List.of(), containers.shots("extract"));
+    assertEquals(List.of(), containers.shots("ingest"));
+    assertEquals(1, containers.shots("rename").size());
+    assertTrue(
+        containers.shots("rename").get(0).script().contains("ALTER DATABASE " + database + " RENAME TO " + override + ";"));
+    assertNull(renamed.get("move.keptDatabase"));
+    assertNull(renamed.get("move.dropAfter"));
+    assertNull(renamed.get("move.sourceRows"));
+    assertEquals(DatabaseMoves.RENAMED_IN_PLACE, renamed.getString("move.detail"));
     PdResource held = claim(application, environment);
     assertEquals("public", held.server);
     assertEquals(override, held.databaseName);
