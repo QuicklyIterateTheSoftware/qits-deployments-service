@@ -324,6 +324,26 @@ public class ResourceProvisioning {
       DeploymentDriver.Exposure exposure,
       List<Resolved> declared,
       Runnable alongsideTransfer) {
+    return ensureAll(
+        applicationName, environmentName, renamedFrom, exposure, declared, resource -> true, alongsideTransfer);
+  }
+
+  /**
+   * The whole form, provisioning only the declared resources {@code which} accepts (qits-2249) —
+   * the two halves of a deployment with a database move: everything no move touches BEFORE the
+   * move stops the claim holder's service, the moved postgres resources after its switch. The
+   * rename's abandonment check still reads the WHOLE declaration, since a half that does not name
+   * a resource is not a spec that stopped declaring it; the bindings come back for the accepted
+   * resources alone, in declaration order.
+   */
+  public List<DeploymentDriver.ResourceBinding> ensureAll(
+      String applicationName,
+      String environmentName,
+      String renamedFrom,
+      DeploymentDriver.Exposure exposure,
+      List<Resolved> declared,
+      java.util.function.Predicate<Resolved> which,
+      Runnable alongsideTransfer) {
     if (PRIVATE_POSTGRES_APPLICATION.equals(applicationName)) {
       // The private server is initialised with the deployer's own admin password, which the driver
       // writes as its POSTGRES_PASSWORD. Without one there is nothing to initialise it with — and
@@ -338,6 +358,7 @@ public class ResourceProvisioning {
             renamedFrom,
             DatabaseServer.forExposure(exposure),
             declared,
+            which,
             pending);
     Runnable leftover = pending.getAndSet(null);
     if (leftover != null) {
@@ -352,6 +373,7 @@ public class ResourceProvisioning {
       String renamedFrom,
       DatabaseServer ruleServer,
       List<Resolved> declared,
+      java.util.function.Predicate<Resolved> which,
       AtomicReference<Runnable> alongsideTransfer) {
     if (renamedFrom != null && environmentName != null) {
       // Up front, before the empty-declaration return and before any seam is called: a rename that
@@ -369,12 +391,13 @@ public class ResourceProvisioning {
               + " provision them — designate a platform environment");
     }
 
+    List<Resolved> accepted = declared.stream().filter(which).toList();
     boolean needsPostgres =
-        declared.stream().anyMatch(r -> r.type() == ResourceSpec.Type.POSTGRESQL);
+        accepted.stream().anyMatch(r -> r.type() == ResourceSpec.Type.POSTGRESQL);
     String admin = needsPostgres ? requireAdminPassword() : null;
 
     List<DeploymentDriver.ResourceBinding> bindings = new ArrayList<>();
-    for (Resolved resource : declared) {
+    for (Resolved resource : accepted) {
       bindings.add(
           switch (resource.type()) {
             case POSTGRESQL ->
@@ -796,6 +819,19 @@ public class ResourceProvisioning {
                       .map(row -> row.password)
                       .orElse(null);
                 });
+
+    // qits-idp's OWN client is provisioned by qits-idp itself (qits-2249): a deployment of idp
+    // whose service is stopped — a database move's stop, or the redeploy that follows a restart
+    // after one — must not ask the stopped idp about it, or the deploy that would start idp again
+    // can never get past its own provisioning. A stored row for the derived client is the answer
+    // the presence check would give on the no-op arm, so it is used as it is.
+    if (IDP_APPLICATION.equals(applicationName) && stored != null) {
+      LOG.infof(
+          "Resource %s of %s (%s) is the idp client %s, stored — idp's own client is not asked of"
+              + " idp",
+          IDP_RESOURCE_NAME, applicationName, environmentName, clientId);
+      return DeploymentDriver.ResourceBinding.idp(IDP_RESOURCE_NAME, idpUrl, clientId, stored);
+    }
 
     // OUTSIDE any transaction, deliberately — see the class javadoc.
     boolean idpHasIt = idpClients.databaseClientPresent(clientId);

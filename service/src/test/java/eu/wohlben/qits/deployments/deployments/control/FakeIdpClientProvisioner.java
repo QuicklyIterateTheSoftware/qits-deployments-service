@@ -47,8 +47,10 @@ public class FakeIdpClientProvisioner implements IdpClientProvisioner {
   private volatile Result nextRotateResult;
   private volatile Result nextDeleteResult;
   private volatile int secretCounter;
+  private volatile java.util.function.BooleanSupplier reachable = () -> true;
 
   public void reset() {
+    reachable = () -> true;
     databaseClients.clear();
     presenceChecks.clear();
     createCalls.clear();
@@ -58,6 +60,21 @@ public class FakeIdpClientProvisioner implements IdpClientProvisioner {
     nextRotateResult = null;
     nextDeleteResult = null;
     secretCounter = 0;
+  }
+
+  /**
+   * Whether "qits-idp" answers at all, asked on every call — false is an idp that is stopped
+   * (qits-2249): each call then fails the way the real adapter does, with a {@link
+   * ResourceException}, and is still recorded.
+   */
+  public void scriptReachable(java.util.function.BooleanSupplier answer) {
+    reachable = answer;
+  }
+
+  private void requireReachable(String clientId) {
+    if (!reachable.getAsBoolean()) {
+      throw new ResourceException("could not reach qits-idp about " + clientId + ": connection refused");
+    }
   }
 
   /** Script that qits-idp already holds a DATABASE row for this client id, with no call. */
@@ -108,12 +125,14 @@ public class FakeIdpClientProvisioner implements IdpClientProvisioner {
   @Override
   public boolean databaseClientPresent(String clientId) {
     presenceChecks.add(clientId);
+    requireReachable(clientId);
     return databaseClients.contains(clientId);
   }
 
   @Override
   public Result create(String clientId) {
     createCalls.add(clientId);
+    requireReachable(clientId);
     if (nextCreateResult != null) {
       return nextCreateResult;
     }
@@ -127,6 +146,7 @@ public class FakeIdpClientProvisioner implements IdpClientProvisioner {
   @Override
   public Result rotate(String clientId) {
     rotateCalls.add(clientId);
+    requireReachable(clientId);
     if (nextRotateResult != null) {
       return nextRotateResult;
     }

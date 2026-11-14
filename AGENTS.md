@@ -1436,10 +1436,24 @@ each is easy to undo by accident:
 **A changed target used to be an EMPTY database, silently.** A claim is found by (application, tier,
 resource NAME), so a pin edited or dropped, or a `renamed_from` whose convention name followed the
 application, re-provisioned an empty database under the new name and started the service green on
-it. `DatabaseMoves.beforeProvisioning` runs in `DeployService.execute` right before `ensureAll`: per
+it. `DatabaseMoves.plan` runs in `DeployService.execute` before anything is provisioned: per
 declared postgres resource the CLAIM (own, or on a rename with none of its own the predecessor's for
 the same name) is compared with the TARGET (rule server, `resolve()` database). No claim or the same
 place: nothing. Anything else is a MOVE, recorded step by step in `pd_database_move` (V20):
+
+**The order around the stop is the point (qits-2249).** `plan` decides every move and every refusal
+and stops nothing; then, still with every service running, `ensureAll` provisions every resource NO
+move touches (each `idp:client`, each unmoved postgres resource — the `which` predicate), the
+registry host is derived and the image is PULLED; only then does `DatabaseMoves.run` stop, move and
+switch, and the moved postgres resources alone are provisioned after it. Measured on 2026-11-14
+(deployment `82f35ae1` of qits-idp): the old order scaled `dev-qits-idp` to 0, renamed
+`qits_platform_idp` → `qits_idp`, then provisioned idp's own `idp:client` — a call TO idp, which was
+at 0 — and ended FAILED with idp down and sign-in broken platform-wide until a hand fix. A move must
+never stop a service the rest of its own deploy needs. As a second belt, **qits-idp's own client is
+not asked of qits-idp** when its stored row names the derived client (`ensureIdpClient`): a redeploy
+of a stopped idp — the boot settle's, say — would otherwise hit the same wall. The bindings are
+merged back into the file's order. A rename's first-deploy settings copy rides the half that
+provisions the first declared database, where the claim transfer it commits with happens.
 
 1. **stop** — the claim holder's service (its wire alias) scaled to 0, waited for until no task is
    left (`DatabaseContainers.drained`), the source FENCED by privilege — `REVOKE CONNECT` from its
@@ -1492,6 +1506,37 @@ the successor no longer declares by NAME is still refused (`refuseAbandonedPrede
 `ensurePostgres` keeps a belt: a claim whose database differs from the resolved one is refused
 rather than re-provisioned, should anything reach provisioning without the move.
 
+**A deployment that fails AFTER its move switched ROLLS BACK, and only then is FAILED** (qits-2249,
+the owner's ruling of 2026-11-14 — "FAILED after the switch, the application is DOWN" is not an end
+state any more). Whatever failed — provisioning the moved resource, a refused apply, a service that
+never converged, an unexpected throw — reaches `finish`, the one funnel, with a `MoveRollback`
+pending (`DeployService.pendingRollbacks`, cleared at the cutover), and `finish` runs it first:
+
+1. **the moves undone** (`DatabaseMoves.rollBack`): the claim holder's service stopped again if
+   anything runs (a successor crash-looping on the target must not hold it); renamed in place →
+   renamed BACK (`renameShot`, names swapped, the password set again, never a `DROP`); a copy → the
+   kept source renamed back, `ALLOW_CONNECTIONS true` and `CONNECT` granted again
+   (`DatabaseScripts.restoreKept`), then the target dropped (its role too when unclaimed); the claim
+   switched back onto the source; the row `ABORTED`, `drop_after` cleared, detail `rolled back after
+   the switch: <cause>` — which also makes the target a leftover the next attempt may clear;
+2. **every stopped service started on its ORIGINAL spec and database**: when its spec is untouched
+   (nothing was applied, or swarm reverted the update itself — `ROLLED_BACK`, which goes back to the
+   scaled-to-zero spec naming the source) it is SCALED back to the replicas the move recorded; when
+   this deployment's spec is still on it, it is RE-APPLIED from the place's last `ACTIVE` row (that
+   row's image, `recordedBindings` — now naming the source — this spec's shape and policy, no image
+   defaults, the row's routing), awaited and held at its replicas. A rename's stop-old restore runs
+   the database half first and restores the predecessor onto the source;
+3. **then** the row is `FAILED` with `[rolled back: … the move was undone (…) and <service> scaled
+   back to N on its original spec | restored from its last ACTIVE deployment <id> (<version>)]` and
+   the cause under it. The version that served stays `ACTIVE`.
+
+A move whose source cannot be put back (the rename back itself fails) is left `MOVED` with `[the
+rollback is incomplete: …]` in its detail, its claim on the target where the data is, and its
+service NOT started (its spec names a source that is not there); the row says `INCOMPLETE` and an
+ERROR names it. That is the one case left for a person, and the door's move back is the lever. A
+restart in the middle of a rollback is not resumed: the rows are still `MOVED`, so nothing settles
+them, and the next deployment's move (or the door) is what moves the place again.
+
 **A target server that is not deployed DEFERS the move** (the rollout gap before
 `qits-oci-postgresql-private` exists; "deployed" is `PostgresAdmin.deployed`, a service under its
 alias): the claim stays, the deployment provisions against it as before, one WARN says `deferred: the
@@ -1527,8 +1572,7 @@ what `prepare`/`beforeProvisioning` hands provisioning for that resource, so `en
 sees claim == resolved; without it an override to another NAME switched the claim, was refused by the
 backstop and left the service stopped (qits-orchestrator, 2026-11-13). "The live version" is the
 newest row that is `ACTIVE`/`SCALED_TO_ZERO`, seen past a run of `FAILED`/`ROLLED_BACK`/`IMAGE_MISSING`
-rows, so a move back through the door recovers a place whose post-switch deployment failed; such a
-failure is an ERROR from `finish` naming the stopped service and the moved database. An override the spec
+rows, so a move back through the door recovers a place whose post-switch deployment failed. An override the spec
 disagrees with is accepted and the answer's `note` says the next deployment moves it back. `GET
 /database-moves[?application=]` and `/{id}` are the read surface (and the entity-exposure rule's
 answer for the table). Roles: the operator's set **and `qits:agent`** on all three — the POST is the

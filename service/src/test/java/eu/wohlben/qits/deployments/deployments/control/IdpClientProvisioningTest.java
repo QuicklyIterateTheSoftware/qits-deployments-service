@@ -80,6 +80,33 @@ public class IdpClientProvisioningTest {
   }
 
   @Test
+  void idpsOwnStoredClientIsNotAskedOfIdpWhichMayBeTheServiceThatIsStopped() {
+    // qits-2249: on 2026-11-14 the qits-idp deploy asked the stopped idp for idp's own client and
+    // could never get past it. A stored row for the derived client is used as it is.
+    String env = "idp-own-" + UUID.randomUUID().toString().substring(0, 8);
+    existingIdpRow("qits-idp", env, env + "-qits-idp", "idps-own-working-secret");
+    idpProvisioner.scriptReachable(() -> false);
+
+    List<DeploymentDriver.ResourceBinding> bindings =
+        provisioning.ensureAll("qits-idp", env, idpClient());
+
+    assertEquals(List.of(), idpProvisioner.presenceChecks(), "the stopped idp is not asked");
+    assertEquals(List.of(), idpProvisioner.createCalls());
+    assertEquals("idps-own-working-secret", bindings.get(0).value("CLIENT_SECRET"));
+    assertEquals(env + "-qits-idp", bindings.get(0).value("CLIENT_ID"));
+  }
+
+  @Test
+  void idpsOwnClientWithNoStoredRowIsStillProvisionedByIdp() {
+    String env = "idp-own-" + UUID.randomUUID().toString().substring(0, 8);
+
+    provisioning.ensureAll("qits-idp", env, idpClient());
+
+    assertEquals(List.of(env + "-qits-idp"), idpProvisioner.presenceChecks());
+    assertEquals(List.of(env + "-qits-idp"), idpProvisioner.createCalls());
+  }
+
+  @Test
   void presentAbsentCreatesAndOverwritesTheStaleSecret() {
     // idp lost its database row (a reset or a restore) but this registry still holds the old
     // secret. qits-idp never accepts a caller-supplied secret, so the fix is a fresh client.

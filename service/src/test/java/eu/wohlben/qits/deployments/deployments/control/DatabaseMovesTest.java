@@ -187,6 +187,53 @@ class DatabaseMovesTest {
   }
 
   @Test
+  void aSwitchedRenameIsRolledBackOntoItsSourceAndItsServiceHandedBackToStart() {
+    // qits-2249: a deployment that failed after its move switched hands the switched rows back.
+    serversRunningIn("mv-rb");
+    claim("qits-mvrb", "mv-rb", "db", "qits_platform_mvrb", "public");
+    driver.scriptDeclaredReplicas("mv-rb-qits-mvrb", 1);
+    DatabaseMoves.Prepared prepared =
+        moves.prepare("qits-mvrb", "mv-rb", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_mvrb"));
+    assertEquals("qits_mvrb", claimOf("qits-mvrb", "mv-rb", "db").databaseName);
+
+    DatabaseMoves.RolledBack rolledBack = moves.rollBack(prepared.switched(), "provisioning failed");
+
+    assertTrue(rolledBack.complete(), rolledBack.summary());
+    assertEquals(java.util.Map.of("mv-rb-qits-mvrb", 1), rolledBack.stopped());
+    String back = containers.shots("rename").get(1).script();
+    assertTrue(back.contains("ALTER DATABASE qits_mvrb RENAME TO qits_platform_mvrb;"), back);
+    assertEquals(PASSWORD, containers.shots("rename").get(1).secrets().get(DatabaseScripts.ROLE_PASSWORD));
+    PdResource claim = claimOf("qits-mvrb", "mv-rb", "db");
+    assertEquals("qits_platform_mvrb", claim.databaseName);
+    assertEquals("qits_platform_mvrb", claim.roleName);
+    PdDatabaseMove move = movesOf("qits-mvrb").get(0);
+    assertEquals(PdDatabaseMoveState.ABORTED, move.state);
+    assertEquals("rolled back after the switch: provisioning failed", move.detail);
+    // The service is not the move's to start: the caller restores it on its original spec.
+    assertFalse(driver.calls().contains("scale:mv-rb-qits-mvrb=1"), driver.calls().toString());
+  }
+
+  @Test
+  void aSwitchedRenameThatCannotBeRenamedBackKeepsItsClaimAndHandsNoServiceBack() {
+    serversRunningIn("mv-rc");
+    claim("qits-mvrc", "mv-rc", "db", "qits_platform_mvrc", "public");
+    driver.scriptDeclaredReplicas("mv-rc-qits-mvrc", 1);
+    DatabaseMoves.Prepared prepared =
+        moves.prepare("qits-mvrc", "mv-rc", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_mvrc"));
+    containers.script("rename", shot -> new DatabaseContainers.Outcome(1, "FATAL: the server is down", false));
+
+    DatabaseMoves.RolledBack rolledBack = moves.rollBack(prepared.switched(), "never converged");
+
+    assertFalse(rolledBack.complete());
+    assertEquals(java.util.Map.of(), rolledBack.stopped(), "nothing may start on a source that is not there");
+    assertTrue(rolledBack.summary().contains("the rename back of public/qits_mvrc"), rolledBack.summary());
+    assertEquals("qits_mvrc", claimOf("qits-mvrc", "mv-rc", "db").databaseName, "the claim stays with the data");
+    PdDatabaseMove move = movesOf("qits-mvrc").get(0);
+    assertEquals(PdDatabaseMoveState.MOVED, move.state);
+    assertTrue(move.detail.contains("[the rollback is incomplete:"), move.detail);
+  }
+
+  @Test
   void aRenameBackThatCannotRunKeepsTheServiceStoppedUntilAPassCompletesIt() {
     serversRunningIn("mv-r");
     claim("qits-mvrnowed", "mv-r", "db", "qits_mvrnowed_old", "public");

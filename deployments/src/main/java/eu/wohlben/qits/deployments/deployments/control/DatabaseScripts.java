@@ -272,6 +272,37 @@ final class DatabaseScripts {
   }
 
   /**
+   * {@link #rename}'s way back (qits-2249): a switched copy whose deployment then failed puts its
+   * kept source back under its own name — {@code ALLOW_CONNECTIONS true} on the kept copy, the copy
+   * renamed back while the source name is free, and {@code CONNECT} granted to its role again — so
+   * the original service starts on exactly the data it left. Idempotent over every state the switch
+   * can have left: a kept copy renamed back once is not renamed again, and a source the switch never
+   * managed to rename aside is simply re-opened.
+   */
+  static String restoreKept(String kept, String source) {
+    String k = id(kept);
+    String s = id(source);
+    return psql(
+        ADMIN_DATABASE,
+        "SELECT 'ALTER DATABASE "
+            + k
+            + " WITH ALLOW_CONNECTIONS true' WHERE EXISTS (SELECT 1 FROM pg_database WHERE datname"
+            + " = '"
+            + k
+            + "')\n\\gexec\n"
+            + "SELECT 'ALTER DATABASE "
+            + k
+            + " RENAME TO "
+            + s
+            + "' WHERE EXISTS (SELECT 1 FROM pg_database WHERE datname = '"
+            + k
+            + "') AND NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '"
+            + s
+            + "')\n\\gexec\n"
+            + reopenSql(source, source));
+  }
+
+  /**
    * A move between two names on ONE server (qits-2193, the owner's ruling of 2026-11-14): the
    * database and its role renamed in place, instant and needing no space — never a dump and a
    * restore of a store the shared postgres has to hold twice. The same script is the way back, with

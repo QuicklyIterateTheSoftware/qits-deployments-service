@@ -246,6 +246,15 @@ public class FakeDeploymentDriver implements DeploymentDriver {
 
   // --- what was recorded -------------------------------------------------------------------------
 
+  /**
+   * What {@link #desiredReplicas} would answer for {@code name}, read WITHOUT a call being logged —
+   * for a test asking "is it running right now" from inside another fake, mid-deployment.
+   */
+  public OptionalInt declaredReplicasOf(String name) {
+    Integer declared = declaredReplicas.get(name);
+    return declared == null ? OptionalInt.empty() : OptionalInt.of(declared);
+  }
+
   public List<ServiceSpec> applied() {
     return List.copyOf(applied);
   }

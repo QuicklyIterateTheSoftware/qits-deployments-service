@@ -248,8 +248,39 @@ public class DatabaseMoves {
       String renamedFrom,
       DeploymentDriver.Exposure exposure,
       List<ResourceProvisioning.Resolved> declared) {
+    return run(plan(applicationName, environmentName, renamedFrom, exposure, declared));
+  }
+
+  /**
+   * The moves a deployment's resources need, DECIDED and refused-or-not — nothing stopped yet
+   * (qits-2249). {@code DeployService} provisions everything a move does not touch, and pulls the
+   * image, between this and {@link #run}: the service a move stops may be the very one the rest of
+   * the deploy needs (qits-idp's own {@code idp:client} is provisioned BY qits-idp), so nothing that
+   * does not depend on the moved database may wait until after the stop.
+   *
+   * @param resolved the declared resources as provisioning must see them, a moved one naming its
+   *     target and a deferred one its claim's database
+   * @param planned the moves {@link #run} performs; empty is every deployment with nothing to move
+   */
+  record Pending(List<ResourceProvisioning.Resolved> resolved, List<Planned> planned) {
+
+    /** The names of the resources a move touches — the only ones provisioned after the switch. */
+    Set<String> movedResources() {
+      return planned.stream()
+          .map(Planned::resourceName)
+          .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+  }
+
+  /** {@link #prepare}'s decision half: every refusal, before anything stops. See {@link Pending}. */
+  Pending plan(
+      String applicationName,
+      String environmentName,
+      String renamedFrom,
+      DeploymentDriver.Exposure exposure,
+      List<ResourceProvisioning.Resolved> declared) {
     if (declared == null || declared.isEmpty() || environmentName == null) {
-      return new Prepared(declared == null ? List.of() : declared, List.of());
+      return new Pending(declared == null ? List.of() : declared, List.of());
     }
     // Abandonment first: a predecessor's resource the successor stopped declaring is refused before
     // any service is stopped, exactly as it was refused before anything was provisioned.
@@ -311,7 +342,7 @@ public class DatabaseMoves {
           new ResourceProvisioning.Resolved(name, targetDatabase, resource.type()));
     }
     if (planned.isEmpty()) {
-      return new Prepared(List.copyOf(effective), List.of());
+      return new Pending(List.copyOf(effective), List.of());
     }
 
     // Every refusal before anything stops.
@@ -322,8 +353,15 @@ public class DatabaseMoves {
         throw new ResourceException(refusal);
       }
     }
-    List<PdDatabaseMove> switched = run(planned);
-    return new Prepared(List.copyOf(effective), switched);
+    return new Pending(List.copyOf(effective), List.copyOf(planned));
+  }
+
+  /** {@link #prepare}'s doing half: stop, move, verify and switch what {@link #plan} decided. */
+  Prepared run(Pending pending) {
+    if (pending.planned().isEmpty()) {
+      return new Prepared(pending.resolved(), List.of());
+    }
+    return new Prepared(pending.resolved(), run(pending.planned()));
   }
 
   /** The one sentence a deferred move is told by — the deployment's WARN and the door's 409. */
@@ -336,7 +374,7 @@ public class DatabaseMoves {
       String id, String applicationName, String database, DatabaseServer server, String password) {}
 
   /** One move this deployment will run, decided and not yet started. */
-  private record Planned(
+  record Planned(
       String applicationName,
       String environmentName,
       String resourceName,
@@ -1014,6 +1052,206 @@ public class DatabaseMoves {
             LOG.warnf("Could not scale %s back to %d after an aborted move: %s", service, replicas, scaled.detail());
           }
         });
+  }
+
+  // --- the rollback after the switch (qits-2249) ------------------------------------------------
+
+  /**
+   * What {@link #rollBack} did: whether every move of the batch is back on its source, a sentence
+   * for the deployment's row, and the services the moves stopped with the replicas each ran — the
+   * ones the caller now starts again on their original spec. Empty when anything is not back: a
+   * service whose spec names the source must not start while the data is under the target name.
+   */
+  public record RolledBack(boolean complete, String summary, Map<String, Integer> stopped) {}
+
+  /**
+   * Undo moves that already SWITCHED, because the deployment they ran for failed after the switch
+   * (qits-2249, the owner's ruling of 2026-11-14: a failed move rolls back and restores the original
+   * service; "FAILED after the switch, application DOWN" is not an end state). Per move, in order:
+   *
+   * <ol>
+   *   <li>the claim holder's service is stopped again when anything is running — a successor that
+   *       started on the target and crash-loops must not hold it while it is renamed;
+   *   <li><b>renamed in place</b>: renamed BACK ({@link #renameShot}, names swapped, the claim's
+   *       password set again) — never a drop, the data is under the target name; <b>a copy</b>: the
+   *       kept source renamed back and re-opened ({@link DatabaseScripts#restoreKept});
+   *   <li>the claim switched back onto the source (server, database, role; password unchanged);
+   *   <li>a copy's target dropped — its role too, when no claim on that server uses it — which is
+   *       not the data: the source is;
+   *   <li>the row {@code ABORTED}, {@code drop_after} cleared, the detail saying it was rolled back —
+   *       which is also what makes the target a leftover the next attempt may clear.
+   * </ol>
+   *
+   * A move whose source cannot be put back is left {@code MOVED} with the reason in its detail, and
+   * NO service is handed back to start: its claim still names the target, where the data is.
+   */
+  public RolledBack rollBack(List<PdDatabaseMove> switched, String reason) {
+    List<String> problems = new ArrayList<>();
+    List<String> done = new ArrayList<>();
+    Map<String, Integer> stopped = new LinkedHashMap<>();
+    boolean complete = true;
+    for (PdDatabaseMove move : switched) {
+      if (move.serviceName != null && move.serviceReplicas != null && move.serviceReplicas > 0) {
+        stopped.putIfAbsent(move.serviceName, move.serviceReplicas);
+      }
+    }
+    for (String service : stopped.keySet()) {
+      try {
+        OptionalInt desired = driver.desiredReplicas(service);
+        if (desired.isPresent() && desired.getAsInt() > 0) {
+          Optional<Duration> grace = driver.stopGracePeriod(service);
+          DeploymentDriver.ScaleResult scaled = driver.scale(service, 0);
+          if (!scaled.applied()) {
+            throw new MoveFailure("could not stop " + service + " again for the rollback: " + scaled.detail());
+          }
+          awaitDrained(service, drainWait(stopTimeout, grace));
+        }
+      } catch (MoveFailure failure) {
+        problems.add(failure.getMessage());
+      }
+    }
+    for (PdDatabaseMove listed : switched) {
+      PdDatabaseMove row = read(listed.id);
+      if (row == null || row.state != PdDatabaseMoveState.MOVED) {
+        continue;
+      }
+      String unresolved = undoSwitch(row, problems);
+      if (unresolved != null) {
+        complete = false;
+        String owed = (row.detail == null ? "" : row.detail + "\n") + "[the rollback is incomplete: " + unresolved + "]";
+        update(row.id, moved -> moved.detail = owed);
+        LOG.errorf(
+            "Could not roll back the database move %s of %s (%s), %s → %s: %s",
+            row.id,
+            row.applicationName,
+            row.resourceName,
+            where(DatabaseServer.parse(row.targetServer), row.targetDatabase),
+            where(DatabaseServer.parse(row.sourceServer), row.sourceDatabase),
+            unresolved);
+        problems.add(unresolved);
+        continue;
+      }
+      String detail = "rolled back after the switch: " + reason;
+      update(
+          row.id,
+          moved -> {
+            moved.state = PdDatabaseMoveState.ABORTED;
+            moved.finishedAt = Instant.now();
+            moved.dropAfter = null;
+            moved.detail = detail;
+          });
+      done.add(
+          "`"
+              + row.resourceName
+              + "` back on "
+              + where(DatabaseServer.parse(row.sourceServer), row.sourceDatabase)
+              + (row.keptDatabase == null ? " (renamed back)" : " (the kept source restored, the target dropped)"));
+      LOG.warnf(
+          "Rolled back the database move %s of %s (%s): %s is back on %s",
+          row.id,
+          row.applicationName,
+          row.resourceName,
+          row.resourceName,
+          where(DatabaseServer.parse(row.sourceServer), row.sourceDatabase));
+    }
+    String summary =
+        String.join("; ", done)
+            + (problems.isEmpty() ? "" : (done.isEmpty() ? "" : "; ") + "[" + String.join("; ", problems) + "]");
+    return new RolledBack(complete, summary, complete ? Map.copyOf(stopped) : Map.of());
+  }
+
+  /**
+   * One switched move's way back to its source; null when the source is the claim's again and open,
+   * otherwise why not (the claim then still names the target). Cosmetic trouble — a target that
+   * would not drop — is added to {@code problems} and does not stop the rollback.
+   */
+  private String undoSwitch(PdDatabaseMove row, List<String> problems) {
+    DatabaseServer source = DatabaseServer.parse(row.sourceServer);
+    DatabaseServer target = DatabaseServer.parse(row.targetServer);
+    if (row.keptDatabase == null && row.sourceServer.equals(row.targetServer)) {
+      String password =
+          QuarkusTransaction.requiringNew()
+              .call(() -> switchedClaim(row).map(claim -> claim.password).orElse(null));
+      DatabaseContainers.Outcome back =
+          safely(
+              () ->
+                  renameShot(
+                      source,
+                      row.environmentName,
+                      admin.image(source, row.environmentName),
+                      row.targetDatabase,
+                      row.sourceDatabase,
+                      false,
+                      password));
+      if (!back.ok()) {
+        return "the rename back of "
+            + where(target, row.targetDatabase)
+            + " to `"
+            + row.sourceDatabase
+            + "` failed ("
+            + verdict(back)
+            + "): "
+            + tail(back.output());
+      }
+      switchClaimBack(row);
+      return null;
+    }
+    if (row.keptDatabase != null) {
+      DatabaseContainers.Outcome restored =
+          safely(() -> admin(source, row.environmentName, DatabaseScripts.restoreKept(row.keptDatabase, row.sourceDatabase)));
+      if (!restored.ok()) {
+        return "the kept source "
+            + where(source, row.keptDatabase)
+            + " could not be put back as `"
+            + row.sourceDatabase
+            + "`: "
+            + tail(restored.output());
+      }
+    } else {
+      // A copy whose switch never got as far as renaming the source aside: it is under its own name.
+      DatabaseContainers.Outcome reopened =
+          safely(() -> admin(source, row.environmentName, DatabaseScripts.reopen(row.sourceDatabase, row.sourceDatabase)));
+      if (!reopened.ok()) {
+        return "the source " + where(source, row.sourceDatabase) + " could not be re-opened: " + tail(reopened.output());
+      }
+    }
+    switchClaimBack(row);
+    String role = targetRoleUnclaimed(row) ? row.targetDatabase : null;
+    DatabaseContainers.Outcome dropped =
+        safely(() -> admin(target, row.environmentName, DatabaseScripts.drop(row.targetDatabase, role)));
+    if (!dropped.ok()) {
+      problems.add("the target " + where(target, row.targetDatabase) + " was not dropped: " + tail(dropped.output()));
+    }
+    return null;
+  }
+
+  /** The claim a switched move pointed at its target — whichever application holds it now. */
+  private Optional<PdResource> switchedClaim(PdDatabaseMove row) {
+    return resources.listByDatabase(row.targetDatabase).stream()
+        .filter(claim -> ResourceProvisioning.RESOURCE_TYPE.equals(claim.resourceType))
+        .filter(claim -> row.environmentName.equals(claim.environmentName))
+        .filter(claim -> row.resourceName.equals(claim.resourceName))
+        .filter(claim -> row.targetServer.equals(DatabaseServer.parse(claim.server).wire()))
+        .findFirst();
+  }
+
+  /** {@link #switchClaim} the other way round: the claim takes its source again. */
+  private void switchClaimBack(PdDatabaseMove row) {
+    QuarkusTransaction.requiringNew()
+        .run(
+            () ->
+                switchedClaim(row)
+                    .ifPresentOrElse(
+                        claim -> {
+                          claim.server = row.sourceServer;
+                          claim.databaseName = row.sourceDatabase;
+                          claim.roleName = row.sourceDatabase;
+                          claim.lastProvisionedAt = Instant.now();
+                        },
+                        () ->
+                            LOG.warnf(
+                                "Database move %s rolled back with no claim of %s left on %s — nothing to repoint",
+                                row.id, row.resourceName, row.targetDatabase)));
   }
 
   /** The mark on a row whose in-place rename an abort still owes undoing. */

@@ -299,13 +299,48 @@ public class DeployService implements ReleaseAnnouncements {
   private final Map<String, Retirement> owedRetirements = new ConcurrentHashMap<>();
 
   /**
-   * The deployments in flight on this worker whose database moves have SWITCHED, by deployment id,
-   * with the sentence naming each move and the service it stopped (qits-2175). From the switch on the
-   * old service cannot just be scaled back up — its binding names a source that is renamed and
-   * fenced — so a failure after it leaves the application down, and {@link #finish} says so at ERROR
-   * rather than as one more WARN. Written and cleared on the worker around {@link #execute}.
+   * The deployments in flight on this worker whose database moves have SWITCHED, by deployment id
+   * (qits-2175), with what a rollback needs to undo them (qits-2249). From the switch on, the old
+   * service cannot simply be scaled back up — its binding names a source that is renamed and fenced
+   * — so {@link #finish}, the one funnel every failure goes through, ROLLS BACK first: the moves
+   * undone, the claims back on their sources, the stopped services started again on their original
+   * spec and database, and only then the row written {@code FAILED} saying so. "FAILED after the
+   * switch, application DOWN" is not an end state any more. Written and cleared on the worker around
+   * {@link #execute}; a cutover clears its entry, since a deployment that went live rolls nothing
+   * back.
    */
-  private final Map<String, String> switchedMoves = new ConcurrentHashMap<>();
+  private final Map<String, MoveRollback> pendingRollbacks = new ConcurrentHashMap<>();
+
+  /**
+   * One deployment's switched moves and what it has done to the service since (qits-2249).
+   *
+   * @param plan the deployment, for the service it applies and the previous version it restores
+   * @param switched the moves that switched, as {@link DatabaseMoves#run} left them
+   */
+  private static final class MoveRollback {
+    final Plan plan;
+    final List<eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove> switched;
+    final String description;
+    /** The services something else already brought back — a rename's restored predecessor. */
+    final Set<String> restored = new HashSet<>();
+    /** The spec this deployment applied to its own service, once it did. */
+    DeploymentDriver.ServiceSpec spec;
+    /** Whether that spec is still on the service: applied, and not reverted by the orchestrator. */
+    boolean applied;
+    /** The registry host the image was pulled from, for the previous version's image. */
+    String registryHost;
+    /** The database half, once it ran — the rename restore runs it early. */
+    DatabaseMoves.RolledBack database;
+
+    MoveRollback(
+        Plan plan,
+        List<eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove> switched,
+        String description) {
+      this.plan = plan;
+      this.switched = switched;
+      this.description = description;
+    }
+  }
 
   /**
    * The observation tick — a bare daemon thread, the worker's own shape, rather than the
@@ -1834,7 +1869,7 @@ public class DeployService implements ReleaseAnnouncements {
         finish(
             row.deploymentId(), row.target(), PdDeploymentStatus.FAILED, "[unexpected: " + e + "]");
       } finally {
-        switchedMoves.remove(row.deploymentId());
+        pendingRollbacks.remove(row.deploymentId());
       }
     }
   }
@@ -3082,35 +3117,39 @@ public class DeployService implements ReleaseAnnouncements {
     // `renamed_from`, and for one whose predecessor is not deployed in this tier — see `Rename`.
     Rename rename = renameOf(plan);
 
-    // PROVISIONING GOES HERE, between the row's STARTING transition and the pull, and the placement
+    // PROVISIONING GOES HERE, between the row's STARTING transition and the apply, and the placement
     // is three decisions at once:
     //   * AFTER the transition, because the row is what a failure is recorded on — a resource that
     //     cannot be made to exist has to be readable as a failed deployment, not as a log line
     //     under a fire-and-forget intake;
-    //   * BEFORE the pull, because nothing docker-side has happened yet: there is no fresh
-    //     container to remove and no predecessor stopped to restart, so the failure path is a
-    //     single `finish` and the previous deployment is untouched;
+    //   * BEFORE anything docker-side, so a failure there is a single `finish` and the previous
+    //     deployment is untouched;
     //   * on plain values, because Plan is plain values — no transaction and no open session spans
     //     the DDL call to another server.
-    // THE DATABASE MOVES GO FIRST (qits-2175): a claim whose (server, database) is not where this
-    // spec puts it — a pin edited or dropped, an application renamed, an exposure that became
-    // private — is copied there, verified and switched before provisioning reads it. Without this,
-    // provisioning would answer the new name with an EMPTY database and the service would start
-    // green on it. A refused or aborted move fails this row; an abort has already put the old
-    // service back on its untouched data.
-    List<ResourceProvisioning.Resolved> provisioned;
+    // THE DATABASE MOVES ARE DECIDED FIRST (qits-2175): a claim whose (server, database) is not
+    // where this spec puts it — a pin edited or dropped, an application renamed, an exposure that
+    // became private — is copied there, verified and switched before provisioning reads it. Without
+    // this, provisioning would answer the new name with an EMPTY database and the service would
+    // start green on it. Every refusal is decided here, before anything stops.
+    //
+    // AND THEY RUN AS LATE AS POSSIBLE (qits-2249). A move stops the claim holder's service, and the
+    // rest of the deploy may need that very service: qits-idp's own `idp:client` is provisioned BY
+    // qits-idp, so on 2026-11-14 its deploy scaled idp to 0, renamed its database, then asked the
+    // stopped idp for its client and failed with sign-in down platform-wide. So everything that does
+    // not depend on a moved database — every idp client, every postgres resource no move touches,
+    // the registry host and the image pull — runs BEFORE the stop; only the moved postgres
+    // resources are provisioned after the switch. And a failure after the switch ROLLS BACK
+    // (`pendingRollbacks`, in `finish`): the move undone, the service started again on its original
+    // spec and database, and only then the row FAILED.
+    DatabaseMoves.Pending pending;
     try {
-      DatabaseMoves.Prepared prepared =
-          databaseMoves.prepare(
+      pending =
+          databaseMoves.plan(
               plan.applicationName(),
               plan.environmentName(),
               plan.renamedFrom(),
               plan.exposure(),
               plan.resources());
-      provisioned = prepared.resolved();
-      if (!prepared.switched().isEmpty()) {
-        switchedMoves.put(deploymentId, prepared.describeSwitched());
-      }
     } catch (RuntimeException e) {
       LOG.warnf("The database move of %s failed: %s", plan.applicationName(), e.getMessage());
       finish(
@@ -3120,10 +3159,27 @@ public class DeployService implements ReleaseAnnouncements {
           "[database move failed: " + e.getMessage() + "]");
       return;
     }
+    Set<String> moved = pending.movedResources();
+    // A rename's FIRST deployment carries the predecessor's settings over, in the claim transfer's
+    // own transaction. Not on a later one: a successor already deployed has been configured since,
+    // and a key-wise copy would resurrect what was removed. The copy rides the half that provisions
+    // the first declared database, which is where the transfer it commits with happens.
+    Runnable settingsCopy =
+        rename != null && rename.firstDeploy()
+            ? () ->
+                settings.copyForRename(
+                    plan.renamedFrom(), plan.applicationName(), plan.environmentName())
+            : null;
+    boolean settingsAfterTheMove =
+        pending.resolved().stream()
+            .filter(r -> r.type() == DeploymentSpec.ResourceSpec.Type.POSTGRESQL)
+            .findFirst()
+            .map(r -> moved.contains(r.name()))
+            .orElse(false);
 
-    List<DeploymentDriver.ResourceBinding> bindings;
+    Map<String, DeploymentDriver.ResourceBinding> provisioned = new HashMap<>();
     try {
-      bindings =
+      for (DeploymentDriver.ResourceBinding binding :
           resourceProvisioning.ensureAll(
               plan.applicationName(),
               plan.environmentName(),
@@ -3133,17 +3189,14 @@ public class DeployService implements ReleaseAnnouncements {
               plan.renamedFrom(),
               // The class this application is exposed as decides the server a NEW claim lands on.
               plan.exposure(),
-              // What the moves left: the declared resources, with a deferred move's resource still
-              // naming the database its claim holds.
-              provisioned,
-              // A rename's FIRST deployment carries the predecessor's settings over, in the claim
-              // transfer's own transaction. Not on a later one: a successor already deployed has
-              // been configured since, and a key-wise copy would resurrect what was removed.
-              rename != null && rename.firstDeploy()
-                  ? () ->
-                      settings.copyForRename(
-                          plan.renamedFrom(), plan.applicationName(), plan.environmentName())
-                  : null);
+              // What the moves will leave: the declared resources, a moved one naming its target
+              // and a deferred move's still naming the database its claim holds.
+              pending.resolved(),
+              // Everything no move touches, BEFORE the stop.
+              resource -> !moved.contains(resource.name()),
+              settingsAfterTheMove ? null : settingsCopy)) {
+        provisioned.put(binding.name(), binding);
+      }
     } catch (RuntimeException e) {
       LOG.warnf(
           "Could not provision the resources of %s: %s", plan.applicationName(), e.getMessage());
@@ -3172,7 +3225,9 @@ public class DeployService implements ReleaseAnnouncements {
         ImageRefs.imageRef(resolvedRegistryHost, imageRepository, plan.image(), plan.version());
 
     // The registry having no image for a green build is an expected outcome (nothing may publish
-    // this application yet) and gets its own state rather than a generic failure.
+    // this application yet) and gets its own state rather than a generic failure. Pulled BEFORE any
+    // move stops anything (qits-2249): the registry is reached through the edge, and an image that is
+    // not there is no reason to have stopped a service.
     DeploymentDriver.PullResult pulled = driver.pull(imageRef);
     switch (pulled.outcome()) {
       case IMAGE_MISSING -> {
@@ -3205,6 +3260,63 @@ public class DeployService implements ReleaseAnnouncements {
         /* fall through */
       }
     }
+
+    // THE STOP, the move and the switch — the only part of a deploy that may take a service down
+    // before its successor exists. A refused or aborted move fails this row; an abort has already
+    // put the old service back on its untouched data.
+    MoveRollback rollback = null;
+    try {
+      DatabaseMoves.Prepared prepared = databaseMoves.run(pending);
+      if (!prepared.switched().isEmpty()) {
+        rollback = new MoveRollback(plan, prepared.switched(), prepared.describeSwitched());
+        rollback.registryHost = resolvedRegistryHost;
+        pendingRollbacks.put(deploymentId, rollback);
+      }
+    } catch (RuntimeException e) {
+      LOG.warnf("The database move of %s failed: %s", plan.applicationName(), e.getMessage());
+      finish(
+          deploymentId,
+          target,
+          PdDeploymentStatus.FAILED,
+          "[database move failed: " + e.getMessage() + "]");
+      return;
+    }
+    // ...and the moved resources, provisioned where the moves put them. From here on every failure
+    // reaches `finish` with a rollback pending, and is undone there.
+    if (!moved.isEmpty()) {
+      try {
+        for (DeploymentDriver.ResourceBinding binding :
+            resourceProvisioning.ensureAll(
+                plan.applicationName(),
+                plan.environmentName(),
+                plan.renamedFrom(),
+                plan.exposure(),
+                pending.resolved(),
+                resource -> moved.contains(resource.name()),
+                settingsAfterTheMove ? settingsCopy : null)) {
+          provisioned.put(binding.name(), binding);
+        }
+      } catch (RuntimeException e) {
+        LOG.warnf(
+            "Could not provision the moved resources of %s: %s",
+            plan.applicationName(), e.getMessage());
+        finish(
+            deploymentId,
+            target,
+            PdDeploymentStatus.FAILED,
+            "[resource provisioning failed: " + e.getMessage() + "]");
+        return;
+      }
+    }
+    // In the order the file declared them, which is the order the container is told them in.
+    List<DeploymentDriver.ResourceBinding> ordered = new ArrayList<>();
+    for (ResourceProvisioning.Resolved resource : pending.resolved()) {
+      DeploymentDriver.ResourceBinding binding = provisioned.get(resource.name());
+      if (binding != null) {
+        ordered.add(binding);
+      }
+    }
+    List<DeploymentDriver.ResourceBinding> bindings = List.copyOf(ordered);
 
     // Named after the deployment, not the sha: re-deploying the same commit must never collide
     // with what it is about to replace. Whether that name is what the runtime uses is the driver's
@@ -3289,6 +3401,12 @@ public class DeployService implements ReleaseAnnouncements {
       // predecessor already has; BEFORE the apply, so the successor's create finds the ports free.
       stopPredecessor(plan, rename);
     }
+    if (rollback != null) {
+      // From this call on the service may carry this deployment's spec, which names the moved
+      // database: a rollback has to put the previous one back, not merely scale.
+      rollback.spec = spec;
+      rollback.applied = true;
+    }
     DeploymentDriver.ApplyResult applied = driver.apply(spec);
     switch (applied.outcome()) {
       case REFUSED -> {
@@ -3297,7 +3415,7 @@ public class DeployService implements ReleaseAnnouncements {
             target,
             PdDeploymentStatus.FAILED,
             stopOld
-                ? restorePredecessor(plan, rename, bindings, name, safe(applied.detail()))
+                ? restorePredecessor(plan, rename, bindings, name, safe(applied.detail()), rollback)
                 : safe(applied.detail()));
         return;
       }
@@ -3327,13 +3445,19 @@ public class DeployService implements ReleaseAnnouncements {
       // away — a rolled-back deployment and a refused apply asked for very different reactions and
       // read identically on the row. A convergence that failed WITHOUT a rollback keeps FAILED,
       // because there nothing is known to serve.
+      if (rollback != null
+          && converged.outcome() == DeploymentDriver.ConvergenceOutcome.ROLLED_BACK) {
+        // The orchestrator reverted the service to the spec it had before this update — the one the
+        // move scaled to zero, naming the source — so a rollback only has to scale it back up.
+        rollback.applied = false;
+      }
       if (stopOld) {
         // The predecessor was stopped for this successor, so nothing serves the place: put it back.
         finish(
             deploymentId,
             target,
             PdDeploymentStatus.FAILED,
-            restorePredecessor(plan, rename, bindings, name, safe(converged.detail())));
+            restorePredecessor(plan, rename, bindings, name, safe(converged.detail()), rollback));
         return;
       }
       finish(
@@ -3345,6 +3469,9 @@ public class DeployService implements ReleaseAnnouncements {
           safe(converged.detail()));
       return;
     }
+
+    // Live on the moved database: nothing is rolled back from here on (qits-2249).
+    pendingRollbacks.remove(deploymentId);
 
     // Cutover: the new deployment is the application's ACTIVE one, whatever was ACTIVE before is
     // decommissioned — rows first, then whatever is left to reap (the rows' own names and the
@@ -3623,7 +3750,16 @@ public class DeployService implements ReleaseAnnouncements {
       Rename rename,
       List<DeploymentDriver.ResourceBinding> successorBindings,
       String successorService,
-      String failure) {
+      String failure,
+      MoveRollback rollback) {
+    if (rollback != null) {
+      // A move switched for this successor (qits-2249): its databases go back FIRST, so the
+      // predecessor is restored onto its sources — with the claims as they now are, not the
+      // successor's bindings, which name the targets.
+      undoDatabaseMoves(rollback, failure);
+      successorBindings =
+          resourceProvisioning.recordedBindings(plan.applicationName(), plan.environmentName());
+    }
     String predecessor = rename.predecessor();
     String row = rename.predecessorDeploymentId() + " (" + rename.predecessorVersion() + ")";
     if (rename.firstDeploy()) {
@@ -3663,6 +3799,9 @@ public class DeployService implements ReleaseAnnouncements {
           + safe(restored.detail())
           + "\n"
           + failure;
+    }
+    if (rollback != null) {
+      rollback.restored.add(rename.predecessorService());
     }
     LOG.warnf(
         "Rename cutover %s -> %s failed; %s is restored from %s",
@@ -4330,7 +4469,14 @@ public class DeployService implements ReleaseAnnouncements {
    * pd_deployment} holds the environment's ID and never its NAME. Every call site already has one.
    */
   private void finish(
-      String deploymentId, Target target, PdDeploymentStatus status, String detail) {
+      String deploymentId, Target target, PdDeploymentStatus outcome, String cause) {
+    MoveRollback rollback = pendingRollbacks.remove(deploymentId);
+    // A deployment whose database move SWITCHED and that then did not go live is rolled back
+    // BEFORE anything is recorded (qits-2249): the move undone, the service started again on its
+    // original spec and database. Only then is the row FAILED, saying so.
+    boolean rolledBack = rollback != null && outcome != PdDeploymentStatus.ACTIVE;
+    PdDeploymentStatus status = rolledBack ? PdDeploymentStatus.FAILED : outcome;
+    String detail = rolledBack ? rollBack(rollback, cause) : cause;
     Finished finished =
         DbRetry.inNewTx(
             "Recording deployment " + deploymentId + " as " + status,
@@ -4352,27 +4498,199 @@ public class DeployService implements ReleaseAnnouncements {
                   deployment.finishedAt);
             },
             CUTOVER_BUDGET);
-    String switched = switchedMoves.remove(deploymentId);
-    if (switched != null && status != PdDeploymentStatus.ACTIVE) {
-      // The move switched and this deployment did not put the service back up: it is stopped, and
-      // scaling it back would point it at a renamed, fenced source. A person has to act — a move
-      // back through the door redeploys the version that served.
-      LOG.errorf(
-          "Deployment %s of %s ended %s AFTER its database move switched, so the application is"
-              + " DOWN: %s. Recover with POST /deployments/api/database-moves (a move back to the"
-              + " spec's target redeploys the version that served). Cause: %s",
-          deploymentId,
-          target.applicationName(),
-          status,
-          switched,
-          firstLine(detail));
-    }
     if (status != PdDeploymentStatus.ACTIVE) {
       LOG.warnf("Deployment %s ended %s: %s", deploymentId, status, firstLine(detail));
       if (finished != null) {
         announceFailed(deploymentId, target, status, detail, finished);
       }
     }
+  }
+
+  /**
+   * The rollback of a deployment that failed after its database move SWITCHED (qits-2249, the
+   * owner's ruling of 2026-11-14), in the order the ruling gives:
+   *
+   * <ol>
+   *   <li>the moves undone — renamed back, or the kept source restored and the target dropped — and
+   *       the claims switched back onto their sources ({@link DatabaseMoves#rollBack});
+   *   <li>every service the moves stopped started again on its ORIGINAL spec and database: scaled
+   *       back to the replicas it ran when its spec is untouched (nothing was applied, or the
+   *       orchestrator reverted the update itself), or — when this deployment's spec is still on it
+   *       — re-applied from its last {@code ACTIVE} deployment with the bindings the claims now
+   *       render, the rename-cutover restore's machinery applied to the application itself;
+   *   <li>the sentence the row is then recorded {@code FAILED} with.
+   * </ol>
+   *
+   * A database that cannot be put back keeps its service stopped — its original spec names a source
+   * that is not there — and that is said at ERROR, naming what failed.
+   */
+  private String rollBack(MoveRollback rollback, String cause) {
+    Plan plan = rollback.plan;
+    DatabaseMoves.RolledBack database = undoDatabaseMoves(rollback, cause);
+    if (!database.complete()) {
+      LOG.errorf(
+          "Deployment %s of %s failed after its database move switched (%s), and the rollback could"
+              + " NOT put every database back, so the services it stopped stay stopped: %s. Cause: %s",
+          plan.deploymentId(),
+          plan.applicationName(),
+          rollback.description,
+          database.summary(),
+          firstLine(cause));
+      return "[the deployment failed after its database move switched, and rolling it back is"
+          + " INCOMPLETE — the services it stopped stay stopped: "
+          + database.summary()
+          + "]\n"
+          + cause;
+    }
+    List<String> services = new ArrayList<>();
+    for (Map.Entry<String, Integer> stopped : database.stopped().entrySet()) {
+      String service = stopped.getKey();
+      int replicas = stopped.getValue();
+      if (rollback.restored.contains(service)) {
+        services.add(service + " restored from its last ACTIVE deployment");
+      } else if (rollback.applied && service.equals(plan.wireAlias()) && rollback.spec != null) {
+        services.add(restoreOwnService(rollback, service, replicas));
+      } else {
+        services.add(scaleBack(service, replicas));
+      }
+    }
+    String started =
+        services.isEmpty() ? "nothing was running to start again" : String.join("; ", services);
+    LOG.warnf(
+        "Deployment %s of %s failed after its database move switched and is rolled back: %s; %s."
+            + " Cause: %s",
+        plan.deploymentId(),
+        plan.applicationName(),
+        database.summary(),
+        started,
+        firstLine(cause));
+    return "[rolled back: the deployment failed after its database move switched, so the move was"
+        + " undone ("
+        + database.summary()
+        + ") and "
+        + started
+        + "]\n"
+        + cause;
+  }
+
+  /** The database half of {@link #rollBack}, once: the rename restore runs it before its restore. */
+  private DatabaseMoves.RolledBack undoDatabaseMoves(MoveRollback rollback, String cause) {
+    if (rollback.database == null) {
+      try {
+        rollback.database = databaseMoves.rollBack(rollback.switched, firstLine(cause));
+      } catch (RuntimeException e) {
+        LOG.errorf(e, "The rollback of %s's database moves threw", rollback.plan.applicationName());
+        rollback.database =
+            new DatabaseMoves.RolledBack(false, "the rollback threw: " + e, Map.of());
+      }
+    }
+    return rollback.database;
+  }
+
+  /** A service whose spec this deployment never left on it: back to the replicas it ran. */
+  private String scaleBack(String service, int replicas) {
+    DeploymentDriver.ScaleResult scaled;
+    try {
+      scaled = driver.scale(service, replicas);
+    } catch (RuntimeException e) {
+      scaled = new DeploymentDriver.ScaleResult(DeploymentDriver.ScaleOutcome.REFUSED, e.toString());
+    }
+    if (!scaled.applied()) {
+      LOG.errorf("Could not scale %s back to %d after a rollback: %s", service, replicas, scaled.detail());
+      return service + " could NOT be scaled back to " + replicas + ": " + safe(scaled.detail());
+    }
+    return service + " scaled back to " + replicas + " on its original spec";
+  }
+
+  /**
+   * This deployment's own service, whose spec is the failed one: re-applied from the place's last
+   * {@code ACTIVE} deployment — that row's image (on the host, no pull) with the bindings the claims
+   * render now that they are back on their sources — then held to the replicas it ran. The shape,
+   * order and policy are this deployment's spec, which is the same repository one release later, the
+   * rename restore's trade ({@link #predecessorSpec}).
+   */
+  private String restoreOwnService(MoveRollback rollback, String service, int replicas) {
+    Plan plan = rollback.plan;
+    PdDeployment previous =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () ->
+                    deployments
+                        .listForPlaceNewestFirst(plan.applicationName(), plan.environmentId())
+                        .stream()
+                        .filter(row -> row.status == PdDeploymentStatus.ACTIVE)
+                        .filter(row -> !row.id.equals(plan.deploymentId()))
+                        .findFirst()
+                        .orElse(null));
+    if (previous == null || previous.imageTag() == null) {
+      LOG.warnf(
+          "%s has no ACTIVE deployment to restore after its rollback; it is only scaled back", service);
+      return scaleBack(service, replicas) + " (no ACTIVE deployment to restore its spec from)";
+    }
+    String version = previous.imageTag();
+    String row = previous.id + " (" + version + ")";
+    DeploymentDriver.ApplyResult restored;
+    try {
+      DeploymentDriver.ServiceSpec failed = rollback.spec;
+      DeploymentDriver.ServiceSpec spec =
+          new DeploymentDriver.ServiceSpec(
+              failed.environmentId(),
+              failed.environmentName(),
+              failed.applicationId(),
+              failed.applicationName(),
+              previous.id,
+              version,
+              version,
+              ContainerNames.of(plan.environmentName(), plan.applicationName(), previous.id),
+              failed.wireAlias(),
+              failed.networks(),
+              ImageRefs.imageRef(rollback.registryHost, imageRepository, plan.image(), version),
+              failed.healthPath(),
+              failed.healthCmd(),
+              failed.availableOnEnv(),
+              failed.updateOrder(),
+              failed.publishMode(),
+              resourceProvisioning.recordedBindings(plan.applicationName(), plan.environmentName()),
+              failed.volumes(),
+              failed.stopGracePeriod(),
+              failed.shape(),
+              failed.renamedFrom(),
+              false,
+              failed.exposure(),
+              failed.variant(),
+              // No image defaults: the restored version runs ITS image, which this deployment's
+              // image_defaults: says nothing about.
+              Map.of(),
+              predecessorRouting(previous.id));
+      restored = driver.apply(spec);
+    } catch (RuntimeException e) {
+      restored = new DeploymentDriver.ApplyResult(DeploymentDriver.ApplyOutcome.REFUSED, e.toString());
+    }
+    if (restored.outcome() == DeploymentDriver.ApplyOutcome.REFUSED) {
+      LOG.errorf(
+          "%s could NOT be restored from its last ACTIVE deployment %s after a rollback: %s",
+          service, row, restored.detail());
+      return service
+          + " could NOT be restored from its last ACTIVE deployment "
+          + row
+          + ": "
+          + safe(restored.detail());
+    }
+    DeploymentDriver.Convergence converged = driver.awaitConverged(service, convergenceTimeout(plan));
+    // An update restates one replica; anything else the service ran is put back by a scale.
+    java.util.OptionalInt desired = driver.desiredReplicas(service);
+    if (desired.isEmpty() || desired.getAsInt() != replicas) {
+      DeploymentDriver.ScaleResult scaled = driver.scale(service, replicas);
+      if (!scaled.applied()) {
+        LOG.warnf("Could not hold %s at %d after its restore: %s", service, replicas, scaled.detail());
+      }
+    }
+    return service
+        + " restored from its last ACTIVE deployment "
+        + row
+        + " at "
+        + replicas
+        + (converged.converged() ? "" : ", though it has not converged yet: " + safe(converged.detail()));
   }
 
   /** What the outcome bracket carries out — the row's own values, for the announcement. */
