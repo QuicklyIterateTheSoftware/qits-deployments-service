@@ -116,6 +116,14 @@ public class DatabaseMoves {
   /** How often the stop polls the service's tasks while it waits for them to be gone. */
   private static final Duration DRAIN_POLL = Duration.ofSeconds(2);
 
+  /**
+   * Docker's own default {@code stop_grace_period} — ten seconds — read as the grace when {@link
+   * DeploymentDriver#stopGracePeriod} cannot say. Never the application default this component
+   * itself ships ({@link DeploymentDriver#DEFAULT_STOP_GRACE_PERIOD}, thirty seconds): a live
+   * service inspected here may be one swarm itself defaulted, not one this deployer created.
+   */
+  private static final Duration DOCKER_DEFAULT_STOP_GRACE_PERIOD = Duration.ofSeconds(10);
+
   /** How many moves a listing answers — one screen, the deployment listing's own stance. */
   static final int LIST_LIMIT = 200;
 
@@ -143,7 +151,13 @@ public class DatabaseMoves {
   @ConfigProperty(name = "qits.deployments.database-move.timeout")
   Duration timeout;
 
-  /** How long the stop waits for the service's tasks to be gone. */
+  /**
+   * How long the stop waits for the service's tasks to be gone — a FLOOR, not the whole answer
+   * (qits-2228): {@link #drainWait} raises it to the live service's own {@code stop_grace_period}
+   * plus {@link DeploymentDriver#RECREATE_DRAIN_MARGIN} when that is longer, so a service that
+   * declares a long grace to drain its own connections (the private edge's {@code 10m}) is waited
+   * out rather than aborted mid-drain.
+   */
   @ConfigProperty(name = "qits.deployments.database-move.stop-timeout")
   Duration stopTimeout;
 
@@ -525,6 +539,7 @@ public class DatabaseMoves {
         continue;
       }
       int replicas = desired.getAsInt();
+      Optional<Duration> grace = driver.stopGracePeriod(service);
       DeploymentDriver.ScaleResult scaled = driver.scale(service, 0);
       if (!scaled.applied()) {
         throw new MoveFailure("could not stop " + service + " for the move: " + scaled.detail());
@@ -537,7 +552,7 @@ public class DatabaseMoves {
               row.serviceReplicas = replicas;
             });
       }
-      awaitDrained(service);
+      awaitDrained(service, drainWait(stopTimeout, grace));
     }
     for (int i = 0; i < planned.size(); i++) {
       Planned move = planned.get(i);
@@ -550,8 +565,22 @@ public class DatabaseMoves {
     }
   }
 
-  private void awaitDrained(String service) {
-    long deadline = System.nanoTime() + stopTimeout.toNanos();
+  /**
+   * The deadline {@link #awaitDrained} waits out: {@code max(stopTimeout, grace +
+   * DeploymentDriver.RECREATE_DRAIN_MARGIN)}, an empty grace reading as docker's own default of ten
+   * seconds (qits-2228). {@code qits-edge-private} declares a {@code stop_grace_period} of {@code
+   * 10m} and drains its long-lived connections for up to 9m30s on SIGTERM; the fixed {@code
+   * stop-timeout} alone (shipped {@code PT2M}) gave up on it every single time, aborting a move
+   * that was never going to finish stopping in two minutes. Package-private for the test.
+   */
+  static Duration drainWait(Duration stopTimeout, Optional<Duration> grace) {
+    Duration effectiveGrace = grace.orElse(DOCKER_DEFAULT_STOP_GRACE_PERIOD);
+    Duration graceDeadline = effectiveGrace.plus(DeploymentDriver.RECREATE_DRAIN_MARGIN);
+    return stopTimeout.compareTo(graceDeadline) >= 0 ? stopTimeout : graceDeadline;
+  }
+
+  private void awaitDrained(String service, Duration wait) {
+    long deadline = System.nanoTime() + wait.toNanos();
     DatabaseContainers.Drain last = DatabaseContainers.Drain.UNKNOWN;
     while (true) {
       last = containers.drained(service);
@@ -564,7 +593,7 @@ public class DatabaseMoves {
                 + " still had a task "
                 + (last == DatabaseContainers.Drain.RUNNING ? "running" : "the runtime could not account for")
                 + " after "
-                + stopTimeout.toSeconds()
+                + wait.toSeconds()
                 + "s");
       }
       try {

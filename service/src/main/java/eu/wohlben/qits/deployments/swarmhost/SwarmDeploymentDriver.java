@@ -314,6 +314,15 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       "{{if .Spec.Mode.Replicated}}{{.Spec.Mode.Replicated.Replicas}}{{end}}";
 
   /**
+   * The live service's {@code stop_grace_period}, off its spec — swarm stores it as a plain
+   * integer count of nanoseconds, or prints {@code <no value>} for a service created with none
+   * stated. {@link #stopGracePeriod} is the one reader, for a database move's drain wait
+   * (qits-2228).
+   */
+  static final String STOP_GRACE_PERIOD_FORMAT =
+      "{{.Spec.TaskTemplate.ContainerSpec.StopGracePeriod}}";
+
+  /**
    * How many tasks a service this component creates runs. One, everywhere: the applications on this
    * platform bind host ports from inside the task and write to stores with a single writer, so a
    * second task is a port collision or a corrupted volume rather than capacity.
@@ -3447,6 +3456,32 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       }
       return Optional.of(hidden ? Exposure.PRIVATE : Exposure.PUBLIC);
     } catch (RuntimeException e) {
+      return Optional.empty();
+    }
+  }
+
+  /**
+   * The live service's own {@code stop_grace_period}, read back as {@link #STOP_GRACE_PERIOD_FORMAT}.
+   * Empty on an inspect that fails (no such service, a daemon that cannot answer), on {@code <no
+   * value>} (a service created with none stated) and on a parsed {@code 0} — all three mean "this
+   * runtime cannot say what the grace is", never "the grace is zero", because a caller reading zero
+   * as deliberate would wait only the margin for a service that may hold connections for minutes.
+   */
+  @Override
+  public Optional<Duration> stopGracePeriod(String service) {
+    ContainerProcess.Result inspected =
+        run(SwarmArgv.serviceInspect(runtime, service, STOP_GRACE_PERIOD_FORMAT), INSPECT_TIMEOUT);
+    if (inspected.exitCode() != 0) {
+      return Optional.empty();
+    }
+    String raw = safe(inspected.output()).strip();
+    if (raw.isEmpty() || "<no value>".equals(raw)) {
+      return Optional.empty();
+    }
+    try {
+      long nanos = Long.parseLong(raw);
+      return nanos <= 0 ? Optional.empty() : Optional.of(Duration.ofNanos(nanos));
+    } catch (NumberFormatException e) {
       return Optional.empty();
     }
   }

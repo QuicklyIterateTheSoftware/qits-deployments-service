@@ -15,9 +15,11 @@ import eu.wohlben.qits.deployments.deployments.persistence.PdResourceRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -551,5 +553,29 @@ class DatabaseMovesTest {
     PdDatabaseMove settled = QuarkusTransaction.requiringNew().call(() -> moveRows.findById(id));
     assertEquals(PdDatabaseMoveState.REFUSED, settled.state);
     assertNull(settled.serviceName);
+  }
+
+  // --- drainWait (qits-2228) -----------------------------------------------------------------
+
+  @Test
+  void aLongStopGracePeriodRaisesTheWaitPastTheFixedStopTimeout() {
+    // qits-edge-private's own stop_grace_period is 10m; the shipped stop-timeout alone (2m)
+    // aborted the move every time while the service was still honouring its own drain.
+    assertEquals(
+        Duration.ofMinutes(10).plus(Duration.ofSeconds(30)),
+        DatabaseMoves.drainWait(Duration.ofMinutes(2), Optional.of(Duration.ofMinutes(10))));
+  }
+
+  @Test
+  void aShortStopGracePeriodLeavesTheConfiguredStopTimeoutAsTheFloor() {
+    assertEquals(
+        Duration.ofMinutes(2),
+        DatabaseMoves.drainWait(Duration.ofMinutes(2), Optional.of(Duration.ofSeconds(30))));
+  }
+
+  @Test
+  void anUnreadableGracePeriodIsTreatedAsDockersOwnTenSecondDefault() {
+    assertEquals(
+        Duration.ofMinutes(2), DatabaseMoves.drainWait(Duration.ofMinutes(2), Optional.empty()));
   }
 }

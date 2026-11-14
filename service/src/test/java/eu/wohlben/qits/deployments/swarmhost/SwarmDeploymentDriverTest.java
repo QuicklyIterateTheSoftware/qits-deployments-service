@@ -3750,6 +3750,40 @@ class SwarmDeploymentDriverTest {
     assertEquals(Optional.empty(), driver.liveExposure("dev-qits-gateway"), "cannot say");
   }
 
+  @Test
+  void theStopGracePeriodIsReadBackAsNanoseconds() {
+    // qits-edge-private's own `stop_grace_period: 10m` (qits-2228) — the ten minutes a database
+    // move has to wait out rather than giving up after its own fixed stop-timeout.
+    SwarmDeploymentDriver driver = driver();
+    cli.script(
+        "--format {{.Spec.TaskTemplate.ContainerSpec.StopGracePeriod}} dev-qits-edge-private",
+        result(0, "600000000000\n"));
+
+    assertEquals(
+        Optional.of(Duration.ofMinutes(10)), driver.stopGracePeriod("dev-qits-edge-private"));
+  }
+
+  @Test
+  void aServiceWithNoStopGracePeriodStatedAnswersEmptyRatherThanZero() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script(".Spec.TaskTemplate.ContainerSpec.StopGracePeriod", result(0, "<no value>"));
+
+    assertTrue(driver.stopGracePeriod("dev-qits-gateway").isEmpty());
+
+    SwarmDeploymentDriver zero = driver();
+    cli.script(".Spec.TaskTemplate.ContainerSpec.StopGracePeriod", result(0, "0\n"));
+    assertTrue(zero.stopGracePeriod("dev-qits-gateway").isEmpty(), "zero reads as unstated, never deliberate");
+  }
+
+  @Test
+  void aRuntimeThatCannotAnswerTheStopGracePeriodAnswersEmpty() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script(
+        ".Spec.TaskTemplate.ContainerSpec.StopGracePeriod", result(1, "Error: no such service"));
+
+    assertTrue(driver.stopGracePeriod("dev-qits-gateway").isEmpty());
+  }
+
   // --- cap_add (qits-1976) ------------------------------------------------------------------------
 
   /** {@link #spec()} granting {@code NET_ADMIN} through its declared shape. */

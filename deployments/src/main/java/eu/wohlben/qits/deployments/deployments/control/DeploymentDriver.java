@@ -475,6 +475,19 @@ public interface DeploymentDriver {
   }
 
   /**
+   * The live service's own {@code stop_grace_period} — how long swarm waits between SIGTERM and
+   * SIGKILL for one of its tasks — or empty when the runtime cannot say (no such service, an
+   * inspect that failed, a service created with none stated). A database move's {@code awaitDrained}
+   * is the caller: a service fronted by {@code qits-edge-private} may declare a grace far longer
+   * than {@code qits.deployments.database-move.stop-timeout}, and the move must wait out the
+   * service's OWN drain rather than give up while it is still closing its connections on purpose
+   * (qits-2228). Empty is read by the caller as docker's own default, never as zero.
+   */
+  default Optional<Duration> stopGracePeriod(String service) {
+    return Optional.empty();
+  }
+
+  /**
    * Whether {@code name} is the service this deployer itself runs as — the case {@link #apply}
    * answers {@link ApplyOutcome#HANDED_OFF} for. Asked by a rename cutover before anything moves,
    * because renaming the deployer is the one rename the deployer cannot perform on itself: it would
