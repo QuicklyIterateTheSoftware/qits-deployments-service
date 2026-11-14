@@ -22,6 +22,7 @@ erDiagram
     string resource_name "not null, length 64"
     string service_name "length 255"
     int service_replicas
+    long source_bytes
     jsonb source_counts
     string source_database "not null, length 64"
     string source_server "not null, length 16"
@@ -31,7 +32,9 @@ erDiagram
     enum state "not null"
     jsonb target_counts
     string target_database "not null, length 64"
+    long target_free_bytes
     string target_server "not null, length 16"
+    long volume_free_bytes
   }
   %% pd_decommission: eu.wohlben.qits.deployments.deployments.entity.PdDecommission (deployments)
   pd_decommission {
