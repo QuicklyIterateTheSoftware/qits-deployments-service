@@ -44,6 +44,7 @@ class SelfMoveBootTest {
   void fresh() {
     pg = new Postgres();
     SelfMoveBoot.COUNTS.clear();
+    SelfMoveBoot.DUE.clear();
   }
 
   // --- the simulated servers --------------------------------------------------------------------
@@ -292,6 +293,7 @@ class SelfMoveBootTest {
     assertTrue(pg.volumes.containsKey("qits-dbmove-m-1"), "the marker stays until the move is finished");
     assertEquals(step.encode(), pg.volumes.get("qits-dbmove-m-1").get(SelfMove.PLAN_LABEL));
     assertEquals(28L, DatabaseScripts.total(SelfMoveBoot.COUNTS.get("m-1").target()));
+    assertEquals(List.of(step), SelfMoveBoot.DUE, "the finish takes it from here, asking docker nothing");
     // Each container joins exactly one network: the extract the source's, the ingest the target's.
     assertEquals("qits-net", pg.shots.get(2).network());
     assertEquals("qits-private", pg.shots.get(3).network());
@@ -307,6 +309,7 @@ class SelfMoveBootTest {
     pg.failing.add("extract");
 
     assertFalse(SelfMoveBoot.run(successor(step), pg), "the successor exits non-zero");
+    assertEquals(List.of(), SelfMoveBoot.DUE);
 
     assertFalse(pg.exists("qits-private", "qits_deployments"));
     assertTrue(pg.volumes.isEmpty(), "the marker went with the undo");
@@ -367,6 +370,7 @@ class SelfMoveBootTest {
     assertTrue(pg.volumes.isEmpty(), "and the marker removed");
     assertSourceUntouched("qits-net", "qits_deployments");
     assertEquals(List.of("self-check", "self-check", "drop"), pg.purposes());
+    assertTrue(SelfMoveBoot.DUE.stream().noneMatch(due -> due.id().equals("m-5")), "an undone move is nobody's to finish");
   }
 
   @Test
@@ -469,6 +473,7 @@ class SelfMoveBootTest {
     assertTrue(SelfMoveBoot.run(later, pg));
 
     assertEquals(List.of(), pg.purposes());
+    assertEquals(List.of(step), SelfMoveBoot.DUE, "a later deployer still finishes it");
     assertTrue(pg.exists("qits-private", "qits_deployments"));
   }
 
@@ -540,6 +545,7 @@ class SelfMoveBootTest {
   void anOrdinaryStartAsksDockerOnceAndRunsNothing() {
     assertTrue(SelfMoveBoot.run(oldDeployer(copy("x", "db", "qits_deployments")), pg));
     assertEquals(List.of(), pg.shots);
+    assertEquals(List.of(), SelfMoveBoot.DUE, "so the running process asks docker nothing either");
   }
 
   @Test

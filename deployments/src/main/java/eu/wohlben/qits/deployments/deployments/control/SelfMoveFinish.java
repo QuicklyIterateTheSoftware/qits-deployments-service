@@ -17,7 +17,6 @@ import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -34,9 +33,10 @@ import org.jboss.logging.Logger;
  * for the own service to converge, and does nothing at all before that. A restart before it is done
  * finds the marker again and finishes then.
  *
- * <p>Which moves are due is read off the marker volumes: every one whose TARGET this process is
- * bound to. That covers the successor that moved, and any later deployer that started before the
- * finish did.
+ * <p>Which moves are due is what {@code main} found ({@link SelfMoveBoot#DUE}): every marked move
+ * whose TARGET this process is bound to. That covers the successor that moved, and any later
+ * deployer that started before the finish did. The running process asks docker nothing to find
+ * them.
  */
 @ApplicationScoped
 public class SelfMoveFinish {
@@ -67,14 +67,9 @@ public class SelfMoveFinish {
     if (LaunchMode.current() == LaunchMode.TEST) {
       return;
     }
-    Map<String, String> env = System.getenv();
-    List<Step> due;
-    try {
-      due = due(env);
-    } catch (RuntimeException unreachable) {
-      LOG.warnf("Could not look for a move of the deployer's own databases to finish: %s", unreachable.getMessage());
-      return;
-    }
+    // What main found due (SelfMoveBoot.DUE): no docker call here, so an ordinary start costs the
+    // running process nothing.
+    List<Step> due = List.copyOf(SelfMoveBoot.DUE);
     if (due.isEmpty()) {
       return;
     }
@@ -90,23 +85,6 @@ public class SelfMoveFinish {
             "pd-self-move-finish");
     waiter.setDaemon(true);
     waiter.start();
-  }
-
-  /** The marked moves whose target this process is bound to. */
-  List<Step> due(Map<String, String> env) {
-    List<Step> due = new ArrayList<>();
-    for (Map.Entry<String, Map<String, String>> marker :
-        containers.labelledVolumes(SelfMove.KIND_LABEL, SelfMove.KIND).entrySet()) {
-      try {
-        Step step = Step.parse(marker.getValue().get(SelfMove.PLAN_LABEL));
-        if (SelfMove.boundToTarget(env, step)) {
-          due.add(step);
-        }
-      } catch (RuntimeException unreadable) {
-        LOG.warnf("The marker volume %s holds no step that reads: %s", marker.getKey(), unreadable.getMessage());
-      }
-    }
-    return List.copyOf(due);
   }
 
   /** Whether swarm accepted the update that started this process, waiting up to {@link #WAITS} times. */

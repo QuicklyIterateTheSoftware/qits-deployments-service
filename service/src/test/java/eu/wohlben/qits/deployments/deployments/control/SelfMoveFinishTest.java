@@ -13,7 +13,6 @@ import eu.wohlben.qits.deployments.deployments.persistence.PdDatabaseMoveReposit
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -58,23 +57,8 @@ class SelfMoveFinishTest {
     containers.createVolume(step.volume(), Map.of(SelfMove.KIND_LABEL, SelfMove.KIND, SelfMove.PLAN_LABEL, step.encode()));
   }
 
-  private static Map<String, String> boundTo(String host, String database) {
-    Map<String, String> env = new HashMap<>();
-    env.put("QITS_RESOURCE_DB_URL", "jdbc:postgresql://" + host + ":5432/" + database);
-    return env;
-  }
-
   private PdDatabaseMove row(String id) {
     return QuarkusTransaction.requiringNew().call(() -> moves.findById(id));
-  }
-
-  @Test
-  void onlyTheMovesThisProcessIsBoundToTheTargetOfAreDue() {
-    Step mine = copy(UUID.randomUUID().toString());
-    marker(mine);
-
-    assertEquals(List.of(mine), finish.due(boundTo("sf-qits-oci-postgresql-private", "qits_deployments")));
-    assertEquals(List.of(), finish.due(boundTo("sf-qits-oci-postgresql", "qits_deployments")), "the old deployer's is an undo");
   }
 
   @Test

@@ -45,6 +45,13 @@ public final class SelfMoveBoot {
   /** The deadline of every short one-shot: describe, comment, rename, drop. */
   static final Duration SHORT = Duration.ofMinutes(2);
 
+  /**
+   * The moves this process is bound to the TARGET of, as {@code main} found them — the ones {@link
+   * SelfMoveFinish} finishes once the process serves. Kept here so the running process never asks
+   * docker again: a start with nothing due leaves it empty, and the finish does nothing.
+   */
+  static final List<Step> DUE = new java.util.concurrent.CopyOnWriteArrayList<>();
+
   /** What each copy counted, by move id — {@link SelfMoveFinish} writes it on the move's row. */
   static final Map<String, Counts> COUNTS = new ConcurrentHashMap<>();
 
@@ -67,6 +74,7 @@ public final class SelfMoveBoot {
    *     process must exit non-zero so swarm puts the old deployer back
    */
   public static boolean run(Map<String, String> env, DatabaseContainers containers) {
+    DUE.clear();
     List<Step> own;
     try {
       own = SelfMove.fromEnvironment(env);
@@ -127,6 +135,7 @@ public final class SelfMoveBoot {
               step.resource(), step.source(), step.target(), step.volume(), failed.getMessage());
         }
       } else if (SelfMove.boundToTarget(env, step)) {
+        due(step);
         LOG.infof("The move of the deployer's `%s` to %s is in effect; it is finished once this deployer serves", step.resource(), step.target());
       } else {
         LOG.warnf("The marker %s names a move of `%s` this deployer is bound to neither end of; left as it is", step.volume(), step.resource());
@@ -149,6 +158,9 @@ public final class SelfMoveBoot {
         if (ensure(step, env, containers, adminPassword.get())) {
           performed.add(step);
         }
+        if (performed.contains(step) || markers.containsKey(step.volume())) {
+          due(step);
+        }
       } catch (Failed failed) {
         LOG.errorf(
             "Not starting: the move of the deployer's `%s` from %s to %s failed, so every move of"
@@ -157,10 +169,17 @@ public final class SelfMoveBoot {
         List<Step> undo = new ArrayList<>(performed);
         undo.add(step);
         undoAll(undo, env, containers, adminPassword.get());
+        DUE.clear();
         return false;
       }
     }
     return true;
+  }
+
+  private static void due(Step step) {
+    if (DUE.stream().noneMatch(known -> known.id().equals(step.id()))) {
+      DUE.add(step);
+    }
   }
 
   private static void undoAll(List<Step> steps, Map<String, String> env, DatabaseContainers containers, String adminPassword) {
