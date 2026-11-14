@@ -74,8 +74,13 @@ import org.jboss.logging.Logger;
  * into a restart storm across the platform. So a service declares its whole membership at create
  * time, and the membership is ONE overlay: {@code qits.deployments.swarm.flat-network}
  * (attachable, so plain {@code docker run} containers — CI steps, workspaces, agents — keep working
- * on it). {@code qits-platform} was the second, and went with the plane whose services ran on it.
- * The per-application networks the caller asks for are dropped, deliberately and out loud.
+ * on it) — or, for a {@code private} service, the encrypted {@code
+ * qits.deployments.swarm.private-network}, and <b>never the two at once</b> (qits-2174): a service on
+ * both would be a bridge between them, so {@link #apply} refuses any argv that attaches both, and
+ * the one network is written on the service as {@link #PLACEMENT_LABEL}. {@code qits-platform} was a
+ * third, and went with the plane whose services ran on it; {@link #removeLeftoverPlatformNetwork}
+ * removes the overlay once nothing is left on it, and a service still attached to it is drift. The
+ * per-application networks the caller asks for are dropped, deliberately and out loud.
  *
  * <p><b>What a service keeps across an update</b> is its mounts, its networks and its published
  * ports: {@link #buildUpdateArgv} changes the image, the identity labels, the environment and the
@@ -689,13 +694,16 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     String missingAlias =
         exists && !self && missingVolume == null ? missingDeclaredAlias(spec, target, networks) : null;
     // ...and the networks themselves, for a service whose exposure class changed — see
-    // `networkDrift`. Asked last, and never for a self-update, exactly as the two above.
-    String drift =
+    // `networkDrift`. Asked last, and never for a self-update, exactly as the two above. A service
+    // on its placement network AND others is not drift of that kind: it leaves the others by a
+    // rolling update (qits-2174), so `extraNetworks` is what the update argv removes.
+    NetworkDrift networkState =
         exists && !self && missingVolume == null && missingAlias == null
             ? networkDrift(target, networks)
-            : null;
-    // The private edge as resolver (qits-2117): asked once, for a private or both service that is
-    // not an edge, and used three ways — the drift below, the create's --dns, and a self-update's
+            : NetworkDrift.NONE;
+    String drift = networkState.recreate();
+    // The private edge as resolver (qits-2117): asked once, for a private service that is not an
+    // edge, and used three ways — the drift below, the create's --dns, and a self-update's
     // --dns-rm/--dns-add. Every other service spends no CLI call on it.
     Resolvers resolvers = privateEdgeResolvers(spec);
     // ...and the resolver list itself, last of the four, under the same rules: never for a
@@ -724,7 +732,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       } else if (self) {
         argv = buildSelfUpdateArgv(spec, target, networks, resolvers);
       } else {
-        argv = buildUpdateArgv(spec, target);
+        argv = buildUpdateArgv(spec, target, recreate ? List.of() : networkState.extras());
       }
     } catch (ServiceExtras.Refused | IllegalArgumentException e) {
       // Deployment config said something swarm cannot express — or a value failed one of
@@ -733,6 +741,19 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       // changed nothing.
       LOG.warnf("Refusing to deploy %s: %s", name, e.getMessage());
       return new ApplyResult(ApplyOutcome.REFUSED, e.getMessage());
+    }
+    // A service sits on one network (qits-2174): an argv that would leave it on the flat one AND
+    // the private one is a bridge between them, and it is refused before anything below removes,
+    // reaps or runs. There is no exception — not for the deployer, not for an edge.
+    String bridge = bridgeRefusal(target, argv);
+    if (bridge != null) {
+      LOG.warnf("Refusing to deploy %s: %s", name, bridge);
+      return new ApplyResult(ApplyOutcome.REFUSED, bridge);
+    }
+    if (updating && !self) {
+      for (String extra : networkState.extras()) {
+        LOG.warnf("%s leaves %s: a service sits on %s alone", target, extra, networks.get(0));
+      }
     }
     if (recreate) {
       // Destructive, and announced before it happens: the writable layer of the running task goes
@@ -1886,7 +1907,12 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // contributes. See `volumeFlags` for why the order and the dedupe are the whole migration.
     Set<String> declaredTargets = volumeFlags(service, spec);
     extras(service, extras, spec.publishMode(), declaredTargets);
-    return SwarmArgv.serviceCreate(runtime, service.build());
+    // The placement and routing labels, on the SERVICE alone (qits-2174) — see `serviceLabels`.
+    return withServiceLabels(
+        SwarmArgv.serviceCreate(runtime, service.build()),
+        serviceLabels(spec, networks),
+        "--label",
+        List.of());
   }
 
   /**
@@ -2064,9 +2090,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * them is what every service on this platform was created with, and a shape change with no
    * intent behind it is a diff a reader has to rule out.
    *
-   * <p><b>Every network the exposure attaches carries them</b> — the flat one, the private one, or
-   * the two for {@code both} (qits-1976). An alias is an address, and the address has to be on
-   * every network the service is reachable on. A network this driver does not manage keeps the
+   * <p><b>The network the exposure attaches carries them</b> — the flat one or the private one, and
+   * only ever one (qits-2174). An alias is an address, and the address has to be on the network the
+   * service is reachable on. A network this driver does not manage keeps the
    * short form; under swarm none reaches here, because {@link #collapse} drops them.
    *
    * <p><b>Aliases with no network to hold them are a REFUSAL</b>, the publish-with-an-ip
@@ -2085,9 +2111,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
         service.network(network);
         continue;
       }
-      // EVERY attached managed network carries them — the flat one, the private one, or both: an
-      // address has to resolve wherever the service is reachable, and a `both` service is
-      // reachable on the two. The long form, `name=<net>,alias=<a>...`.
+      // The attached managed network carries them — the flat one or the private one: an address
+      // has to resolve wherever the service is reachable. The long form, `name=<net>,alias=<a>...`.
       service.network(network, aliases);
       carried = true;
     }
@@ -2132,8 +2157,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   record EdgeVip(String vip, String why) {}
 
   /**
-   * Whether this spec takes the private edge as resolver: {@code private} or {@code both}, and not
-   * an edge. The private edge would resolve through itself, and the public edge resolves the world
+   * Whether this spec takes the private edge as resolver: {@code private}, and not an edge. The
+   * private edge would resolve through itself, and the public edge resolves the world
    * for the world — neither gets one.
    */
   boolean wantsPrivateEdgeResolvers(ServiceSpec spec) {
@@ -2426,13 +2451,17 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * create the successor.
    *
    * <ul>
-   *   <li><b>Its networks.</b> The managed networks the live service is on, against the ones its
-   *       exposure names: {@code --network-rm <net>} for each one extra, {@code --network-add
-   *       name=<net>} for each one missing — with {@code alias=<a>} for each alias its shape
+   *   <li><b>Its networks.</b> Every network the live service is on ({@link #liveNetworks}, so a
+   *       leftover {@code qits-platform} too), against the one its exposure names: {@code
+   *       --network-rm <net>} for each one extra, {@code --network-add name=<net>} for the one
+   *       missing — in ONE update, so the move from qits-net to qits-private never passes through a
+   *       bridged state (qits-2119, kept by qits-2174) — with {@code alias=<a>} for each alias its shape
    *       declares, since an attachment carries its aliases. Swarm registers the service name on
    *       every attached network, so the name needs none. One INFO names the move. A live list that
    *       cannot be read moves nothing — {@link #networkDrift}'s fail-safe.
-   *   <li><b>Its resolvers</b>, when it is {@code private} or {@code both} and the private edge
+   *   <li><b>Its labels</b>: the placement and routing labels every service carries (qits-2174),
+   *       as {@code --label-add}.
+   *   <li><b>Its resolvers</b>, when it is {@code private} and the private edge
    *       answered: {@code --dns-rm} each live one and {@code --dns-add} each wanted one, when they
    *       differ. The CLI does not promise to keep the order, and that is accepted for this one
    *       service — its own lookups of private names are its FQDN client calls — and checked after
@@ -2445,7 +2474,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       ServiceSpec spec, String name, List<String> networks, Resolvers resolvers) {
     ServiceUpdate.Builder delta = ServiceUpdate.builder();
     eu.wohlben.qits.containers.driver.swarm.ServiceSpec service = updateSpec(spec, name, delta);
-    Optional<Set<String>> live = liveManagedNetworks(name, managedNetworkIds());
+    Optional<Set<String>> live = liveNetworks(name, managedNetworkIds());
     if (live.isPresent()) {
       List<String> managed = managedNetworks();
       Set<String> wanted = new LinkedHashSet<>();
@@ -2472,7 +2501,12 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     } else if (wantsPrivateEdgeResolvers(spec)) {
       LOG.warnf("%s gets no private-edge resolver: %s", name, resolvers.why());
     }
-    return SwarmArgv.serviceUpdate(runtime, service, delta.build());
+    RouteLabels routing = spec.routing();
+    return withServiceLabels(
+        SwarmArgv.serviceUpdate(runtime, service, delta.build()),
+        serviceLabels(spec, networks),
+        "--label-add",
+        routing.absent());
   }
 
   /**
@@ -2587,9 +2621,25 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * the service ends up carrying what config states and nothing else.
    */
   List<String> buildUpdateArgv(ServiceSpec spec, String name) {
+    return buildUpdateArgv(spec, name, List.of());
+  }
+
+  /**
+   * The update, leaving {@code extraNetworks} on the way (qits-2174): a service on its placement
+   * network and others besides takes {@code --network-rm} for each other one in the same rolling
+   * update, under its own {@code update_order} — a start-first service leaves with no outage. The
+   * placement and routing labels ride every update as {@code --label-add}, and an optional label
+   * the spec no longer states is {@code --label-rm}'d.
+   */
+  List<String> buildUpdateArgv(ServiceSpec spec, String name, List<String> extraNetworks) {
     ServiceUpdate.Builder delta = ServiceUpdate.builder();
     eu.wohlben.qits.containers.driver.swarm.ServiceSpec service = updateSpec(spec, name, delta);
-    return SwarmArgv.serviceUpdate(runtime, service, delta.build());
+    extraNetworks.forEach(delta::networkRemoval);
+    return withServiceLabels(
+        SwarmArgv.serviceUpdate(runtime, service, delta.build()),
+        serviceLabels(spec, collapse(spec)),
+        "--label-add",
+        spec.routing().absent());
   }
 
   /**
@@ -2800,6 +2850,92 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     labels.add(AVAILABLE_ON_ENV_LABEL + "=" + spec.availableOnEnv());
     labels.add(APP_NAME_LABEL + "=" + spec.applicationName());
     return List.copyOf(labels);
+  }
+
+  /**
+   * The placement and routing labels (qits-2174), as {@code key=value} — {@link #EXPOSURE_LABEL},
+   * {@link #PLACEMENT_LABEL} (the one network the service is put on) and then {@link
+   * RouteLabels#labels()}. Written on the SERVICE only: a service label is not part of the task
+   * template, so adding or changing one never restarts a task, which is what lets the startup
+   * backfill write them onto every live service.
+   */
+  static List<String> serviceLabels(ServiceSpec spec, List<String> networks) {
+    List<String> labels = new ArrayList<>();
+    labels.add(EXPOSURE_LABEL + "=" + spec.exposure().wire());
+    if (!networks.isEmpty()) {
+      labels.add(PLACEMENT_LABEL + "=" + networks.get(0));
+    }
+    labels.addAll(spec.routing().labels());
+    return List.copyOf(labels);
+  }
+
+  /**
+   * {@code argv} with each label as {@code flag key=value} and each of {@code removals} as {@code
+   * --label-rm key}, right after {@code --detach}. The library renders every label as a service AND
+   * a container label; these must be service labels alone, so they are spliced in here rather than
+   * handed to its builder.
+   */
+  static List<String> withServiceLabels(
+      List<String> argv, List<String> labels, String flag, List<String> removals) {
+    List<String> flags = new ArrayList<>();
+    for (String label : labels) {
+      flags.add(flag);
+      flags.add(label);
+    }
+    for (String key : removals) {
+      flags.add("--label-rm");
+      flags.add(key);
+    }
+    int at = argv.indexOf("--detach");
+    int insert = at < 0 ? Math.min(3, argv.size()) : at + 1;
+    List<String> spliced = new ArrayList<>(argv.subList(0, insert));
+    spliced.addAll(flags);
+    spliced.addAll(argv.subList(insert, argv.size()));
+    return List.copyOf(spliced);
+  }
+
+  /**
+   * Why {@code argv} would leave {@code service} on the flat network AND the private one — or null
+   * (qits-2174). Read off the argv itself, the last statement before the command runs: {@code
+   * --network} and {@code --network-add} attach, {@code --network-rm} detaches, in either spelling
+   * ({@code <net>} or {@code name=<net>,alias=…}). Package-private for the refusal test.
+   */
+  String bridgeRefusal(String service, List<String> argv) {
+    String flat = flatNetwork == null || flatNetwork.isBlank() ? null : flatNetwork.strip();
+    String hidden =
+        privateNetwork == null || privateNetwork.isBlank() ? null : privateNetwork.strip();
+    if (flat == null || hidden == null) {
+      return null;
+    }
+    Set<String> attached = new LinkedHashSet<>();
+    for (int i = 0; i + 1 < argv.size(); i++) {
+      String flag = argv.get(i);
+      if (flag.equals("--network") || flag.equals("--network-add")) {
+        attached.add(networkOf(argv.get(i + 1)));
+      } else if (flag.equals("--network-rm")) {
+        attached.remove(networkOf(argv.get(i + 1)));
+      }
+    }
+    if (attached.contains(flat) && attached.contains(hidden)) {
+      return service + " would sit on " + flat + " and " + hidden + " at once; refused (qits-2174)";
+    }
+    return null;
+  }
+
+  /** The network an attachment names: {@code <net>} or {@code name=<net>[,alias=…]}. */
+  private static String networkOf(String attachment) {
+    if (!attachment.contains("=")) {
+      return attachment;
+    }
+    for (String field : attachment.split(",")) {
+      if (field.startsWith("name=")) {
+        return field.substring("name=".length());
+      }
+      if (field.startsWith("target=")) {
+        return field.substring("target=".length());
+      }
+    }
+    return attachment;
   }
 
   /**
@@ -3275,17 +3411,15 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   // --- reading swarm back ----------------------------------------------------------------------
 
   /**
-   * The overlays a service is on, by its exposure: {@code public} the flat one, {@code private} the
-   * private one, {@code both} the flat one and then the private one. See the class javadoc.
+   * The ONE overlay a service is on, by its exposure (qits-2174): {@code public} the flat one,
+   * {@code private} the private one — the value of its {@link #PLACEMENT_LABEL}. Empty only when
+   * that network is not configured. See the class javadoc.
    */
   List<String> collapse(ServiceSpec spec) {
     Set<String> networks = new LinkedHashSet<>();
-    Exposure exposure = spec.exposure() == null ? Exposure.PUBLIC : spec.exposure();
-    if (exposure != Exposure.PRIVATE && flatNetwork != null && !flatNetwork.isBlank()) {
-      networks.add(flatNetwork.strip());
-    }
-    if (exposure != Exposure.PUBLIC && privateNetwork != null && !privateNetwork.isBlank()) {
-      networks.add(privateNetwork.strip());
+    String placement = placement(spec.exposure());
+    if (placement != null) {
+      networks.add(placement);
     }
     List<String> dropped =
         spec.networks().stream().filter(network -> !networks.contains(network)).toList();
@@ -3296,6 +3430,12 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
           spec.applicationName(), networks, dropped);
     }
     return List.copyOf(networks);
+  }
+
+  /** The network an exposure places a service on — null when that network is not configured. */
+  private String placement(Exposure exposure) {
+    String network = exposure == Exposure.PRIVATE ? privateNetwork : flatNetwork;
+    return network == null || network.isBlank() ? null : network.strip();
   }
 
   private boolean collapsed(String network) {
@@ -3338,12 +3478,14 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   }
 
   /**
-   * The managed networks the live service is attached to, by NAME — or empty when that cannot be
-   * established: the inspect failed, it printed nothing, or not one of its lines resolved to a
-   * managed network. A line that is neither managed network's name nor ID is another network
-   * altogether (one this driver never attaches) and is left out rather than counted against it.
+   * EVERY network the live service is attached to, by NAME, except swarm's {@code ingress}
+   * (qits-2174) — or empty when that cannot be established: the inspect failed, it printed nothing,
+   * or not one of its lines resolved to a name. A line matching a managed network's name or ID is
+   * that network; any other line is asked its name with one {@code network inspect}, so a leftover
+   * {@code qits-platform} attachment is seen, and is drift. A line whose name cannot be read is left
+   * out rather than guessed at.
    */
-  private Optional<Set<String>> liveManagedNetworks(String service, Map<String, String> ids) {
+  private Optional<Set<String>> liveNetworks(String service, Map<String, String> ids) {
     ContainerProcess.Result inspected =
         run(
             SwarmArgv.serviceInspect(runtime, service, SPEC_NETWORK_TARGETS_FORMAT),
@@ -3361,13 +3503,41 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     }
     Set<String> attached = new LinkedHashSet<>();
     for (String target : live) {
+      String name = null;
       for (Map.Entry<String, String> managed : ids.entrySet()) {
         if (target.equals(managed.getKey()) || target.equals(managed.getValue())) {
-          attached.add(managed.getKey());
+          name = managed.getKey();
         }
+      }
+      if (name == null) {
+        name = networkName(target);
+      }
+      if (name == null) {
+        LOG.debugf("Could not name the network %s of %s; it is left out", target, service);
+        continue;
+      }
+      if (!INGRESS_NETWORK.equals(name)) {
+        attached.add(name);
       }
     }
     return attached.isEmpty() ? Optional.empty() : Optional.of(attached);
+  }
+
+  /** Swarm's routing-mesh network: never a placement, never drift. */
+  static final String INGRESS_NETWORK = "ingress";
+
+  /** The network this driver once ran the platform plane on, removed once empty (qits-2174). */
+  static final String LEFTOVER_PLATFORM_NETWORK = "qits-platform";
+
+  /** A network's NAME from its ID (or name), or null when the daemon cannot say. */
+  private String networkName(String network) {
+    ContainerProcess.Result inspected =
+        run(SwarmArgv.networkInspect(runtime, network, "{{.Name}}"), INSPECT_TIMEOUT);
+    if (inspected.exitCode() != 0) {
+      return null;
+    }
+    String name = inspected.output() == null ? "" : inspected.output().strip();
+    return name.isEmpty() || name.contains("\n") ? null : name;
   }
 
   /** Each managed network's ID, keyed by name — an unresolvable one maps to null. */
@@ -3407,36 +3577,50 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    *
    * <p>Never asked for a self-update — {@link #apply} guards that, as for its siblings.
    */
-  private String networkDrift(String service, List<String> desired) {
+  private NetworkDrift networkDrift(String service, List<String> desired) {
     if (desired.isEmpty()) {
-      return null;
+      return NetworkDrift.NONE;
     }
     Map<String, String> ids = managedNetworkIds();
     for (String network : desired) {
       if (ids.get(network) == null) {
         LOG.debugf(
             "Could not resolve the network %s, so %s is not compared against it", network, service);
-        return null;
+        return NetworkDrift.NONE;
       }
     }
-    Optional<Set<String>> live = liveManagedNetworks(service, ids);
+    Optional<Set<String>> live = liveNetworks(service, ids);
     if (live.isEmpty()) {
-      return null;
+      return NetworkDrift.NONE;
     }
     Set<String> wanted = new LinkedHashSet<>(desired);
-    if (live.get().equals(wanted)) {
-      return null;
+    if (!live.get().containsAll(wanted)) {
+      // The placement network is missing: an update cannot add an attachment without restating
+      // it, so this is the recreate it always was.
+      return new NetworkDrift(
+          "its exposure names the networks " + wanted + " and the live service is on " + live.get(),
+          List.of());
     }
-    return "its exposure names the networks "
-        + wanted
-        + " and the live service is on "
-        + live.get();
+    // On its placement and on others besides (qits-2174): it leaves each other one by a rolling
+    // update rather than a recreate.
+    List<String> extras = live.get().stream().filter(net -> !wanted.contains(net)).toList();
+    return new NetworkDrift(null, extras);
   }
 
   /**
-   * The live service's exposure, off the managed networks it is attached to: the flat one alone is
-   * {@code public}, the private one alone {@code private}, the two {@code both}. Empty when that
-   * cannot be established, which the caller answers with {@code public}.
+   * What {@link #networkDrift} found: {@code recreate} is why the service is removed and created
+   * again (its placement network is missing) or null; {@code extras} are the networks it is on
+   * beside its placement, which the update leaves with {@code --network-rm} (qits-2174).
+   */
+  record NetworkDrift(String recreate, List<String> extras) {
+    static final NetworkDrift NONE = new NetworkDrift(null, List.of());
+  }
+
+  /**
+   * The live service's exposure, off the networks it is attached to: on the flat one (and not the
+   * private one) {@code public}, on the private one (and not the flat one) {@code private}. A
+   * service on the two is drift, never an exposure (qits-2174): empty, with a WARN. Empty too when
+   * it cannot be established, which the caller answers with {@code public}.
    */
   @Override
   public Optional<Exposure> liveExposure(String name) {
@@ -3445,16 +3629,18 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       if (service == null) {
         return Optional.empty();
       }
-      Optional<Set<String>> live = liveManagedNetworks(service, managedNetworkIds());
+      Optional<Set<String>> live = liveNetworks(service, managedNetworkIds());
       if (live.isEmpty()) {
         return Optional.empty();
       }
-      boolean flat = flatNetwork != null && live.get().contains(flatNetwork.strip());
-      boolean hidden = privateNetwork != null && live.get().contains(privateNetwork.strip());
-      if (flat && hidden) {
-        return Optional.of(Exposure.BOTH);
+      Optional<Exposure> exposure = exposureOf(live.get());
+      if (exposure.isEmpty()) {
+        LOG.warnf(
+            "%s is on %s: a service sits on one network, so this is drift and not an exposure;"
+                + " its next deployment puts it right",
+            service, live.get());
       }
-      return Optional.of(hidden ? Exposure.PRIVATE : Exposure.PUBLIC);
+      return exposure;
     } catch (RuntimeException e) {
       return Optional.empty();
     }
@@ -3484,6 +3670,136 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     } catch (NumberFormatException e) {
       return Optional.empty();
     }
+  }
+
+  /**
+   * The exposure a set of live networks says: the flat network without the private one is {@code
+   * public}, the private one without the flat one {@code private}, anything else — the two, or
+   * neither — nothing.
+   */
+  private Optional<Exposure> exposureOf(Set<String> live) {
+    boolean flat = flatNetwork != null && live.contains(flatNetwork.strip());
+    boolean hidden = privateNetwork != null && live.contains(privateNetwork.strip());
+    if (flat == hidden) {
+      return Optional.empty();
+    }
+    return Optional.of(hidden ? Exposure.PRIVATE : Exposure.PUBLIC);
+  }
+
+  // --- placement by label: the backfill and the leftover overlay (qits-2174) ---------------------
+
+  /** One service's name and the two labels the backfill asks about, {@code |}-separated. */
+  static final String SERVICE_LABELS_FORMAT =
+      "{{.Spec.Name}}|{{index .Spec.Labels \""
+          + APP_NAME_LABEL
+          + "\"}}|{{index .Spec.Labels \""
+          + EXPOSURE_LABEL
+          + "\"}}";
+
+  @Override
+  public List<UnlabelledService> unlabelledServices() {
+    ContainerProcess.Result listed =
+        run(
+            SwarmArgv.serviceLsQuiet(runtime, List.of(SwarmArgv.labelFilter(APP_NAME_LABEL))),
+            CLEANUP_TIMEOUT);
+    if (listed.exitCode() != 0) {
+      LOG.warnf("Could not list the services to label: %s", listed.output());
+      return List.of();
+    }
+    List<UnlabelledService> unlabelled = new ArrayList<>();
+    for (String id : lines(listed.output())) {
+      ContainerProcess.Result inspected =
+          run(SwarmArgv.serviceInspect(runtime, id, SERVICE_LABELS_FORMAT), INSPECT_TIMEOUT);
+      if (inspected.exitCode() != 0) {
+        continue;
+      }
+      String[] fields = safe(inspected.output()).strip().split("\\|", -1);
+      if (fields.length < 3 || fields[0].isBlank() || fields[1].isBlank()) {
+        continue;
+      }
+      if (fields[2].isBlank()) {
+        unlabelled.add(new UnlabelledService(fields[0], fields[1]));
+      }
+    }
+    return List.copyOf(unlabelled);
+  }
+
+  /**
+   * The backfill's one write per service: {@code service update --detach --label-add …} and
+   * nothing else, so swarm changes no task. The exposure and placement are what the service's
+   * network says now; a service on both networks, or on neither, is left for its next deployment
+   * to put right — labelling it would be stating a placement it does not have.
+   */
+  @Override
+  public boolean labelService(String service, RouteLabels routing) {
+    Optional<Set<String>> live = liveNetworks(service, managedNetworkIds());
+    Optional<Exposure> exposure = live.flatMap(this::exposureOf);
+    if (exposure.isEmpty()) {
+      LOG.warnf(
+          "Not labelling %s: it is on %s, not on exactly one of %s",
+          service,
+          live.map(Object::toString).orElse("networks that cannot be read"),
+          managedNetworks());
+      return false;
+    }
+    String placement = placement(exposure.get());
+    List<String> labels = new ArrayList<>();
+    labels.add(EXPOSURE_LABEL + "=" + exposure.get().wire());
+    labels.add(PLACEMENT_LABEL + "=" + placement);
+    if (routing != null) {
+      labels.addAll(routing.labels());
+    }
+    ContainerProcess.Result labelled = run(buildLabelArgv(service, labels), APPLY_TIMEOUT);
+    if (labelled.exitCode() != 0 || labelled.timedOut()) {
+      LOG.warnf("Could not label %s: %s", service, labelled.output());
+      return false;
+    }
+    LOG.infof("labelled %s: exposure=%s placement=%s", service, exposure.get().wire(), placement);
+    return true;
+  }
+
+  /** Package-private for the argv test: a label-only update, {@code --label-add} per label. */
+  List<String> buildLabelArgv(String service, List<String> labels) {
+    List<String> argv = new ArrayList<>(List.of(runtime, "service", "update", "--detach"));
+    for (String label : labels) {
+      argv.add("--label-add");
+      argv.add(label);
+    }
+    argv.add(service);
+    return List.copyOf(argv);
+  }
+
+  /**
+   * The leftover {@code qits-platform} overlay goes once nothing is on it: one {@code network
+   * inspect qits-platform --format '{{len .Containers}}'}, and a {@code network rm} when it answers
+   * 0. Absent (the inspect fails) and anything but 0 change nothing. This names the one network and
+   * never any other.
+   */
+  @Override
+  public void removeLeftoverPlatformNetwork() {
+    ContainerProcess.Result inspected =
+        run(
+            SwarmArgv.networkInspect(runtime, LEFTOVER_PLATFORM_NETWORK, "{{len .Containers}}"),
+            INSPECT_TIMEOUT);
+    if (inspected.exitCode() != 0) {
+      return;
+    }
+    String count = safe(inspected.output()).strip();
+    if (!count.equals("0")) {
+      LOG.debugf(
+          "The leftover %s overlay still has %s endpoint(s)", LEFTOVER_PLATFORM_NETWORK, count);
+      return;
+    }
+    ContainerProcess.Result removed =
+        run(SwarmArgv.networkRm(runtime, LEFTOVER_PLATFORM_NETWORK), CLEANUP_TIMEOUT);
+    if (removed.exitCode() != 0) {
+      LOG.warnf(
+          "Could not remove the leftover %s overlay: %s",
+          LEFTOVER_PLATFORM_NETWORK,
+          removed.output());
+      return;
+    }
+    LOG.info("removed the leftover qits-platform overlay");
   }
 
   private boolean serviceExists(String name) {

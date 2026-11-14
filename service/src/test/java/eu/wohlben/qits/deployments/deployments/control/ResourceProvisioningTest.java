@@ -339,9 +339,9 @@ public class ResourceProvisioningTest {
   }
 
   @Test
-  public void aNewClaimOfAPublicOrBothApplicationIsOnThePublicServer() {
+  public void aNewClaimOfAPublicApplicationIsOnThePublicServer() {
     provisioning.ensureAll(
-        "prov-both", "prov-srv2", null, DeploymentDriver.Exposure.BOTH, one("db", "qits_prov_both2"), null);
+        "prov-both", "prov-srv2", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_prov_both2"), null);
 
     assertEquals("public", row("prov-both", "prov-srv2", "db").orElseThrow().server);
     assertEquals("prov-srv2-qits-oci-postgresql", provisioner.requests().get(0).host());

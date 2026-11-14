@@ -65,7 +65,6 @@ class DatabaseScriptsTest {
   void theServerRuleIsOneMethod() {
     assertEquals(DatabaseServer.PRIVATE, DatabaseServer.forExposure(DeploymentDriver.Exposure.PRIVATE));
     assertEquals(DatabaseServer.PUBLIC, DatabaseServer.forExposure(DeploymentDriver.Exposure.PUBLIC));
-    assertEquals(DatabaseServer.PUBLIC, DatabaseServer.forExposure(DeploymentDriver.Exposure.BOTH));
     assertEquals(DatabaseServer.PUBLIC, DatabaseServer.forExposure(null));
     assertEquals("dev-qits-oci-postgresql-private", DatabaseServer.PRIVATE.host("dev"));
     assertEquals(DatabaseServer.PUBLIC, DatabaseServer.parse(null));

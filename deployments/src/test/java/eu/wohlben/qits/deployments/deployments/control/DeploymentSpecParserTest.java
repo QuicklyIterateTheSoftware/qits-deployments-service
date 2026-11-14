@@ -1203,18 +1203,30 @@ class DeploymentSpecParserTest {
   void eachExposureValueParsesInTheSpellingTheEventCarries() {
     assertEquals(DeploymentDriver.Exposure.PUBLIC, parse("exposure: public\n").exposure());
     assertEquals(DeploymentDriver.Exposure.PRIVATE, parse("exposure: private\n").exposure());
-    assertEquals(DeploymentDriver.Exposure.BOTH, parse("exposure: both\n").exposure());
     assertEquals("public", DeploymentDriver.Exposure.PUBLIC.wire());
     assertEquals("private", DeploymentDriver.Exposure.PRIVATE.wire());
-    assertEquals("both", DeploymentDriver.Exposure.BOTH.wire());
+    assertEquals(2, DeploymentDriver.Exposure.values().length);
   }
 
   @Test
-  void aBadExposureIsRefusedNamingTheThreeAndCaseCounts() {
+  void bothIsRefusedBecauseAServiceSitsOnOneNetwork() {
+    // qits-2174: `both` put one service on qits-net and qits-private at once — a bridge. It is
+    // refused with its own sentence, not read as a typo.
+    String message = messageOf("exposure: both\n");
+    assertTrue(
+        message.endsWith(
+            "`both` would put one service on qits-net and qits-private at once; a service is"
+                + " public or private (qits-2174)"),
+        message);
+    assertTrue(message.contains("line 1"), message);
+  }
+
+  @Test
+  void aBadExposureIsRefusedNamingTheTwoAndCaseCounts() {
     // A typo read as `public` would put an application meant for the tunnel alone on the public
     // edge, so it is a refusal rather than a default.
     String message = messageOf("exposure: internal\n");
-    assertTrue(message.contains("`exposure` must be `public`, `private` or `both`"), message);
+    assertTrue(message.contains("`exposure` must be `public` or `private`"), message);
     assertTrue(message.contains("internal"), message);
     assertTrue(messageOf("exposure: Private\n").contains("`exposure`"));
     assertTrue(messageOf("exposure:\n").contains("`exposure`"));
@@ -1239,7 +1251,7 @@ class DeploymentSpecParserTest {
           "\n",
           "application: qits-edge-private",
           "image: qits-edge",
-          "exposure: both",
+          "exposure: private",
           "cap_add: NET_ADMIN",
           "publish_mode: host",
           "publishes: 51820:51820/udp",
@@ -1256,7 +1268,7 @@ class DeploymentSpecParserTest {
 
     assertEquals("qits-edge-private", spec.application());
     assertEquals("qits-edge", spec.image());
-    assertEquals(DeploymentDriver.Exposure.BOTH, spec.exposure());
+    assertEquals(DeploymentDriver.Exposure.PRIVATE, spec.exposure());
     assertEquals(List.of("NET_ADMIN"), spec.shape().capAdd());
     assertEquals(DeploymentDriver.PublishMode.HOST, spec.publishMode());
     assertEquals(List.of("51820:51820/udp"), spec.shape().publishes());
@@ -1382,7 +1394,7 @@ class DeploymentSpecParserTest {
           "\n",
           "application: qits-edge-private",
           "image: qits-edge",
-          "exposure: both",
+          "exposure: private",
           "resources: postgresql:edge:qits_edge_private, postgresql:eventstream:qits_edge_private_eventstream, idp:client",
           "health_cmd: curl -fsS http://localhost:80/q/health/ready || exit 1",
           "publish_mode: host",
@@ -1403,7 +1415,7 @@ class DeploymentSpecParserTest {
 
     assertEquals("qits-edge-private", spec.application());
     assertEquals("qits-edge", spec.image());
-    assertEquals(DeploymentDriver.Exposure.BOTH, spec.exposure());
+    assertEquals(DeploymentDriver.Exposure.PRIVATE, spec.exposure());
     assertEquals(List.of("NET_ADMIN"), spec.shape().capAdd());
     assertEquals(
         List.of(

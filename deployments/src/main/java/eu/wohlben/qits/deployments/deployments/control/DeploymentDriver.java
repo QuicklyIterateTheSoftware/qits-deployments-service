@@ -199,6 +199,150 @@ public interface DeploymentDriver {
   /** On containers and on per-application networks: whose it is. */
   String APP_NAME_LABEL = "qits.platform.deployments.app-name";
 
+  // --- placement and routing, on the SERVICE only (qits-2174) ---------------------------------
+  //
+  // Written as `--label` on create and `--label-add` on update, never as `--container-label`: a
+  // service label is not part of the task template, so writing one never restarts a task. They are
+  // the single source the route tables and the network check read — once a service carries them,
+  // nothing reads route data from pd_deployment.
+
+  /** {@code public} or {@code private} — the service's {@link Exposure}, as {@link Exposure#wire()}. */
+  String EXPOSURE_LABEL = "qits.platform.deployments.exposure";
+
+  /** The ONE network the service sits on: the flat network or the private one, by name. */
+  String PLACEMENT_LABEL = "qits.platform.deployments.placement";
+
+  /** The browser host labels it is served at, comma-joined; empty for a routeless deployment. */
+  String HOSTS_LABEL = "qits.platform.deployments.hosts";
+
+  /** Its path prefixes, comma-joined, primary first — the order the routes are announced in. */
+  String ROUTES_LABEL = "qits.platform.deployments.routes";
+
+  /** The port behind every route: the spec's {@code upstream_port}, 8080 when it states none. */
+  String UPSTREAM_PORT_LABEL = "qits.platform.deployments.upstream-port";
+
+  /** Where its browsable API document lives — the spec's {@code api-docs} — or absent. */
+  String API_DOCS_LABEL = "qits.platform.deployments.api-docs";
+
+  /** The spec's {@code navigation-entries}, verbatim ({@code slot.Label:pos[=subpath]}), or absent. */
+  String NAVIGATION_LABEL = "qits.platform.deployments.navigation";
+
+  /** The upstream port a spec that states none is served on — the parser's own default. */
+  int DEFAULT_UPSTREAM_PORT = 8080;
+
+  /**
+   * The routing half of a service's labels (qits-2174) — {@link #HOSTS_LABEL}, {@link
+   * #ROUTES_LABEL}, {@link #UPSTREAM_PORT_LABEL}, {@link #API_DOCS_LABEL} and {@link
+   * #NAVIGATION_LABEL} as values. The placement half is the driver's own, off the network it puts the
+   * service on, so it is not here.
+   *
+   * <p>{@code hosts} and {@code routes} are never null (empty is the routeless answer); {@code
+   * apiDocs} and {@code navigation} are null when the spec states none, and the label is then
+   * absent. {@link #NONE} is a service nothing routes: postgres, an adopted service, a restored
+   * predecessor whose row could not be read.
+   */
+  record RouteLabels(
+      List<String> hosts, List<String> routes, int upstreamPort, String apiDocs, String navigation) {
+
+    public static final RouteLabels NONE =
+        new RouteLabels(List.of(), List.of(), DEFAULT_UPSTREAM_PORT, null, null);
+
+    public RouteLabels {
+      hosts = nonBlank(hosts);
+      routes = nonBlank(routes);
+      upstreamPort = upstreamPort <= 0 ? DEFAULT_UPSTREAM_PORT : upstreamPort;
+      apiDocs = apiDocs == null || apiDocs.isBlank() ? null : apiDocs;
+      navigation = navigation == null || navigation.isBlank() ? null : navigation;
+    }
+
+    private static List<String> nonBlank(List<String> values) {
+      return values == null
+          ? List.of()
+          : values.stream().filter(value -> value != null && !value.isBlank()).toList();
+    }
+
+    /**
+     * Off the stored spelling of a {@code pd_deployment} row — {@code routes} comma-joined, the one
+     * {@code browser_host}, the joined {@code navigation_entries} — which is what the startup
+     * backfill reads. Null fields are the routeless answer.
+     */
+    public static RouteLabels ofRow(
+        String routes, Integer upstreamPort, String browserHost, String navigation, String apiDocs) {
+      List<String> split =
+          routes == null || routes.isBlank()
+              ? List.of()
+              : java.util.Arrays.stream(routes.split(",")).map(String::strip).toList();
+      return new RouteLabels(
+          browserHost == null ? List.of() : List.of(browserHost),
+          split,
+          upstreamPort == null ? DEFAULT_UPSTREAM_PORT : upstreamPort,
+          apiDocs,
+          navigation);
+    }
+
+    /**
+     * The routing labels as {@code key=value} pairs, in the table's order — {@link #API_DOCS_LABEL}
+     * and {@link #NAVIGATION_LABEL} only when there is a value.
+     */
+    public List<String> labels() {
+      List<String> labels = new java.util.ArrayList<>();
+      labels.add(HOSTS_LABEL + "=" + String.join(",", hosts));
+      labels.add(ROUTES_LABEL + "=" + String.join(",", routes));
+      labels.add(UPSTREAM_PORT_LABEL + "=" + upstreamPort);
+      if (apiDocs != null) {
+        labels.add(API_DOCS_LABEL + "=" + apiDocs);
+      }
+      if (navigation != null) {
+        labels.add(NAVIGATION_LABEL + "=" + navigation);
+      }
+      return List.copyOf(labels);
+    }
+
+    /** The optional labels this value does NOT state — what an update {@code --label-rm}s. */
+    public List<String> absent() {
+      List<String> absent = new java.util.ArrayList<>();
+      if (apiDocs == null) {
+        absent.add(API_DOCS_LABEL);
+      }
+      if (navigation == null) {
+        absent.add(NAVIGATION_LABEL);
+      }
+      return List.copyOf(absent);
+    }
+  }
+
+  /**
+   * A service carrying {@link #APP_NAME_LABEL} and no {@link #EXPOSURE_LABEL} — see {@link
+   * #unlabelledServices}.
+   */
+  record UnlabelledService(String service, String applicationName) {}
+
+  /**
+   * Every service this component deployed ({@link #APP_NAME_LABEL}) that does not carry {@link
+   * #EXPOSURE_LABEL} yet — the startup backfill's work list (qits-2174). Empty for a driver that has
+   * no such labels, and when the runtime cannot be asked.
+   */
+  default List<UnlabelledService> unlabelledServices() {
+    return List.of();
+  }
+
+  /**
+   * Write the placement and routing labels onto a live service with a label-only update — one
+   * {@code service update --label-add …} and no other flag, so no task restarts (qits-2174). The
+   * exposure and placement are read off the network the service is on now; {@code routing} null
+   * writes those two alone (a service no {@code ACTIVE} row describes). Whether it was written.
+   */
+  default boolean labelService(String service, RouteLabels routing) {
+    return false;
+  }
+
+  /**
+   * Remove the leftover {@code qits-platform} overlay once nothing is attached to it (qits-2174) —
+   * asked at startup and on every observation pass. Never any other network. Nothing for a driver
+   * that has no such network.
+   */
+  default void removeLeftoverPlatformNetwork() {}
+
   /** What a network this component made is for. */
   enum NetworkKind {
     /** An environment's public nodes ({@code availableOnEnv}). */
@@ -465,7 +609,8 @@ public interface DeploymentDriver {
   /**
    * Which {@link Exposure} the live service of this name is attached as, read off its networks — or
    * empty when the runtime cannot say (no such service, an inspect that failed, a network it cannot
-   * resolve, or a driver that does not know). The startup sweep's adoption announces a deployment
+   * resolve, a service on both networks — drift, never an exposure — or a driver that does not
+   * know). The startup sweep's adoption announces a deployment
    * from a row, and a row records no exposure; this is where the adopted frame learns one. Empty is
    * answered with {@link Exposure#PUBLIC} by the caller, which is what every frame recorded before
    * the class existed means.
@@ -716,11 +861,13 @@ public interface DeploymentDriver {
       boolean takesOverPredecessor,
       Exposure exposure,
       String variant,
-      Map<String, String> imageDefaults) {
+      Map<String, String> imageDefaults,
+      RouteLabels routing) {
 
     /** Null lists and empty ones are the same statement: this application declared none. */
     public ServiceSpec {
       exposure = exposure == null ? Exposure.PUBLIC : exposure;
+      routing = routing == null ? RouteLabels.NONE : routing;
       // Order kept, because it is the file's and a reader of the spec reads it in that order.
       imageDefaults =
           imageDefaults == null
@@ -733,6 +880,96 @@ public interface DeploymentDriver {
       updateOrder = updateOrder == null ? UpdateOrder.START_FIRST : updateOrder;
       publishMode = publishMode == null ? PublishMode.HOST : publishMode;
       stopGracePeriod = stopGracePeriod == null ? DEFAULT_STOP_GRACE_PERIOD : stopGracePeriod;
+    }
+
+    /**
+     * The shape before {@code routing} (qits-2174): a service nothing routes, which carries the
+     * placement labels and the routing labels' empty answer.
+     */
+    public ServiceSpec(
+        String environmentId,
+        String environmentName,
+        String applicationId,
+        String applicationName,
+        String deploymentId,
+        String commitSha,
+        String version,
+        String deploymentName,
+        String wireAlias,
+        List<String> networks,
+        String imageRef,
+        String healthPath,
+        String healthCmd,
+        boolean availableOnEnv,
+        UpdateOrder updateOrder,
+        PublishMode publishMode,
+        List<ResourceBinding> resources,
+        List<VolumeMount> volumes,
+        Duration stopGracePeriod,
+        DeclaredShape shape,
+        String renamedFrom,
+        boolean takesOverPredecessor,
+        Exposure exposure,
+        String variant,
+        Map<String, String> imageDefaults) {
+      this(
+          environmentId,
+          environmentName,
+          applicationId,
+          applicationName,
+          deploymentId,
+          commitSha,
+          version,
+          deploymentName,
+          wireAlias,
+          networks,
+          imageRef,
+          healthPath,
+          healthCmd,
+          availableOnEnv,
+          updateOrder,
+          publishMode,
+          resources,
+          volumes,
+          stopGracePeriod,
+          shape,
+          renamedFrom,
+          takesOverPredecessor,
+          exposure,
+          variant,
+          imageDefaults,
+          RouteLabels.NONE);
+    }
+
+    /** This spec with its routing labels — what a deployment knows from the spec it read. */
+    public ServiceSpec withRouting(RouteLabels labels) {
+      return new ServiceSpec(
+          environmentId,
+          environmentName,
+          applicationId,
+          applicationName,
+          deploymentId,
+          commitSha,
+          version,
+          deploymentName,
+          wireAlias,
+          networks,
+          imageRef,
+          healthPath,
+          healthCmd,
+          availableOnEnv,
+          updateOrder,
+          publishMode,
+          resources,
+          volumes,
+          stopGracePeriod,
+          shape,
+          renamedFrom,
+          takesOverPredecessor,
+          exposure,
+          variant,
+          imageDefaults,
+          labels);
     }
 
     /**
@@ -1115,26 +1352,25 @@ public interface DeploymentDriver {
   }
 
   /**
-   * Which networks a service joins, and which edge serves it — {@code exposure} in the repository's
-   * spec, and the default is {@code public} because that is every service on the estate today.
+   * Which network a service joins, and which edge serves it — {@code exposure} in the repository's
+   * spec, and the default is {@code public}.
    *
    * <ul>
    *   <li><b>{@code public}</b> joins the flat {@code qits-net} only, exactly as every service
    *       always has. The public edge routes it.
    *   <li><b>{@code private}</b> joins the encrypted {@code qits-private} overlay only. Only the
    *       private edge, reached over the tunnel, routes it.
-   *   <li><b>{@code both}</b> joins the two. The private edge itself is the first: it needs
-   *       {@code qits-net} for egress and {@code qits-private} to reach private upstreams.
    * </ul>
    *
-   * <p>The wire alias is set on every network the service joins, so its address resolves wherever
-   * it is reachable. The class rides {@code DeploymentActive.exposure} as {@link #wire()}, and a
-   * frame without the field reads as {@code public}.
+   * <p><b>A service sits on exactly one network</b> (qits-2174). There was a third value, {@code
+   * both}, which joined the two and so bridged them; the parser refuses it, and the swarm driver
+   * refuses any argv that would attach both networks. The wire alias is set on the one network. The
+   * class rides {@code DeploymentActive.exposure} as {@link #wire()}, and a frame without the field
+   * reads as {@code public}.
    */
   enum Exposure {
     PUBLIC,
-    PRIVATE,
-    BOTH;
+    PRIVATE;
 
     /** The spelling in {@code .config/qits/deployments.yml} and on the wire. */
     public String wire() {

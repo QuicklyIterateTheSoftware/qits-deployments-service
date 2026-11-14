@@ -15,8 +15,8 @@ import java.util.Locale;
  * the same {@code qits.deployments.postgres.admin-password}.
  *
  * <p><b>The rule is {@link #forExposure}, and it is the only place it is spelled.</b> An application
- * declared {@code exposure: private} keeps its data on the private server; {@code public} and {@code
- * both} keep it on the public one. It decides a NEW claim's server, and it is the target a deployment
+ * declared {@code exposure: private} keeps its data on the private server; {@code public} keeps it
+ * on the public one. It decides a NEW claim's server, and it is the target a deployment
  * compares an existing claim against — a difference is a move, never a quiet re-provision.
  */
 public enum DatabaseServer {
@@ -29,7 +29,7 @@ public enum DatabaseServer {
     this.application = application;
   }
 
-  /** The rule: {@code private} → {@link #PRIVATE}; {@code public}, {@code both} and none → {@link #PUBLIC}. */
+  /** The rule: {@code private} → {@link #PRIVATE}; {@code public} and none → {@link #PUBLIC}. */
   public static DatabaseServer forExposure(DeploymentDriver.Exposure exposure) {
     return exposure == DeploymentDriver.Exposure.PRIVATE ? PRIVATE : PUBLIC;
   }

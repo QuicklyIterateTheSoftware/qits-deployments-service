@@ -363,7 +363,72 @@ public class DeployService implements ReleaseAnnouncements {
             LOG.warnf(e, "Could not settle the database moves a previous process left unfinished");
           }
         });
+    // Placement by label (qits-2174): every service this component deployed gets its placement
+    // and routing labels once, label-only; and the leftover qits-platform overlay goes once nothing
+    // is on it. On the worker, so neither races a deployment.
+    worker.submit(
+        () -> {
+          try {
+            backfillLabels();
+          } catch (RuntimeException e) {
+            LOG.warnf(e, "Could not label the services that carry no placement yet");
+          }
+          removeLeftoverPlatformNetwork();
+        });
     startObserving();
+  }
+
+  /**
+   * The startup backfill (qits-2174): every service carrying {@code APP_NAME_LABEL} and no {@code
+   * EXPOSURE_LABEL} gets the labels in one label-only update. The routing values come from the
+   * newest {@code ACTIVE} row of that service, and the driver reads exposure and placement off the
+   * network the service is on. A service with no such row — postgres, an adopted one — gets exposure
+   * and placement only. Package-private so the suite drives it.
+   */
+  void backfillLabels() {
+    List<DeploymentDriver.UnlabelledService> unlabelled = driver.unlabelledServices();
+    if (unlabelled.isEmpty()) {
+      return;
+    }
+    Map<String, DeploymentDriver.RouteLabels> routing =
+        QuarkusTransaction.requiringNew().call(this::activeRouting);
+    for (DeploymentDriver.UnlabelledService service : unlabelled) {
+      try {
+        // Null for a service no ACTIVE row describes: exposure and placement only.
+        driver.labelService(service.service(), routing.get(service.service()));
+      } catch (RuntimeException e) {
+        LOG.warnf(e, "Could not label %s; the next start asks again", service.service());
+      }
+    }
+  }
+
+  /** The newest ACTIVE row's routing snapshot, per service name — see {@link #backfillLabels}. */
+  private Map<String, DeploymentDriver.RouteLabels> activeRouting() {
+    Map<String, PdDeployment> newest = new java.util.HashMap<>();
+    for (PdDeployment row : deployments.listByStatus(PdDeploymentStatus.ACTIVE)) {
+      if (row.containerName == null || row.containerName.isBlank()) {
+        continue;
+      }
+      newest.merge(
+          row.containerName,
+          row,
+          (a, b) ->
+              a.createdAt != null && b.createdAt != null && b.createdAt.isAfter(a.createdAt)
+                  ? b
+                  : a);
+    }
+    Map<String, DeploymentDriver.RouteLabels> routing = new java.util.HashMap<>();
+    newest.forEach((service, row) -> routing.put(service, routeLabels(row)));
+    return routing;
+  }
+
+  /** The leftover {@code qits-platform} overlay, gone once empty (qits-2174) — never any other. */
+  private void removeLeftoverPlatformNetwork() {
+    try {
+      driver.removeLeftoverPlatformNetwork();
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "Could not check the leftover qits-platform overlay; the next pass asks again");
+    }
   }
 
   /**
@@ -457,6 +522,9 @@ public class DeployService implements ReleaseAnnouncements {
           } catch (RuntimeException e) {
             LOG.warnf(e, "The database move sweep failed; the next tick tries again");
           }
+          // The leftover qits-platform overlay (qits-2174): one inspect on a tick, and gone once
+          // the last service left it.
+          removeLeftoverPlatformNetwork();
         });
   }
 
@@ -2874,6 +2942,19 @@ public class DeployService implements ReleaseAnnouncements {
     String apiDocsPath() {
       return target.apiDocs();
     }
+
+    /**
+     * The routing labels this deployment's service carries (qits-2174) — the same values the row's
+     * snapshot and the {@code DeploymentActive} frame are built from, so the three cannot disagree.
+     */
+    DeploymentDriver.RouteLabels routeLabels() {
+      return new DeploymentDriver.RouteLabels(
+          browserHost() == null ? List.of() : List.of(browserHost()),
+          target.routes(),
+          target.upstreamPort(),
+          target.apiDocs(),
+          DeploymentSpecParser.joinEntries(target.navigation()));
+    }
   }
 
   /**
@@ -3609,7 +3690,35 @@ public class DeployService implements ReleaseAnnouncements {
         null,
         // No image defaults: the restored predecessor runs ITS last image, which this deployment's
         // image_defaults: says nothing about, so every one of its rows is stated as it was.
-        Map.of());
+        Map.of(),
+        // Its routes as its last ACTIVE row recorded them (qits-2174): the labels are what the
+        // route tables read, so the restored service says what it serves.
+        predecessorRouting(rename.predecessorDeploymentId()));
+  }
+
+  /** The routing labels a restored predecessor's row recorded — none when it cannot be read. */
+  private DeploymentDriver.RouteLabels predecessorRouting(String deploymentId) {
+    if (deploymentId == null) {
+      return DeploymentDriver.RouteLabels.NONE;
+    }
+    try {
+      return QuarkusTransaction.requiringNew()
+          .call(
+              () ->
+                  deployments
+                      .findByIdOptional(deploymentId)
+                      .map(DeployService::routeLabels)
+                      .orElse(DeploymentDriver.RouteLabels.NONE));
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "Could not read %s's routing snapshot; it is labelled routeless", deploymentId);
+      return DeploymentDriver.RouteLabels.NONE;
+    }
+  }
+
+  /** A row's stored routing snapshot as labels (qits-2174) — V3's columns, read the sweep's way. */
+  static DeploymentDriver.RouteLabels routeLabels(PdDeployment row) {
+    return DeploymentDriver.RouteLabels.ofRow(
+        row.routes, row.upstreamPort, row.browserHost, row.navigationEntries, row.apiDocs);
   }
 
   /**
@@ -4058,7 +4167,10 @@ public class DeployService implements ReleaseAnnouncements {
         plan.variant(),
         // The pairs the image ships as its own defaults: a settings row equal to one is no longer
         // stated, so this deployment's own update --env-rm's what retireImageDefaults deletes.
-        plan.imageDefaults());
+        plan.imageDefaults(),
+        // What it serves, as service labels (qits-2174): hosts, routes primary first, the upstream
+        // port, the API document and the navigation entries — the route tables' one source.
+        plan.routeLabels());
   }
 
   /**

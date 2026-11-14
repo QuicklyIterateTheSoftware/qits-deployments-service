@@ -81,7 +81,7 @@ health_cmd: pg_isready -U postgres   # instead of health_path; runs inside the c
 resources: postgresql:db             # a database of its own, injected as QITS_RESOURCE_DB_*
 update_order: start-first            # default | stop-first for anything that cannot overlap itself
 publish_mode: host                   # default | ingress for a port swarm's routing mesh holds
-exposure: public                     # default | private (qits-private only) | both (qits-net + qits-private)
+exposure: public                     # default | private (qits-private only); `both` is refused
 cap_add: NET_ADMIN                   # extra capabilities, no CAP_ prefix; NET_ADMIN is the only one granted
 sysctls: net.ipv4.ip_forward=0       # kernel parameters as <name>=<value>; only forwarding OFF can be set
 image: qits-edge                     # the image pulled, qits/<image>:<version>; default: the application
@@ -108,11 +108,12 @@ key on a live application is a decommission and a new application, not a rename.
 the default, and every file today — joins `qits-net` exactly as before; `private` joins only the
 encrypted `qits-private` overlay (`network create -d overlay --attachable --opt encrypted --subnet
 10.231.0.0/20 --label qits.platform.deployments.network=private qits-private`, made by the deployer
-the first time a service needs it), which only the private edge over the tunnel reaches; `both`
-joins the two. The wire alias is set on every network joined. `DeploymentActive.exposure` carries
-the class, and a frame without it reads as `public`. A live service whose networks differ from its
-class is removed and created again, once — never the deployer itself — and with no `exposure`
-declared a service on `qits-net` compares equal and is updated in place as always.
+the first time a service needs it), which only the private edge over the tunnel reaches. `both`,
+which joined the two, is refused by the parser (qits-2174) — see *Placement*. The wire alias is set
+on the one network. `DeploymentActive.exposure` carries the class, and a frame without it reads as
+`public`. A live service whose networks lack its placement is removed and created again, once —
+never the deployer itself — and with no `exposure` declared a service on `qits-net` compares equal
+and is updated in place as always.
 
 `image:`, `cap_add:` and `variants:` deploy **one image as a second application** (qits-1976).
 `image:` names the image pulled (`qits/<image>:<version>`) and defaults to the application name, so
@@ -142,7 +143,7 @@ variants: private
 # .config/qits/deployments.private.yml
 application: qits-edge-private
 image: qits-edge
-exposure: both
+exposure: private
 cap_add: NET_ADMIN
 sysctls: net.ipv4.ip_forward=0, net.ipv4.conf.all.forwarding=0, net.ipv6.conf.all.forwarding=0
 publish_mode: host
@@ -323,8 +324,9 @@ served for hours. The connections are retried now; the row needed reading back t
 - a **public node** (`available_on_env: true`, today just qits-gateway) additionally joins its
   environment's bundle network and *every* per-application network of that environment. That is the
   hub: cross-application traffic is meant to flow app → gateway → target app;
-- a **platform** service runs on `qits-platform` and joins every per-application network of every
-  environment, which is what makes it locally reachable everywhere without a gateway route;
+- there is no **platform** service any more: the plane, and the `qits-platform` overlay its
+  services ran on, are gone — the deployer removes a leftover `qits-platform` once nothing is attached
+  to it (see *Placement*);
 - `qits.deployments.legacy-network` (default `qits-net`) is the transition membership
   every container also joins, while the platform still holds direct cross-application URLs. **Emptying it is the
   enforcement flip** — a later phase, after the last direct URL has moved to a gateway route.
@@ -345,6 +347,51 @@ membership is ever stored in the database.** It is written as labels under one n
 `app-name`; networks carry `qits.platform.deployments.network=bundle|application` — and read back with
 `--filter label=`. One record of the truth, and it is the runtime's. Containers carrying an earlier
 spelling (`qits.cd.*`, `qits.pd.*`) count as unlabelled: adoptable, never protected.
+
+## Placement
+
+**A service sits on exactly one network** (qits-2174): `qits-net` when it is `public`, `qits-private`
+when it is `private` (`qits.deployments.swarm.flat-network` / `private-network`). A service on both
+would be a bridge between them, so:
+
+- the parser refuses `exposure: both` — `` `both` would put one service on qits-net and qits-private
+  at once; a service is public or private (qits-2174) ``;
+- the driver refuses, before any create or update, an argv that would attach both networks — the
+  deployment is `REFUSED` with `<svc> would sit on qits-net and qits-private at once; refused
+  (qits-2174)`. There is no break-glass;
+- drift reads **every** network a live service is attached to except swarm's `ingress`. A missing
+  placement network is the remove-and-create it always was; the placement network present with
+  others besides is a rolling `service update --network-rm <extra>` under the service's own
+  `update_order` (WARN `<svc> leaves <extra>: a service sits on <placement> alone`), so a start-first
+  service leaves with no outage. A live service on both networks is drift, never adopted as an
+  exposure;
+- the leftover `qits-platform` overlay is removed (`docker network rm qits-platform`, INFO `removed
+  the leftover qits-platform overlay`) at startup and on each observation pass once `docker network
+  inspect qits-platform --format '{{len .Containers}}'` answers 0. No other network is ever removed
+  this way.
+
+**The placement is written on the service as labels**, beside the bookkeeping ones and on the
+SERVICE only (`--label` on create, `--label-add` on update, never `--container-label`), so writing
+one never restarts a task. They are the one source the route tables and the network check read:
+
+| label | value |
+|---|---|
+| `qits.platform.deployments.exposure` | `public` or `private` |
+| `qits.platform.deployments.placement` | the one network: `qits-net` or `qits-private` |
+| `qits.platform.deployments.hosts` | the browser host labels, comma-joined; empty when routeless |
+| `qits.platform.deployments.routes` | the path prefixes, comma-joined, primary first |
+| `qits.platform.deployments.upstream-port` | `upstream_port` (default 8080) |
+| `qits.platform.deployments.api-docs` | the `api-docs` path, or absent |
+| `qits.platform.deployments.navigation` | `navigation-entries` verbatim, or absent |
+
+An update `--label-rm`s an optional label the spec no longer states. At startup the deployer
+backfills every service carrying `qits.platform.deployments.app-name` and no exposure label with one
+label-only `service update --label-add …` — routing values from the service's newest `ACTIVE` row,
+exposure and placement from the network it is on — and logs `labelled <svc>: exposure=<x>
+placement=<net>`; a service with no such row (postgres, an adopted one) gets exposure and placement
+only, and one on both networks is left for its next deployment. The deployer labels itself in its
+self-update the same way, and keeps qits-2119's network move: one update carrying `--network-add
+qits-private` and `--network-rm qits-net`, never two with a bridged state between them.
 
 ## Self-update takes an orchestrator
 
@@ -476,7 +523,7 @@ recognisable). A call already aimed at an internal address is never tried twice.
 qits-1980). The internal addresses `http://<env>-qits-githost:8080` and `http://<env>-qits-idp:8080`
 resolve on `qits-net` only, and a `private` deployer is on `qits-private` alone, so the extra try
 fails fast — a name that does not resolve — and harmlessly: the call fails exactly as it would have
-without it. (A `both` deployer is still on `qits-net` and keeps it.) The way out is then the host
+without it. The way out is then the host
 break-glass on the edge, the dossier page *Edge break-glass* of qits-1980. The deployer moves
 itself between the two networks on its own self-update (qits-2119: `--network-add`/`--network-rm`,
 logged `qits-deployments moves itself from [...] to [...]`), so this applies from the release that

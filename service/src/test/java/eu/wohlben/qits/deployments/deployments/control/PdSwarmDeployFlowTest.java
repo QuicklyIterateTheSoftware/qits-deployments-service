@@ -197,7 +197,7 @@ public class PdSwarmDeployFlowTest {
         "repo-swarm-edge",
         SpecSource.variantPath("private"),
         DeploymentSpecParser.parse(
-            "application: repo-swarm-edge-private\nexposure: both\ncap_add: NET_ADMIN\n",
+            "application: repo-swarm-edge-private\nexposure: private\ncap_add: NET_ADMIN\n",
             "deployments.private.yml of repo-swarm-edge"));
 
     postRelease("run-variant", "repo-swarm-edge");
@@ -220,7 +220,7 @@ public class PdSwarmDeployFlowTest {
             .orElseThrow();
     assertEquals(image, variant.imageRef());
     assertEquals("swarm-variant-repo-swarm-edge-private", variant.wireAlias());
-    assertEquals(DeploymentDriver.Exposure.BOTH, variant.exposure());
+    assertEquals(DeploymentDriver.Exposure.PRIVATE, variant.exposure());
     assertEquals(List.of("NET_ADMIN"), variant.shape().capAdd());
     // The variant's container is told which variant it is (QITS_VARIANT); the main one is not.
     assertEquals("private", variant.variant());
@@ -246,7 +246,7 @@ public class PdSwarmDeployFlowTest {
             .orElseThrow();
     assertTrue(!main.payload.contains("\"variant\":"), "the main deployment names no variant");
     assertTrue(second.payload.contains("\"variant\":\"private\""), second.payload);
-    assertTrue(second.payload.contains("\"exposure\":\"both\""), second.payload);
+    assertTrue(second.payload.contains("\"exposure\":\"private\""), second.payload);
     assertNull(only("DeploymentFailed", 0));
   }
 

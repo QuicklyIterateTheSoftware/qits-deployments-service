@@ -236,7 +236,7 @@ class DatabaseMovesTest {
     claim("qits-mvsame", "mv-c", "db", "qits_mvsame", "public");
 
     moves.beforeProvisioning(
-        "qits-mvsame", "mv-c", null, DeploymentDriver.Exposure.BOTH, one("db", "qits_mvsame"));
+        "qits-mvsame", "mv-c", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_mvsame"));
 
     assertEquals(List.of(), containers.shots());
     assertEquals(List.of(), driver.calls());

@@ -34,7 +34,7 @@ import java.util.regex.Pattern;
  * aliases: registry.${QITS_ENVIRONMENT}.localhost   # extra names on the shared network
  * update_order: start-first            # default | stop-first for anything single-writer
  * publish_mode: host                   # default | ingress for a port the routing mesh holds
- * exposure: public                     # default | private (qits-private only) | both (the two)
+ * exposure: public                     # default | private (qits-private only); `both` is refused
  * cap_add: NET_ADMIN                   # extra Linux capabilities, no CAP_ prefix; NET_ADMIN only
  * sysctls: net.ipv4.ip_forward=0       # kernel parameters, &lt;name&gt;=&lt;value&gt;; forwarding OFF only
  * image: qits-edge                     # the image pulled, qits/<image>:<version>; default the app
@@ -197,12 +197,13 @@ import java.util.regex.Pattern;
  * <p><b>{@code exposure} is which networks the service joins, and which edge routes it.</b> {@code
  * public} (the default, and every file today) joins the flat {@code qits-net} exactly as before;
  * {@code private} joins the encrypted {@code qits-private} overlay only, so only the private edge
- * over the tunnel can reach it; {@code both} joins the two. The wire alias is set on every network
- * joined, and the class rides {@code DeploymentActive.exposure}, which is what each edge filters
- * its routes on. The values are case-sensitive and anything else is refused, naming the three. A
- * change of class on a live service is a {@code service rm} and a create — swarm restates no
- * network on an update — so the deployer recreates a service whose live networks differ from its
- * class, once, and never its own.
+ * over the tunnel can reach it. <b>A service sits on exactly one network</b> (qits-2174): {@code
+ * both}, which joined the two and so made a bridge between them, is refused with a sentence of its
+ * own rather than as a typo. The wire alias is set on the one network, and the class rides {@code
+ * DeploymentActive.exposure}, which is what each edge filters its routes on. The values are
+ * case-sensitive and anything else is refused, naming the two. A change of class on a live service
+ * is a {@code service rm} and a create — swarm restates no network on an update — so the deployer
+ * recreates a service whose live networks lack its placement, once, and never its own.
  *
  * <p><b>{@code image}, {@code cap_add} and {@code variants} deploy one image as a second
  * application</b> (qits-1976). {@code image} names the image the deploy pulls — {@code
@@ -218,7 +219,7 @@ import java.util.regex.Pattern;
  * main one, may declare neither {@code variants} nor {@code renamed_from}, and its {@code image}
  * defaults to the MAIN file's — see {@link #checkVariant}. The private edge is the first: qits-edge's
  * main file says {@code variants: private}, and {@code deployments.private.yml} declares {@code
- * application: qits-edge-private}, {@code image: qits-edge}, {@code exposure: both} and {@code
+ * application: qits-edge-private}, {@code image: qits-edge}, {@code exposure: private} and {@code
  * cap_add: NET_ADMIN}.
  *
  * <p><b>{@code sysctls} sets kernel parameters in the container's network namespace</b>
@@ -419,6 +420,14 @@ public final class DeploymentSpecParser {
   private static final String PUBLISH_MODE = "publish_mode";
   private static final String STOP_GRACE_PERIOD = "stop_grace_period";
   private static final String EXPOSURE = "exposure";
+
+  /** The retired third exposure (qits-2174), refused by name — see {@link #exposure}. */
+  private static final String BOTH_EXPOSURE = "both";
+
+  /** The refusal of {@code exposure: both}, word for word (qits-2174). */
+  static final String BOTH_REFUSAL =
+      "`both` would put one service on qits-net and qits-private at once; a service is public or"
+          + " private (qits-2174)";
   private static final String CAP_ADD = "cap_add";
   private static final String SYSCTLS = "sysctls";
   private static final String IMAGE = "image";
@@ -1439,13 +1448,20 @@ public final class DeploymentSpecParser {
   }
 
   /**
-   * Which networks the service joins and which edge routes it. Three values, case-sensitive, in
-   * the spelling {@link DeploymentDriver.Exposure#wire()} puts on the event.
+   * Which network the service joins and which edge routes it. Two values, case-sensitive, in the
+   * spelling {@link DeploymentDriver.Exposure#wire()} puts on the event.
+   *
+   * <p><b>{@code both} is refused by name</b> (qits-2174): it was the third value, and it put one
+   * service on qits-net and qits-private at once — a bridge between the two networks. Its own
+   * sentence rather than the generic one, because a file that says it is no typo.
    *
    * <p>Refused rather than defaulted, like every other value here — and more sharply: a typo read
    * as {@code public} would put an application meant for the tunnel alone on the public edge.
    */
   private static DeploymentDriver.Exposure exposure(String value, String source, int line) {
+    if (BOTH_EXPOSURE.equals(value)) {
+      throw error(source, line, BOTH_REFUSAL);
+    }
     for (DeploymentDriver.Exposure candidate : DeploymentDriver.Exposure.values()) {
       if (candidate.wire().equals(value)) {
         return candidate;
@@ -1458,10 +1474,8 @@ public final class DeploymentSpecParser {
             + EXPOSURE
             + "` must be `"
             + DeploymentDriver.Exposure.PUBLIC.wire()
-            + "`, `"
-            + DeploymentDriver.Exposure.PRIVATE.wire()
             + "` or `"
-            + DeploymentDriver.Exposure.BOTH.wire()
+            + DeploymentDriver.Exposure.PRIVATE.wire()
             + "`, got: "
             + value);
   }
