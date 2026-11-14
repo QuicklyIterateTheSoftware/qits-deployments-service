@@ -71,6 +71,41 @@
       ]
     },
     {
+      "name": "a database move that is running",
+      "slug": "a-database-move-that-is-running",
+      "params": {
+        "application": "contract-app-00000001",
+        "id": "00000000-0000-4000-8000-000000000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "abortDatabaseMove",
+          "method": "POST",
+          "path": "/deployments/api/database-moves/{id}/abort",
+          "status": 202,
+          "file": "a-database-move-that-is-running/abortDatabaseMove.json",
+          "frozen": {
+            "ids": [
+              "$.move.id",
+              "$.move.batchId"
+            ],
+            "instants": [
+              "$.move.createdAt",
+              "$.move.startedAt"
+            ],
+            "strings": [
+              "$.move.applicationName",
+              "$.move.environmentName",
+              "$.move.sourceDatabase",
+              "$.move.targetDatabase"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "a deployment request that deployed",
       "slug": "a-deployment-request-that-deployed",
       "params": {

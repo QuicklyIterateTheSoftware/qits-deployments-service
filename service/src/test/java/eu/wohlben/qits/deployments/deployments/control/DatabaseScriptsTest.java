@@ -62,6 +62,54 @@ class DatabaseScriptsTest {
   }
 
   @Test
+  void theSizeIsReadOffItsMarkerAndNothingElse() {
+    assertEquals(20401094656L, DatabaseScripts.sizeAnswer("noise\nqits-size=20401094656\n"));
+    assertNull(DatabaseScripts.sizeAnswer("qits-size=\n"));
+    assertNull(DatabaseScripts.sizeAnswer("qits-size=-1\n"));
+    assertNull(DatabaseScripts.sizeAnswer("ERROR: database does not exist\n"));
+    assertTrue(DatabaseScripts.size("qits_x").contains("pg_database_size('qits_x')"));
+    assertThrows(RuntimeException.class, () -> DatabaseScripts.size("qits_x'); drop"));
+  }
+
+  @Test
+  void aDfReadingIsItsLastMarkedLineWithTheFilesystemTotalAndFree() {
+    String output =
+        "qits-data-df=Filesystem     1024-blocks      Used Available Capacity Mounted on\n"
+            + "qits-data-df=/dev/sda1       157286400 113246208  44040192      73% /var/lib/postgresql/data\n"
+            + "qits-volume-df=/dev/sda1 157286400 113246208 44040190 73% /move\n";
+    DatabaseScripts.Filesystem data = DatabaseScripts.filesystem(output, DatabaseScripts.DATA_DF_MARKER);
+    DatabaseScripts.Filesystem volume = DatabaseScripts.filesystem(output, DatabaseScripts.VOLUME_DF_MARKER);
+    assertEquals(new DatabaseScripts.Filesystem("/dev/sda1", 157286400L * 1024, 44040192L * 1024), data);
+    assertEquals(44040190L * 1024, volume.freeBytes());
+    assertTrue(data.sameAs(volume), "one device, one total: one filesystem, whatever is free");
+    assertFalse(
+        data.sameAs(new DatabaseScripts.Filesystem("/dev/sda1", 1024, data.freeBytes())),
+        "another total is another filesystem");
+    assertFalse(data.sameAs(new DatabaseScripts.Filesystem("overlay", data.totalBytes(), 0)));
+    // The header alone, a cut line, a word where a number goes, nothing at all: no reading.
+    assertNull(
+        DatabaseScripts.filesystem(
+            "qits-data-df=Filesystem 1024-blocks Used Available Capacity Mounted on\n",
+            DatabaseScripts.DATA_DF_MARKER));
+    assertNull(DatabaseScripts.filesystem("qits-volume-df=/dev/sda1 1 2\n", DatabaseScripts.VOLUME_DF_MARKER));
+    assertNull(
+        DatabaseScripts.filesystem(
+            "qits-volume-df=/dev/sda1 many 2 3 4% /move\n", DatabaseScripts.VOLUME_DF_MARKER));
+    assertNull(DatabaseScripts.filesystem("", DatabaseScripts.VOLUME_DF_MARKER));
+  }
+
+  @Test
+  void theSpaceScriptBuildsItsDfCommandInPsqlAndMeasuresTheVolumeItself() {
+    String space = DatabaseScripts.space();
+    assertTrue(space.contains("SHOW data_directory \\gset"), space);
+    assertTrue(space.contains("\\set qits_df_cmd 'df -Pk \"' :data_directory '\"'"), space);
+    assertTrue(space.contains("COPY qits_df (line) FROM PROGRAM :'qits_df_cmd';"), space);
+    assertTrue(space.contains("ORDER BY n"), space);
+    assertTrue(space.contains("echo \"qits-volume-df=$(df -Pk /move | tail -n 1)\""), space);
+    assertTrue(space.contains("<<'QITS_SQL'"), "the shell expands nothing inside the SQL");
+  }
+
+  @Test
   void aRenameInPlaceRenamesTheDatabaseAndItsRoleInOneTransactionAndOpensItAgain() {
     String script = DatabaseScripts.renameInPlace("qits_platform_x", "qits_x", false, true);
     assertTrue(script.contains("<<'QITS_SQL'"), script);

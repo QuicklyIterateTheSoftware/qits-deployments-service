@@ -108,6 +108,18 @@ public class PdDatabaseMove extends PanacheEntityBase {
   @ColumnTransformer(write = "?::jsonb")
   public String targetCounts;
 
+  /** {@code pg_database_size} of the source, measured before anything stopped (V21, qits-2243). */
+  @Column(name = "source_bytes")
+  public Long sourceBytes;
+
+  /** Free bytes of the target server's data-directory filesystem, measured with the source size. */
+  @Column(name = "target_free_bytes")
+  public Long targetFreeBytes;
+
+  /** Free bytes of the filesystem the move's volume is on, measured with the source size. */
+  @Column(name = "volume_free_bytes")
+  public Long volumeFreeBytes;
+
   /** Why a move was refused or aborted, or what it finished with. Never a password. */
   @Column(name = "detail", columnDefinition = "text")
   public String detail;

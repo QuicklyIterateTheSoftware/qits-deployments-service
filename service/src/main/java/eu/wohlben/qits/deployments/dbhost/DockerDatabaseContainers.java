@@ -78,6 +78,12 @@ public class DockerDatabaseContainers implements DatabaseContainers {
 
   private static final String OWNER = "qits-deployments";
 
+  /**
+   * The label a move's own one-shots carry, {@code qits.platform.deployments.dbmove.move=<move id>}:
+   * what an abort's {@link #kill} finds the running extract or ingest by (qits-2243).
+   */
+  static final String MOVE_LABEL = NAMESPACE.key("move");
+
   /** Which process started a container — a diagnostic label, never a filter anything acts on. */
   private static final String INSTANCE = "pd-" + UUID.randomUUID().toString().substring(0, 8);
 
@@ -188,7 +194,10 @@ public class DockerDatabaseContainers implements DatabaseContainers {
     shot.environment().forEach(spec::env);
     shot.secrets().forEach(spec::env);
     Map<String, String> labels =
-        NAMESPACE.forContainer(OWNER, shot.purpose(), name, name, INSTANCE);
+        new LinkedHashMap<>(NAMESPACE.forContainer(OWNER, shot.purpose(), name, name, INSTANCE));
+    if (shot.moveId() != null) {
+      labels.put(MOVE_LABEL, shot.moveId());
+    }
     return DockerArgv.run(
         runtime, NAMESPACE, name, spec.build(), labels, LifecyclePolicy.ephemeral(null));
   }
@@ -271,6 +280,43 @@ public class DockerDatabaseContainers implements DatabaseContainers {
     }
     LOG.warnf("Could not remove the volume %s: %s", volume, firstLine(removed.output()));
     return false;
+  }
+
+  /**
+   * {@code docker ps -aq --filter label=<move label>=<id>}, then {@code docker rm -f} of each — the
+   * library's own two verbs. The worker's {@code docker wait} on a removed container returns, and
+   * its run is a failed outcome the move reads as the abort.
+   */
+  @Override
+  public boolean kill(String moveId) {
+    ContainerProcess.Result listed =
+        call(DockerArgv.psByLabels(runtime, Map.of(MOVE_LABEL, moveId)), Map.of(), CALL_TIMEOUT);
+    if (listed.exitCode() != 0 || listed.timedOut()) {
+      LOG.warnf("Could not list the containers of the move %s: %s", moveId, firstLine(listed.output()));
+      return false;
+    }
+    boolean all = true;
+    for (String line : String.valueOf(listed.output()).split("\n")) {
+      String container = line.strip();
+      if (container.isEmpty()) {
+        continue;
+      }
+      ContainerProcess.Result removed;
+      try {
+        removed = call(DockerArgv.rm(runtime, container), Map.of(), CALL_TIMEOUT);
+      } catch (RuntimeException refused) {
+        LOG.warnf("Refused to remove %s of the move %s: %s", container, moveId, refused.getMessage());
+        all = false;
+        continue;
+      }
+      if (removed.exitCode() != 0) {
+        LOG.warnf("Could not remove %s of the move %s: %s", container, moveId, firstLine(removed.output()));
+        all = false;
+      } else {
+        LOG.infof("Removed the container %s of the aborted move %s", container, moveId);
+      }
+    }
+    return all;
   }
 
   @Override

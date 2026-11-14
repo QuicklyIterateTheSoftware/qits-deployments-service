@@ -91,6 +91,13 @@ public class ProviderStates {
   public static final String A_FINISHED_DATABASE_MOVE = "a database move that finished";
 
   /**
+   * One database move EXTRACTING — the step an operator's abort (qits-2243) kills. Named by the
+   * CLI's {@code qits deployments database abort}. Clean-up settles the row, so no later restart
+   * settle in the suite finds an unfinished move it never started.
+   */
+  public static final String A_RUNNING_DATABASE_MOVE = "a database move that is running";
+
+  /**
    * The machine gate is on: a bearer no idp issued answers 401. Only {@code
    * MachineGuardEnforcedProfile} runs the service gated, so only {@link
    * GatedGoldenMasterRecordingTest} and {@link GatedConsumerPactVerificationTest} use this state. It
@@ -141,6 +148,9 @@ public class ProviderStates {
   /** Catalogue services a state registered by hand: clean-up deletes them. */
   private final List<String> removableServices = Collections.synchronizedList(new ArrayList<>());
 
+  /** Database moves a state left unfinished: clean-up settles them, the worker never ran them. */
+  private final List<String> runningMoves = Collections.synchronizedList(new ArrayList<>());
+
   /** Environments a release was announced into: clean-up waits for their deployments to finish. */
   private final List<String> settling = Collections.synchronizedList(new ArrayList<>());
 
@@ -163,6 +173,7 @@ public class ProviderStates {
     states.put(AN_ENVIRONMENT_TO_TEAR_DOWN, this::anEnvironmentToTearDown);
     states.put(AN_APPLICATION_HOLDING_A_DATABASE, this::anApplicationHoldingADatabase);
     states.put(A_FINISHED_DATABASE_MOVE, this::aFinishedDatabaseMove);
+    states.put(A_RUNNING_DATABASE_MOVE, this::aRunningDatabaseMove);
   }
 
   /** Every state name this provider answers for. */
@@ -218,6 +229,22 @@ public class ProviderStates {
       given()
           .header("Authorization", SuiteBearers.platform())
           .when().delete("/deployments/api/services/" + name);
+    }
+    List<String> moves;
+    synchronized (runningMoves) {
+      moves = List.copyOf(runningMoves);
+      runningMoves.clear();
+    }
+    for (String id : moves) {
+      QuarkusTransaction.requiringNew()
+          .run(
+              () -> {
+                PdDatabaseMove row = PdDatabaseMove.findById(id);
+                if (row != null) {
+                  row.state = PdDatabaseMoveState.ABORTED;
+                  row.finishedAt = Instant.now();
+                }
+              });
     }
   }
 
@@ -606,6 +633,47 @@ public class ProviderStates {
               row.dropAfter = row.createdAt.plus(java.time.Duration.ofDays(7));
               row.persist();
             });
+    Map<String, String> params = new TreeMap<>();
+    params.put("application", application);
+    params.put("id", id);
+    return new Setup(params, List.of(token));
+  }
+
+  /**
+   * {@link #A_RUNNING_DATABASE_MOVE}: one {@code pd_database_move} row at {@code EXTRACTING},
+   * written straight to the table with what its space check measured — the row an abort is asked
+   * of. No worker runs it, so the abort's 202 is the whole interaction. {@code id} is the move's.
+   */
+  private Setup aRunningDatabaseMove() {
+    String token = token();
+    String application = "contract-app-" + token;
+    String database = "qits_contract_app_" + token;
+    String id = UUID.randomUUID().toString();
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              PdDatabaseMove row = new PdDatabaseMove();
+              row.id = id;
+              row.batchId = id;
+              row.applicationName = application;
+              row.environmentName = "contract-" + token;
+              row.resourceName = "db";
+              row.sourceServer = "public";
+              row.sourceDatabase = database;
+              row.targetServer = "private";
+              row.targetDatabase = database;
+              row.origin = PdDatabaseMove.Origin.DEPLOYMENT;
+              row.state = PdDatabaseMoveState.EXTRACTING;
+              row.serviceName = "contract-" + token + "-" + application;
+              row.serviceReplicas = 1;
+              row.sourceBytes = 20401094656L;
+              row.targetFreeBytes = 64424509440L;
+              row.volumeFreeBytes = 64424509440L;
+              row.createdAt = Instant.now();
+              row.startedAt = row.createdAt;
+              row.persist();
+            });
+    runningMoves.add(id);
     Map<String, String> params = new TreeMap<>();
     params.put("application", application);
     params.put("id", id);

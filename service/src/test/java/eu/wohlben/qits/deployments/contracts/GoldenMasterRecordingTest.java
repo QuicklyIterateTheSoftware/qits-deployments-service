@@ -368,6 +368,15 @@ class GoldenMasterRecordingTest {
               200,
               null,
               null),
+          // qits-2243: the operator's abort of a running move.
+          new Interaction(
+              ProviderStates.A_RUNNING_DATABASE_MOVE,
+              "abortDatabaseMove",
+              "POST",
+              "/deployments/api/database-moves/{id}/abort",
+              202,
+              null,
+              null),
           // Recorded by GatedGoldenMasterRecordingTest: only a gated application answers 401.
           write(
               ProviderStates.THE_MACHINE_GATE_IS_ON,

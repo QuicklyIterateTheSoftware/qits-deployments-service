@@ -207,4 +207,9 @@ class ConsumerPactVerificationTest {
   Map<String, String> aFinishedDatabaseMove() {
     return states.params(ProviderStates.A_FINISHED_DATABASE_MOVE);
   }
+
+  @State(ProviderStates.A_RUNNING_DATABASE_MOVE)
+  Map<String, String> aRunningDatabaseMove() {
+    return states.params(ProviderStates.A_RUNNING_DATABASE_MOVE);
+  }
 }

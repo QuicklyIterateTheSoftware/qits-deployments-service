@@ -30,6 +30,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * POST /deployments/api/database-moves   {"application","resource"?,"server"?,"database"?}  → 202
  * GET  /deployments/api/database-moves[?application=]                                       → 200
  * GET  /deployments/api/database-moves/{id}                                                 → 200
+ * POST /deployments/api/database-moves/{id}/abort                                           → 202
  * </pre>
  *
  * <p><b>The POST is a redeploy with a target, not a move of its own.</b> It is decided on the request
@@ -43,6 +44,12 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * in that loop; what bounds it is that a move copies and verifies before anything switches, keeps the
  * source for the retention, and refuses the deployer's own databases. {@code qits:system} is not
  * granted: no service token should be able to stop an application as a side effect.
+ *
+ * <p><b>The abort is the operator levers' alone</b> (qits-2243): {@code qits:admin}, {@code
+ * qits:admin-agent}, {@code qits:desk-admin}, {@code qits:desk} — not {@code qits:agent}, never
+ * {@code qits:system}. It kills a running extract or ingest and the move ends {@code ABORTED} with its
+ * service scaled back; 404 for an unknown id, 409 for a move that is queued, finished, or at its
+ * switch or later.
  */
 @Path("/database-moves")
 @Produces(MediaType.APPLICATION_JSON)
@@ -139,6 +146,38 @@ public class PdDatabaseMoveController {
         .call("The database move " + id, () -> moves.find(id))
         .map(row -> new MoveResponse(PdDatabaseMoveDto.of(row, json), null))
         .orElseThrow(() -> new NotFoundException("no database move " + id));
+  }
+
+  @POST
+  @Path("/{id}/abort")
+  @jakarta.annotation.security.RolesAllowed({
+    "qits:admin",
+    "qits:admin-agent",
+    "qits:desk-admin",
+    "qits:desk"
+  })
+  @Operation(
+      operationId = "abortDatabaseMove",
+      summary =
+          "Abort a running database move — its extract or ingest killed, the target dropped, the"
+              + " source re-opened and its service scaled back up")
+  @APIResponse(
+      responseCode = "202",
+      description = "The abort is asked for; the move ends ABORTED once its running step is killed")
+  @APIResponse(responseCode = "404", description = "No move of that id")
+  @APIResponse(
+      responseCode = "409",
+      description =
+          "The move is queued (nothing runs yet), already finished, or at its switch or later, where"
+              + " an abort would strand the claim")
+  public Response abort(@PathParam("id") String id, @Context SecurityContext security) {
+    var row = moves.abort(id, actor(security));
+    return Response.accepted()
+        .entity(
+            new MoveResponse(
+                PdDatabaseMoveDto.of(row, json),
+                "the abort is asked for; the move ends ABORTED once its running step is killed"))
+        .build();
   }
 
   private static String blankToNull(String value) {

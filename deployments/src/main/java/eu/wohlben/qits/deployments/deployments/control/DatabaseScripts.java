@@ -38,6 +38,15 @@ final class DatabaseScripts {
   /** The marker {@link #exists} prints before its answer. */
   static final String EXISTS_MARKER = "qits-exists=";
 
+  /** The marker {@link #size} prints before the source's size in bytes (qits-2243). */
+  static final String SIZE_MARKER = "qits-size=";
+
+  /** The marker {@link #space} prints before each line of the data directory's {@code df -Pk}. */
+  static final String DATA_DF_MARKER = "qits-data-df=";
+
+  /** The marker {@link #space} prints before the move volume's {@code df -Pk} line. */
+  static final String VOLUME_DF_MARKER = "qits-volume-df=";
+
   /** The database every postgres has, and the one an admin can be sure of connecting to. */
   static final String ADMIN_DATABASE = "postgres";
 
@@ -130,6 +139,121 @@ final class DatabaseScripts {
       }
     }
     return null;
+  }
+
+  /**
+   * The source's size, for the move's space check (qits-2243): prints {@value #SIZE_MARKER}{@code
+   * <bytes>}, {@code pg_database_size} — what the database occupies on disk, which is what a dump
+   * and a restored copy of it are measured against.
+   */
+  static String size(String database) {
+    return psql(ADMIN_DATABASE, sizeSql(database));
+  }
+
+  /** {@link #size}'s statement, plain SQL — what the real-postgres test runs over JDBC. */
+  static String sizeSql(String database) {
+    return "SELECT '" + SIZE_MARKER + "' || pg_database_size('" + id(database) + "');";
+  }
+
+  /**
+   * The free space a move needs, read where it will be spent (qits-2243): the TARGET server's data
+   * directory, by its own superuser's {@code COPY ... FROM PROGRAM 'df -Pk <data_directory>'} — so
+   * the {@code df} runs inside the postgres server's own container and measures its real data
+   * filesystem, wherever that is — and the move's volume, by a {@code df -Pk} of {@link
+   * DatabaseContainers#MOUNT} in this one-shot. Prints every line of the first behind {@value
+   * #DATA_DF_MARKER}, in {@code df}'s order, and the last line of the second behind {@value
+   * #VOLUME_DF_MARKER}.
+   *
+   * <p>{@code COPY FROM PROGRAM} takes a literal, so the command is assembled by psql itself: {@code
+   * \gset} reads {@code data_directory} into a variable and {@code \set} concatenates it into the
+   * command, which {@code :'qits_df_cmd'} then quotes as that literal. The path is the server's own
+   * setting and reaches no shell of this process.
+   */
+  static String space() {
+    return "set -eu\n"
+        + psqlStep(ADMIN_DATABASE, SPACE_SQL, null)
+        + "echo \""
+        + VOLUME_DF_MARKER
+        + "$(df -Pk "
+        + DatabaseContainers.MOUNT
+        + " | tail -n 1)\"\n";
+  }
+
+  /** {@link #space}'s psql half. */
+  private static final String SPACE_SQL =
+      "SHOW data_directory \\gset\n"
+          + "\\set qits_df_cmd 'df -Pk \"' :data_directory '\"'\n"
+          + spaceSql(":'qits_df_cmd'");
+
+  /**
+   * The SQL {@link #space} runs once psql has assembled the command, with {@code command} the
+   * literal that names it — what the real-postgres test runs over JDBC with the literal spelled out.
+   */
+  static String spaceSql(String command) {
+    return "CREATE TEMP TABLE qits_df (n serial, line text);\n"
+        + "COPY qits_df (line) FROM PROGRAM "
+        + command
+        + ";\n"
+        + "SELECT '"
+        + DATA_DF_MARKER
+        + "' || line FROM qits_df ORDER BY n;";
+  }
+
+  /** The size {@link #size} printed, or null when it printed none that reads as a byte count. */
+  static Long sizeAnswer(String output) {
+    for (String line : lines(output)) {
+      if (line.startsWith(SIZE_MARKER)) {
+        try {
+          long bytes = Long.parseLong(line.substring(SIZE_MARKER.length()).strip());
+          return bytes < 0 ? null : bytes;
+        } catch (NumberFormatException unreadable) {
+          return null;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * One filesystem as {@code df -Pk} names it: the device column and the total size identify it
+   * (two readings with both equal are one filesystem), {@code free} is the Available column.
+   */
+  record Filesystem(String device, long totalBytes, long freeBytes) {
+
+    boolean sameAs(Filesystem other) {
+      return other != null && device.equals(other.device) && totalBytes == other.totalBytes;
+    }
+  }
+
+  /**
+   * The LAST line behind {@code marker} in {@code output}, read as a {@code df -Pk} data line —
+   * {@code <device> <1K-blocks> <used> <available> <capacity> <mounted on>} — or null when there is
+   * none or it does not read: the header, a truncated line, a non-number.
+   */
+  static Filesystem filesystem(String output, String marker) {
+    String last = null;
+    for (String line : lines(output)) {
+      if (line.startsWith(marker)) {
+        last = line.substring(marker.length()).strip();
+      }
+    }
+    if (last == null) {
+      return null;
+    }
+    String[] fields = last.split("\\s+");
+    if (fields.length < 6) {
+      return null;
+    }
+    try {
+      long total = Long.parseLong(fields[1]);
+      long available = Long.parseLong(fields[3]);
+      if (total < 0 || available < 0) {
+        return null;
+      }
+      return new Filesystem(fields[0], total * 1024, available * 1024);
+    } catch (NumberFormatException unreadable) {
+      return null;
+    }
   }
 
   /**
