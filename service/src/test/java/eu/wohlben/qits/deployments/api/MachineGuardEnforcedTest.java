@@ -494,6 +494,16 @@ class MachineGuardEnforcedTest {
     admin().when().post(RETIRE).then().statusCode(404);
   }
 
+  @Test
+  void theDatabaseMoveAbortIsAnOperatorsLeverToo() {
+    // It kills a running extract or ingest and scales a service (qits-2243): the operator levers'
+    // grant, no machine. A move nothing knows is the door's own 404 past the role gate.
+    String abort = "/deployments/api/database-moves/00000000-0000-0000-0000-000000000000/abort";
+    given().when().post(abort).then().statusCode(401);
+    machine().when().post(abort).then().statusCode(403);
+    admin().when().post(abort).then().statusCode(404);
+  }
+
   /** A caller with a fresh token minted for this service, carrying the machine roles the idp grants. */
   private static RequestSpecification machine() {
     return given()

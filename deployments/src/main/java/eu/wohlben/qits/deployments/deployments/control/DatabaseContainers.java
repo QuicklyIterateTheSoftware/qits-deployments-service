@@ -46,6 +46,8 @@ public interface DatabaseContainers {
    * @param secrets variables whose VALUES never reach an argv or a log: the admin's {@code
    *     PGPASSWORD} and the role's password
    * @param script what {@code sh -c} runs, with {@code set -eu}; it names no secret value
+   * @param moveId the database move this one-shot is a step of, or null — what {@link #kill} finds
+   *     it by (qits-2243)
    */
   record OneShot(
       String purpose,
@@ -54,11 +56,29 @@ public interface DatabaseContainers {
       String volume,
       Map<String, String> environment,
       Map<String, String> secrets,
-      String script) {
+      String script,
+      String moveId) {
 
     public OneShot {
       environment = environment == null ? Map.of() : Map.copyOf(environment);
       secrets = secrets == null ? Map.of() : Map.copyOf(secrets);
+    }
+
+    /** A one-shot that is no step of a move. */
+    public OneShot(
+        String purpose,
+        String image,
+        String network,
+        String volume,
+        Map<String, String> environment,
+        Map<String, String> secrets,
+        String script) {
+      this(purpose, image, network, volume, environment, secrets, script, null);
+    }
+
+    /** This one-shot as a step of the move {@code id}, so an abort can {@link #kill} it. */
+    public OneShot forMove(String id) {
+      return new OneShot(purpose, image, network, volume, environment, secrets, script, id);
     }
   }
 
@@ -84,6 +104,13 @@ public interface DatabaseContainers {
 
   /** Remove the named volume. Removing one that is already gone counts as done. */
   boolean removeVolume(String volume);
+
+  /**
+   * Remove, running or not, every one-shot of the move {@code moveId} ({@link OneShot#moveId}) — an
+   * operator's abort (qits-2243). Its {@link #run} then returns a failed {@link Outcome}. Nothing
+   * found counts as done.
+   */
+  boolean kill(String moveId);
 
   /** Whether a swarm service still has a task that is not terminal — see {@link Drain}. */
   Drain drained(String service);

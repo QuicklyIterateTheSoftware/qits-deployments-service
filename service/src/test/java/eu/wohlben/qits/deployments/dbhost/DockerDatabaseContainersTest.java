@@ -159,6 +159,40 @@ class DockerDatabaseContainersTest {
     assertEquals(List.of("docker", "volume", "rm", "qits-dbmove-0b9c"), calls.get(1).argv());
   }
 
+  @Test
+  void aMovesOneShotCarriesItsIdAndAKillRemovesWhatCarriesIt() {
+    // qits-2243: the abort finds the running extract or ingest by the move's label, and removes it.
+    DockerDatabaseContainers containers =
+        new DockerDatabaseContainers();
+    containers.runtime = "docker";
+    containers.outputMaxChars = 65536;
+    containers.dockerConfigDir = Optional.empty();
+    containers.scriptCli(
+        (argv, environment, timeout) -> {
+          calls.add(new Call(argv, environment));
+          return argv.get(1).equals("ps")
+              ? new ContainerProcess.Result(0, "3f2a9c1b7d4e\n", false, false)
+              : new ContainerProcess.Result(0, "0\n", false, false);
+        });
+    String move = "0b9c1d2e-0000-4000-8000-000000000001";
+
+    List<String> run = containers.runArgv(shot("qits-net").forMove(move), "qits-dbmove-ingest-abc");
+    assertTrue(
+        containsPair(run, "--label", DockerDatabaseContainers.NAMESPACE_PREFIX + "move=" + move),
+        run.toString());
+    assertTrue(
+        containers.runArgv(shot("qits-net"), "qits-dbmove-admin-abc").stream()
+            .noneMatch(element -> element.startsWith(DockerDatabaseContainers.NAMESPACE_PREFIX + "move=")),
+        "a one-shot that is no step of a move carries none");
+
+    assertTrue(containers.kill(move));
+    assertEquals(
+        List.of(
+            "docker", "ps", "-aq", "--filter", "label=" + DockerDatabaseContainers.NAMESPACE_PREFIX + "move=" + move),
+        calls.get(0).argv());
+    assertEquals(List.of("docker", "rm", "-f", "3f2a9c1b7d4e"), calls.get(1).argv());
+  }
+
   private static boolean containsPair(List<String> argv, String flag, String value) {
     for (int i = 0; i + 1 < argv.size(); i++) {
       if (argv.get(i).equals(flag) && argv.get(i + 1).equals(value)) {

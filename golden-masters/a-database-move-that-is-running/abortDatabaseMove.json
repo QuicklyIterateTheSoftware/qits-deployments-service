@@ -1,0 +1,33 @@
+{
+  "move": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "batchId": "00000000-0000-4000-8000-000000000001",
+    "applicationName": "contract-app-00000001",
+    "environmentName": "contract-00000001",
+    "resourceName": "db",
+    "sourceServer": "public",
+    "sourceDatabase": "qits_contract_app_00000001",
+    "targetServer": "private",
+    "targetDatabase": "qits_contract_app_00000001",
+    "specServer": null,
+    "specDatabase": null,
+    "keptDatabase": null,
+    "origin": "DEPLOYMENT",
+    "requestedBy": null,
+    "state": "EXTRACTING",
+    "sourceCounts": null,
+    "targetCounts": null,
+    "sourceRows": null,
+    "targetRows": null,
+    "sourceBytes": 20401094656,
+    "targetFreeBytes": 64424509440,
+    "volumeFreeBytes": 64424509440,
+    "detail": null,
+    "createdAt": "2026-01-01T00:00:00Z",
+    "startedAt": "2026-01-01T00:00:00Z",
+    "finishedAt": null,
+    "dropAfter": null,
+    "droppedAt": null
+  },
+  "note": "the abort is asked for; the move ends ABORTED once its running step is killed"
+}

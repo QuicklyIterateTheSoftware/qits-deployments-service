@@ -20,7 +20,7 @@
           "type" : "eu.wohlben.qits.deployments.api.PdDatabaseMoveController$MoveResponse",
           "kind" : "assembler",
           "via" : null,
-          "site" : "PdDatabaseMoveController.move(MoveRequest, SecurityContext)"
+          "site" : "PdDatabaseMoveController.abort(String, SecurityContext)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.deployments.control.DatabaseMoves$Accepted",
@@ -42,6 +42,14 @@
         }
       ],
       "operations" : [
+        {
+          "operationId" : "abortDatabaseMove",
+          "method" : "POST",
+          "path" : "/database-moves/{id}/abort",
+          "dto" : "eu.wohlben.qits.deployments.api.PdDatabaseMoveController$MoveResponse",
+          "kind" : "body",
+          "cardinality" : "single"
+        },
         {
           "operationId" : "getDatabaseMove",
           "method" : "GET",
@@ -523,6 +531,14 @@
       ],
       "operations" : [
         {
+          "operationId" : "abortDatabaseMove",
+          "method" : "POST",
+          "path" : "/database-moves/{id}/abort",
+          "dto" : "eu.wohlben.qits.deployments.api.PdDatabaseMoveController$MoveResponse",
+          "kind" : "body",
+          "cardinality" : "single"
+        },
+        {
           "operationId" : "getDatabaseMove",
           "method" : "GET",
           "path" : "/database-moves/{id}",
@@ -768,6 +784,14 @@
         }
       ],
       "operations" : [
+        {
+          "operationId" : "abortDatabaseMove",
+          "method" : "POST",
+          "path" : "/database-moves/{id}/abort",
+          "dto" : "eu.wohlben.qits.deployments.api.PdDatabaseMoveController$MoveResponse",
+          "kind" : "body",
+          "cardinality" : "single"
+        },
         {
           "operationId" : "createEnvironment",
           "method" : "POST",

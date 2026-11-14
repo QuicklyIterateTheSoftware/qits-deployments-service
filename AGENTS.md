@@ -1462,7 +1462,18 @@ Every container joins exactly ONE network (`ContainerSpec.network`, never `extra
 cross-server move is two containers sharing a volume. The moves of one deployment are one BATCH:
 stopped once, all copied and verified, then all switched — or all aborted. **Refused before anything
 stops**: this deployer's own databases (moving them is qits-2209), a target another claim holds, a target that already exists
-on the target server and is not an earlier ABORTED attempt of the same move. A predecessor resource
+on the target server and is not an earlier ABORTED attempt of the same move — and **a batch that does
+not fit** (qits-2243, after a same-server move of a 19 GB database onto 42 GB free filled the node's
+disk and took its postgres down). `MoveSpace` decides on what is measured first: the volume
+`qits-dbmove-<id>` is created, a `size` one-shot reads `pg_database_size` on the SOURCE, and a
+`space` one-shot on the TARGET reads its data directory's free space through the superuser's `COPY
+… FROM PROGRAM 'df -Pk <data_directory>'` (so `df` runs in the server's own container) and `df -Pk
+/move` for the mounted volume. Each copy — dump and restore — counts as
+`qits.deployments.database-move.space-factor` (`1.1`) × size, every filesystem keeps
+`…space-reserve` (`5G`) free, readings with equal `df` device and total are ONE filesystem and are
+summed, and so is every move of the batch. A measure that fails refuses ("could not measure …, so
+nothing was moved"), a refusal removes the volumes, and `source_bytes`/`target_free_bytes`/
+`volume_free_bytes` (V21) record the readings on the refused or started row. A predecessor resource
 the successor no longer declares by NAME is still refused (`refuseAbandonedPredecessorClaims`), and
 `ensurePostgres` keeps a belt: a claim whose database differs from the resolved one is refused
 rather than re-provisioned, should anything reach provisioning without the move.
@@ -1473,6 +1484,16 @@ alias): the claim stays, the deployment provisions against it as before, one WAR
 <server> postgres is not deployed in <env>`, and the first deployment after the server exists moves
 it. The door answers 409 with the same sentence. A NEW claim whose rule server is not deployed still
 fails, naming that.
+
+**An operator can abort a running move** — `POST /deployments/api/database-moves/{id}/abort` → 202
+(qits-2243), the operator levers' roles only (no `qits:agent`, no `qits:system`). On the request
+thread: the actor is put in an in-memory map (a restart aborts every unswitched move anyway) and
+`DatabaseContainers.kill` removes the batch's one-shots, found by their
+`qits.platform.deployments.dbmove.move=<id>` label. The worker asks the map after every step, between
+drain polls and before the switch (under one lock with the door, so an abort is either honoured or a
+409), reads a killed one-shot as the abort rather than a failed step, and `abortBatch` ends the row
+`ABORTED`, `aborted by <actor>`, the service scaled back. 404 an unknown id; 409 `QUEUED` (nothing
+runs yet — its redeploy refuses it if it cannot run), terminal, or `SWITCHING` and later.
 
 **A restart is never a forgotten move** (`settleInterrupted`, on the worker at boot and on every
 observation tick for what boot could not finish): a batch with a row at `SWITCHING` or later is

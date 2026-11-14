@@ -127,7 +127,12 @@ class AgentReadAccessTest {
     asAgent().when().post(BASE + "/applications/agt-refused/restart").then().statusCode(403);
     asAgent().when().post(BASE + "/applications/agt-refused/decommission").then().statusCode(403);
     asAgent().when().post(BASE + "/applications/agt-refused/retire").then().statusCode(403);
+    // The move door admits an agent (qits-2187); its abort does not (qits-2243).
+    asAgent().when().post(BASE + "/database-moves/" + NO_SUCH_MOVE + "/abort").then().statusCode(403);
   }
+
+  /** A move id nothing ever wrote: past the role gate, the abort's own 404. */
+  private static final String NO_SUCH_MOVE = "00000000-0000-0000-0000-00000000abcd";
 
   private static RequestSpecification asAdminAgent() {
     return given()
@@ -169,6 +174,7 @@ class AgentReadAccessTest {
         .post(BASE + "/applications/" + noSuchApplication + "/retire")
         .then()
         .statusCode(404);
+    asAdminAgent().when().post(BASE + "/database-moves/" + NO_SUCH_MOVE + "/abort").then().statusCode(404);
 
     asAgent()
         .contentType(ContentType.JSON)
@@ -245,5 +251,6 @@ class AgentReadAccessTest {
         .post(BASE + "/applications/" + noSuchApplication + "/retire")
         .then()
         .statusCode(404);
+    asDesk().when().post(BASE + "/database-moves/" + NO_SUCH_MOVE + "/abort").then().statusCode(404);
   }
 }

@@ -97,8 +97,17 @@ import org.jboss.logging.Logger;
  *
  * <p><b>Refused before anything stops</b>: a move of this deployer's own databases (it cannot stop
  * itself, and its own pools are the connections the close would terminate), a target database another
- * claim already holds, and a target database that already exists on the target server and is not an
- * earlier aborted attempt of this same move.
+ * claim already holds, a target database that already exists on the target server and is not an
+ * earlier aborted attempt of this same move — and a batch that does not FIT (qits-2243, {@link
+ * MoveSpace}): the source's {@code pg_database_size}, the free space of the target's data directory
+ * (its own {@code df}) and of the move's volume are measured first, each copy counts as {@code
+ * space-factor × size}, every filesystem keeps {@code space-reserve} free, and a measure that fails
+ * refuses too. The row records the three readings either way.
+ *
+ * <p><b>An operator may abort a move that is running</b> ({@link #abort}, qits-2243) — up to its
+ * switch, never after it: the request thread records who asked and kills the move's running one-shot,
+ * and the worker, which checks after every step and between drain polls, aborts the batch as any
+ * failure does.
  *
  * <p><b>It runs on {@code pd-deploy-worker} and nowhere else</b> — inside the deployment, or as the
  * operator's queued redeploy ({@link #request}) — so a move never interleaves with a cutover, an
@@ -160,6 +169,27 @@ public class DatabaseMoves {
    */
   @ConfigProperty(name = "qits.deployments.database-move.stop-timeout")
   Duration stopTimeout;
+
+  /** What one copy of the source counts as, times its size (qits-2243). {@code 1.1} shipped. */
+  @ConfigProperty(name = MoveSpace.FACTOR_KEY)
+  double spaceFactor;
+
+  /** What every filesystem a move writes to keeps free on top ({@link MoveSpace#parseSize}). */
+  @ConfigProperty(name = MoveSpace.RESERVE_KEY)
+  String spaceReserve;
+
+  /**
+   * The aborts asked for and not yet acted on: move id → who asked (qits-2243). Memory on purpose — a
+   * restart aborts every move before its switch anyway. Written by the request thread, read by the
+   * worker between steps.
+   */
+  private final Map<String, String> aborts = new ConcurrentHashMap<>();
+
+  /** The moves the worker is switching: an abort asked now is a 409, never a flag nobody reads. */
+  private final Set<String> switching = ConcurrentHashMap.newKeySet();
+
+  /** Makes "may it still abort?" and "the worker starts switching" one decision. */
+  private final Object abortLock = new Object();
 
   /**
    * The operator's moves whose redeploy is running right now, by {@link #key} — what {@link
@@ -295,7 +325,16 @@ public class DatabaseMoves {
             new ResourceProvisioning.Resolved(name, claimed.database(), resource.type()));
         continue;
       }
-      planned.add(new Planned(applicationName, environmentName, name, claimed, targetServer, targetDatabase, heldRow));
+      planned.add(
+          new Planned(
+              heldRow != null ? heldRow.id : UUID.randomUUID().toString(),
+              applicationName,
+              environmentName,
+              name,
+              claimed,
+              targetServer,
+              targetDatabase,
+              heldRow));
       // Provisioning finds the claim where the move puts it: the spec's database for a deployment's
       // own move, the held target for an operator's override of it.
       effective.set(
@@ -310,11 +349,13 @@ public class DatabaseMoves {
     for (Planned move : planned) {
       String refusal = refusal(move);
       if (refusal != null) {
-        recordRefusal(move, refusal);
+        recordRefusal(move, refusal, move.id(), null);
         throw new ResourceException(refusal);
       }
     }
-    List<PdDatabaseMove> switched = run(planned);
+    String batch = UUID.randomUUID().toString();
+    List<MoveSpace.Measured> measured = measure(batch, planned);
+    List<PdDatabaseMove> switched = run(batch, planned, measured);
     return new Prepared(List.copyOf(effective), switched);
   }
 
@@ -327,8 +368,12 @@ public class DatabaseMoves {
   record Claimed(
       String id, String applicationName, String database, DatabaseServer server, String password) {}
 
-  /** One move this deployment will run, decided and not yet started. */
+  /**
+   * One move this deployment will run, decided and not yet started. {@code id} is its row's: the
+   * operator's row, or one chosen now — the move's volume is named by it before the row exists.
+   */
   private record Planned(
+      String id,
       String applicationName,
       String environmentName,
       String resourceName,
@@ -442,6 +487,114 @@ public class DatabaseMoves {
     return null;
   }
 
+  /**
+   * Measure every move of the batch, and refuse the batch when it does not fit or cannot be measured
+   * (qits-2243) — after {@link #refusal} and before anything stops, so the refusal path is the one
+   * every other refusal takes: recorded, the service still running, the deployment failed.
+   *
+   * <p>Per move: the volume {@code qits-dbmove-<id>} is created first (the dump will be written into
+   * it, so it is measured where it is), then {@link DatabaseScripts#size} on the SOURCE server and
+   * {@link DatabaseScripts#space} on the TARGET server with the volume mounted. {@link MoveSpace}
+   * decides. A refusal removes every volume it created, because nothing else will.
+   */
+  private List<MoveSpace.Measured> measure(String batch, List<Planned> planned) {
+    List<MoveSpace.Measured> measured = new ArrayList<>();
+    String failure = null;
+    for (Planned move : planned) {
+      String volume = VOLUME_PREFIX + move.id();
+      Long size = null;
+      DatabaseScripts.Filesystem data = null;
+      DatabaseScripts.Filesystem onVolume = null;
+      if (!containers.createVolume(volume)) {
+        failure = "could not create the volume " + volume + " for the move of "
+            + where(move.sourceServer(), move.sourceDatabase()) + ", so nothing was moved";
+      } else {
+        try {
+          DatabaseContainers.Outcome sized =
+              containers.run(
+                  admin.shot(
+                      "size",
+                      move.sourceServer(),
+                      move.environmentName(),
+                      admin.image(move.sourceServer(), move.environmentName()),
+                      null,
+                      Map.of(),
+                      DatabaseScripts.size(move.sourceDatabase())),
+                  ContainerResourceProvisioner.TIMEOUT);
+          size = sized.ok() ? DatabaseScripts.sizeAnswer(sized.output()) : null;
+          if (size == null) {
+            failure =
+                "could not measure the size of "
+                    + where(move.sourceServer(), move.sourceDatabase())
+                    + ", so nothing was moved: "
+                    + tail(sized.output());
+          } else {
+            DatabaseContainers.Outcome spaced =
+                containers.run(
+                    admin.shot(
+                        "space",
+                        move.targetServer(),
+                        move.environmentName(),
+                        admin.image(move.targetServer(), move.environmentName()),
+                        volume,
+                        Map.of(),
+                        DatabaseScripts.space()),
+                    ContainerResourceProvisioner.TIMEOUT);
+            if (spaced.ok()) {
+              data = DatabaseScripts.filesystem(spaced.output(), DatabaseScripts.DATA_DF_MARKER);
+              onVolume = DatabaseScripts.filesystem(spaced.output(), DatabaseScripts.VOLUME_DF_MARKER);
+            }
+            if (data == null || onVolume == null) {
+              failure =
+                  "could not measure the free space of "
+                      + (data == null ? "the " + move.targetServer().wire() + " postgres' data directory" : "")
+                      + (data == null && onVolume == null ? " and of " : "")
+                      + (onVolume == null ? "the volume " + volume : "")
+                      + ", so nothing was moved: "
+                      + tail(spaced.output());
+            }
+          }
+        } catch (ResourceException unreachable) {
+          failure = unreachable.getMessage() + ", so nothing was moved";
+        }
+      }
+      measured.add(new MoveSpace.Measured(size, data, onVolume));
+      if (failure != null) {
+        break;
+      }
+    }
+    if (failure == null) {
+      List<MoveSpace.Move> batchMoves = new ArrayList<>();
+      for (int i = 0; i < planned.size(); i++) {
+        Planned move = planned.get(i);
+        batchMoves.add(
+            new MoveSpace.Move(
+                where(move.sourceServer(), move.sourceDatabase()),
+                where(move.targetServer(), move.targetDatabase()),
+                measured.get(i)));
+      }
+      failure = MoveSpace.refusal(batchMoves, spaceFactor, reserveBytes());
+    }
+    if (failure != null) {
+      for (int i = 0; i < planned.size(); i++) {
+        if (i < measured.size()) {
+          containers.removeVolume(VOLUME_PREFIX + planned.get(i).id());
+        }
+        recordRefusal(planned.get(i), failure, batch, i < measured.size() ? measured.get(i) : null);
+      }
+      throw new ResourceException(failure);
+    }
+    return measured;
+  }
+
+  private long reserveBytes() {
+    try {
+      return MoveSpace.parseSize(spaceReserve);
+    } catch (IllegalArgumentException wrong) {
+      throw new ResourceException(wrong.getMessage() + ", so nothing was moved");
+    }
+  }
+
   private boolean leftover(Planned move) {
     return QuarkusTransaction.requiringNew()
         .call(
@@ -467,30 +620,63 @@ public class DatabaseMoves {
    *
    * @return the switched rows, as they ended
    */
-  private List<PdDatabaseMove> run(List<Planned> planned) {
-    String batch = UUID.randomUUID().toString();
+  private List<PdDatabaseMove> run(String batch, List<Planned> planned, List<MoveSpace.Measured> measured) {
     List<String> ids = new ArrayList<>();
-    for (Planned move : planned) {
-      ids.add(start(batch, move));
+    long reserve = reserveBytes();
+    for (int i = 0; i < planned.size(); i++) {
+      Planned move = planned.get(i);
+      ids.add(start(batch, move, measured.get(i)));
+      LOG.infof(
+          "Database move %s of %s (%s, `%s`) from %s to %s: %s",
+          move.id(),
+          move.applicationName(),
+          move.environmentName(),
+          move.resourceName(),
+          where(move.sourceServer(), move.sourceDatabase()),
+          where(move.targetServer(), move.targetDatabase()),
+          MoveSpace.describe(measured.get(i), spaceFactor, reserve));
     }
     try {
-      stopServices(planned, ids);
-      for (int i = 0; i < planned.size(); i++) {
-        copy(planned.get(i), ids.get(i));
+      try {
+        checkAborted(ids);
+        stopServices(planned, ids);
+        for (int i = 0; i < planned.size(); i++) {
+          copy(planned.get(i), ids.get(i), ids);
+        }
+        // The last moment an abort is honoured: from here on the claims switch.
+        synchronized (abortLock) {
+          checkAborted(ids);
+          switching.addAll(ids);
+        }
+      } catch (MoveFailure failure) {
+        abortBatch(batch, failure.getMessage());
+        throw new ResourceException(failure.getMessage());
       }
-    } catch (MoveFailure failure) {
-      abortBatch(batch, failure.getMessage());
-      throw new ResourceException(failure.getMessage());
+      List<PdDatabaseMove> switched = new ArrayList<>();
+      for (int i = 0; i < planned.size(); i++) {
+        switched.add(finishSwitch(ids.get(i)));
+      }
+      return List.copyOf(switched);
+    } finally {
+      synchronized (abortLock) {
+        ids.forEach(aborts::remove);
+        switching.removeAll(ids);
+      }
     }
-    List<PdDatabaseMove> switched = new ArrayList<>();
-    for (int i = 0; i < planned.size(); i++) {
-      switched.add(finishSwitch(ids.get(i)));
+  }
+
+  /** An abort asked for any move of the batch ends the batch, naming who asked. */
+  private void checkAborted(List<String> ids) {
+    for (String id : ids) {
+      String actor = aborts.get(id);
+      if (actor != null) {
+        throw new MoveFailure("aborted by " + actor);
+      }
     }
-    return List.copyOf(switched);
   }
 
   /** The row in {@code STOPPING}: a new one, or the operator's {@code QUEUED} one taken over. */
-  private String start(String batch, Planned move) {
+  private String start(String batch, Planned move, MoveSpace.Measured measured) {
     return QuarkusTransaction.requiringNew()
         .call(
             () -> {
@@ -498,11 +684,14 @@ public class DatabaseMoves {
                   move.operatorRow() != null ? moves.findById(move.operatorRow().id) : null;
               if (row == null) {
                 row = new PdDatabaseMove();
-                row.id = UUID.randomUUID().toString();
+                row.id = move.id();
                 row.origin = PdDatabaseMove.Origin.DEPLOYMENT;
                 row.createdAt = Instant.now();
               }
               row.batchId = batch;
+              row.sourceBytes = measured.sourceBytes();
+              row.targetFreeBytes = measured.targetFreeBytes();
+              row.volumeFreeBytes = measured.volumeFreeBytes();
               row.applicationName = move.applicationName();
               row.environmentName = move.environmentName();
               row.resourceName = move.resourceName();
@@ -552,9 +741,10 @@ public class DatabaseMoves {
               row.serviceReplicas = replicas;
             });
       }
-      awaitDrained(service, drainWait(stopTimeout, grace));
+      awaitDrained(service, drainWait(stopTimeout, grace), ids);
     }
     for (int i = 0; i < planned.size(); i++) {
+      checkAborted(ids);
       Planned move = planned.get(i);
       DatabaseContainers.Outcome closed =
           admin(move.sourceServer(), move.environmentName(), DatabaseScripts.close(move.sourceDatabase(), move.sourceDatabase()));
@@ -579,10 +769,11 @@ public class DatabaseMoves {
     return stopTimeout.compareTo(graceDeadline) >= 0 ? stopTimeout : graceDeadline;
   }
 
-  private void awaitDrained(String service, Duration wait) {
+  private void awaitDrained(String service, Duration wait, List<String> ids) {
     long deadline = System.nanoTime() + wait.toNanos();
     DatabaseContainers.Drain last = DatabaseContainers.Drain.UNKNOWN;
     while (true) {
+      checkAborted(ids);
       last = containers.drained(service);
       if (last == DatabaseContainers.Drain.DRAINED) {
         return;
@@ -605,8 +796,13 @@ public class DatabaseMoves {
     }
   }
 
-  /** Extract, ingest and compare one move, recording each step. */
-  private void copy(Planned move, String id) {
+  /**
+   * Extract, ingest and compare one move, recording each step. Its volume exists already — {@link
+   * #measure} created it. An abort is asked after each step, and before a failed step is reported, so
+   * a one-shot the abort killed reads as the abort it was.
+   */
+  private void copy(Planned move, String id, List<String> batch) {
+    checkAborted(batch);
     String volume = VOLUME_PREFIX + id;
     String image;
     try {
@@ -617,9 +813,6 @@ public class DatabaseMoves {
       throw new MoveFailure(unreachable.getMessage());
     }
     update(id, row -> row.state = PdDatabaseMoveState.EXTRACTING);
-    if (!containers.createVolume(volume)) {
-      throw new MoveFailure("could not create the volume " + volume);
-    }
     DatabaseContainers.Outcome extracted =
         containers.run(
             admin.shot(
@@ -629,8 +822,10 @@ public class DatabaseMoves {
                 image,
                 volume,
                 Map.of(),
-                DatabaseScripts.extract(move.sourceDatabase())),
+                DatabaseScripts.extract(move.sourceDatabase()))
+                .forMove(id),
             timeout);
+    checkAborted(batch);
     Map<String, Long> source = extracted.ok() ? DatabaseScripts.manifest(extracted.output()) : null;
     if (source == null) {
       throw new MoveFailure(
@@ -658,8 +853,10 @@ public class DatabaseMoves {
                 image,
                 volume,
                 Map.of(DatabaseScripts.ROLE_PASSWORD, move.claim().password()),
-                DatabaseScripts.ingest(move.targetDatabase(), move.targetDatabase(), leftover(move))),
+                DatabaseScripts.ingest(move.targetDatabase(), move.targetDatabase(), leftover(move)))
+                .forMove(id),
             timeout);
+    checkAborted(batch);
     Map<String, Long> target = ingested.ok() ? DatabaseScripts.manifest(ingested.output()) : null;
     if (target == null) {
       throw new MoveFailure(
@@ -874,6 +1071,8 @@ public class DatabaseMoves {
         // queue behind this very pass.
         if (atBoot) {
           refuse(row, "the deployer restarted before the redeploy this move was waiting for ran");
+          // A restart between the space check and the start leaves the measured volume behind.
+          containers.removeVolume(VOLUME_PREFIX + row.id);
         }
         continue;
       }
@@ -1329,6 +1528,63 @@ public class DatabaseMoves {
     refuse(row, "the redeploy of " + application + "@" + version + " never reached its provisioning — " + what);
   }
 
+  /**
+   * An operator's abort of a running move: {@code POST /database-moves/{id}/abort} (qits-2243). It
+   * runs on the request thread, because the worker is the thread a running extract or ingest blocks:
+   * it records who asked, then kills the one-shots of every move of the batch ({@link
+   * DatabaseContainers#kill}). The worker sees the flag after its step — the killed one returns at
+   * once — and aborts the batch the way every failure does ({@link #abortBatch}): the target dropped,
+   * the source re-opened, the volume removed, the service scaled back, the row {@code ABORTED} with
+   * {@code aborted by <actor>}.
+   *
+   * <p>Accepted from {@code STOPPING} to {@code VERIFIED}. Refused with a 409: a {@code QUEUED} move —
+   * nothing of it runs yet, and its redeploy refuses it if it cannot run (refusing it here instead
+   * would race that redeploy for the row); a terminal one; and one at {@code SWITCHING} or later,
+   * where the claim already points at the target and an abort would strand it.
+   *
+   * @return the move as it was when the abort was asked
+   */
+  public PdDatabaseMove abort(String id, String actor) {
+    String who = actor == null || actor.isBlank() ? "an operator" : actor;
+    PdDatabaseMove row;
+    List<String> batch;
+    synchronized (abortLock) {
+      row = QuarkusTransaction.requiringNew().call(() -> moves.findById(id));
+      if (row == null) {
+        throw new NotFoundException("no database move " + id);
+      }
+      if (row.state == PdDatabaseMoveState.QUEUED) {
+        throw new ConflictException(
+            "the move " + id + " is still QUEUED behind its redeploy: nothing of it runs yet to abort");
+      }
+      if (PdDatabaseMoveState.TERMINAL.contains(row.state)) {
+        throw new ConflictException("the move " + id + " is already " + row.state);
+      }
+      if (row.state.switched() || switching.contains(id)) {
+        throw new ConflictException(
+            "the move "
+                + id
+                + " is past its switch: the claim already points at the target, so an abort would"
+                + " strand it — it finishes");
+      }
+      aborts.putIfAbsent(id, who);
+      String batchId = row.batchId;
+      batch =
+          QuarkusTransaction.requiringNew()
+              .call(() -> moves.list("batchId = ?1", batchId).stream().map(r -> r.id).toList());
+    }
+    LOG.warnf(
+        "%s asked to abort the database move %s of %s at %s", who, id, row.applicationName, row.state);
+    for (String member : batch) {
+      try {
+        containers.kill(member);
+      } catch (RuntimeException e) {
+        LOG.warnf("Could not kill the one-shots of the move %s: %s", member, e.getMessage());
+      }
+    }
+    return row;
+  }
+
   // --- the read surface -------------------------------------------------------------------------
 
   public List<PdDatabaseMove> list(String applicationName) {
@@ -1362,8 +1618,17 @@ public class DatabaseMoves {
     }
   }
 
-  private void recordRefusal(Planned move, String refusal) {
+  private void recordRefusal(Planned move, String refusal, String batch, MoveSpace.Measured measured) {
     if (move.operatorRow() != null) {
+      if (measured != null) {
+        update(
+            move.operatorRow().id,
+            row -> {
+              row.sourceBytes = measured.sourceBytes();
+              row.targetFreeBytes = measured.targetFreeBytes();
+              row.volumeFreeBytes = measured.volumeFreeBytes();
+            });
+      }
       refuse(move.operatorRow(), refusal);
       return;
     }
@@ -1371,8 +1636,8 @@ public class DatabaseMoves {
         .run(
             () -> {
               PdDatabaseMove row = new PdDatabaseMove();
-              row.id = UUID.randomUUID().toString();
-              row.batchId = row.id;
+              row.id = move.id();
+              row.batchId = batch;
               row.applicationName = move.applicationName();
               row.environmentName = move.environmentName();
               row.resourceName = move.resourceName();
@@ -1383,6 +1648,11 @@ public class DatabaseMoves {
               row.origin = PdDatabaseMove.Origin.DEPLOYMENT;
               row.state = PdDatabaseMoveState.REFUSED;
               row.detail = refusal;
+              if (measured != null) {
+                row.sourceBytes = measured.sourceBytes();
+                row.targetFreeBytes = measured.targetFreeBytes();
+                row.volumeFreeBytes = measured.volumeFreeBytes();
+              }
               row.createdAt = Instant.now();
               row.finishedAt = row.createdAt;
               moves.persist(row);

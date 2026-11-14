@@ -14,6 +14,10 @@ import java.util.TreeMap;
  *
  * <p>{@code sourceRows}/{@code targetRows} are the manifests' totals, null until that side was read —
  * the two numbers the move's own log line names, so a reader can compare them without summing.
+ *
+ * <p>{@code sourceBytes}, {@code targetFreeBytes} and {@code volumeFreeBytes} are what the space check
+ * measured before anything stopped (qits-2243): the source's size, and the free bytes of the target
+ * data directory's filesystem and of the move volume's. Null on a move that measured nothing.
  */
 public record PdDatabaseMoveDto(
     String id,
@@ -35,6 +39,9 @@ public record PdDatabaseMoveDto(
     Map<String, Long> targetCounts,
     Long sourceRows,
     Long targetRows,
+    Long sourceBytes,
+    Long targetFreeBytes,
+    Long volumeFreeBytes,
     String detail,
     Instant createdAt,
     Instant startedAt,
@@ -67,6 +74,9 @@ public record PdDatabaseMoveDto(
         target,
         total(source),
         total(target),
+        row.sourceBytes,
+        row.targetFreeBytes,
+        row.volumeFreeBytes,
         row.detail,
         row.createdAt,
         row.startedAt,

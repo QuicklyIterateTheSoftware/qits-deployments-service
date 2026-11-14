@@ -418,6 +418,215 @@ class PdDatabaseMoveFlowTest {
     assertEquals(2, statuses(environmentId).size());
   }
 
+  // --- the space check and the abort (qits-2243) ---------------------------------------------------
+
+  private static final long GIB = 1L << 30;
+
+  /** A live application holding {@code db} on the public server, its service running one replica. */
+  private String[] liveApplication(String prefix) throws Exception {
+    String token = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+    String environment = prefix + "-" + token;
+    String environmentId = createDesignatedEnvironment(environment);
+    String application = prefix + "-app-" + token;
+    specs.script(application, declaring(DeploymentDriver.Exposure.PUBLIC));
+    driver.scriptRunningImage(environment + "-qits-oci-postgresql", "registry.example/qits/pg:1");
+    release(application, "2026.101.120000");
+    driver.scriptDeclaredReplicas(environment + "-" + application, 1);
+    return new String[] {environment, environmentId, application, token};
+  }
+
+  @Test
+  void aMoveThatDoesNotFitIsRefusedTheDeploymentFailsAndTheServiceKeepsRunningOnTheSource()
+      throws Exception {
+    String[] live = liveApplication("dbsp");
+    String environment = live[0];
+    String application = live[2];
+    String database = claim(application, environment).databaseName;
+    containers.script("size", shot -> FakeDatabaseContainers.sized(19 * GIB));
+    containers.script("space", shot -> FakeDatabaseContainers.oneFilesystem(42 * GIB));
+
+    String id =
+        requestMove(Map.of("application", application, "database", "qits_dbsp_away_" + live[3]))
+            .getString("move.id");
+    deployService.awaitIdle();
+
+    JsonPath refused = move(id);
+    assertEquals("REFUSED", refused.getString("move.state"));
+    String detail = refused.getString("move.detail");
+    assertTrue(detail.contains("it is 19.0 GiB"), detail);
+    assertTrue(detail.contains("42.0 GiB free where the dump and the copy need 46.8 GiB"), detail);
+    assertEquals(19 * GIB, refused.getLong("move.sourceBytes"));
+    assertEquals(42 * GIB, refused.getLong("move.targetFreeBytes"));
+    assertEquals(42 * GIB, refused.getLong("move.volumeFreeBytes"));
+    // The deployment failed naming it, and nothing stopped: the service runs on the source.
+    List<Map<String, Object>> rows =
+        given()
+            .header("Authorization", SuiteBearers.operator())
+            .when()
+            .get("/deployments/api/deployments?environmentId=" + live[1])
+            .then()
+            .statusCode(200)
+            .extract()
+            .jsonPath()
+            .getList("deployments");
+    assertEquals("FAILED", rows.get(0).get("status"));
+    assertTrue(String.valueOf(rows.get(0).get("detail")).contains("free space first"), rows.toString());
+    assertTrue(driver.calls().stream().noneMatch(call -> call.startsWith("scale:")), driver.calls().toString());
+    assertTrue(containers.shots("extract").isEmpty());
+    assertEquals(database, claim(application, environment).databaseName);
+  }
+
+  @Test
+  void anAbortKillsTheRunningExtractAndTheServiceComesBackOnTheSource() throws Exception {
+    String[] live = liveApplication("dbab");
+    String environment = live[0];
+    String application = live[2];
+    String database = claim(application, environment).databaseName;
+    java.util.concurrent.CountDownLatch killed = new java.util.concurrent.CountDownLatch(1);
+    containers.onKill(killed::countDown);
+    containers.script(
+        "extract",
+        shot -> {
+          try {
+            killed.await(30, java.util.concurrent.TimeUnit.SECONDS);
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+          return new DatabaseContainers.Outcome(-1, "the container was removed", false);
+        });
+
+    String id =
+        requestMove(Map.of("application", application, "database", "qits_dbab_away_" + live[3]))
+            .getString("move.id");
+    long deadline = System.currentTimeMillis() + 15_000;
+    while (!"EXTRACTING".equals(move(id).getString("move.state"))) {
+      assertTrue(System.currentTimeMillis() < deadline, "the extract never started");
+      Thread.sleep(50);
+    }
+
+    JsonPath asked =
+        given()
+            .header("Authorization", SuiteBearers.bearer("dbmove-operator", "qits:admin"))
+            .when()
+            .post(MOVES + "/" + id + "/abort")
+            .then()
+            .statusCode(202)
+            .extract()
+            .jsonPath();
+    assertEquals(id, asked.getString("move.id"));
+    assertEquals("EXTRACTING", asked.getString("move.state"));
+    deployService.awaitIdle();
+
+    JsonPath aborted = move(id);
+    assertEquals("ABORTED", aborted.getString("move.state"));
+    assertEquals("aborted by dbmove-operator", aborted.getString("move.detail"));
+    assertEquals(List.of(id), containers.killed());
+    assertTrue(
+        driver.calls().contains("scale:" + environment + "-" + application + "=1"),
+        driver.calls().toString());
+    assertTrue(containers.shots("ingest").isEmpty(), "nothing was restored");
+    assertEquals(database, claim(application, environment).databaseName);
+    assertEquals("FAILED", statuses(live[1]).get(0));
+
+    // Ended: asked again, a conflict.
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when()
+        .post(MOVES + "/" + id + "/abort")
+        .then()
+        .statusCode(409);
+  }
+
+  /** A move row in {@code state}, written straight to the table. */
+  private static String staged(eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState state) {
+    String id = UUID.randomUUID().toString();
+    String token = id.substring(0, 8);
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove row =
+                  new eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove();
+              row.id = id;
+              row.batchId = id;
+              row.applicationName = "dbab-staged-" + token;
+              row.environmentName = "dbab-staged-" + token;
+              row.resourceName = "db";
+              row.sourceServer = "public";
+              row.sourceDatabase = "qits_dbab_staged_" + token;
+              row.targetServer = "private";
+              row.targetDatabase = "qits_dbab_staged_" + token;
+              row.origin = eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove.Origin.OPERATOR;
+              row.state = state;
+              row.createdAt = java.time.Instant.now();
+              row.persist();
+            });
+    return id;
+  }
+
+  private static void settle(String id) {
+    QuarkusTransaction.requiringNew()
+        .run(
+            () ->
+                eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove
+                    .<eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove>findById(id)
+                    .state =
+                    eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState.MOVED);
+  }
+
+  @Test
+  void theAbortDoorAnswersWhatItCannotAbort() {
+    String abort = MOVES + "/%s/abort";
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when()
+        .post(String.format(abort, UUID.randomUUID()))
+        .then()
+        .statusCode(404);
+    for (var state :
+        List.of(
+            eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState.QUEUED,
+            eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState.MOVED,
+            eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState.REFUSED,
+            eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState.SWITCHING)) {
+      String id = staged(state);
+      try {
+        String answer =
+            given()
+                .header("Authorization", SuiteBearers.operator())
+                .when()
+                .post(String.format(abort, id))
+                .then()
+                .statusCode(409)
+                .extract()
+                .asString();
+        if (state == eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState.SWITCHING) {
+          assertTrue(answer.contains("past its switch"), answer);
+        }
+      } finally {
+        settle(id);
+      }
+    }
+    assertEquals(List.of(), containers.killed(), "nothing was killed for a refusal");
+    // The operator levers' roles: never a plain agent, never a machine.
+    String running = staged(eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState.QUEUED);
+    try {
+      given()
+          .header("Authorization", SuiteBearers.bearer("dbmove-agent", "qits:agent"))
+          .when()
+          .post(String.format(abort, running))
+          .then()
+          .statusCode(403);
+      given()
+          .header("Authorization", SuiteBearers.platform())
+          .when()
+          .post(String.format(abort, running))
+          .then()
+          .statusCode(403);
+    } finally {
+      settle(running);
+    }
+  }
+
   @Test
   void theDoorRefusesWhatItCanTellIsWrongBeforeQueueingAnything() {
     createDesignatedEnvironment("dbmv-r-" + UUID.randomUUID().toString().substring(0, 8));

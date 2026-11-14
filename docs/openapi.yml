@@ -228,6 +228,15 @@ components:
         targetRows:
           type: integer
           format: int64
+        sourceBytes:
+          type: integer
+          format: int64
+        targetFreeBytes:
+          type: integer
+          format: int64
+        volumeFreeBytes:
+          type: integer
+          format: int64
         detail:
           type: string
         createdAt:
@@ -922,6 +931,38 @@ paths:
         - qits:desk-admin
         - qits:desk
         - qits:agent
+  /deployments/api/database-moves/{id}/abort:
+    post:
+      summary: "Abort a running database move — its extract or ingest killed, the\
+        \ target dropped, the source re-opened and its service scaled back up"
+      operationId: abortDatabaseMove
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "202":
+          description: The abort is asked for; the move ends ABORTED once its running
+            step is killed
+        "404":
+          description: No move of that id
+        "409":
+          description: "The move is queued (nothing runs yet), already finished, or\
+            \ at its switch or later, where an abort would strand the claim"
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Database Move Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:admin-agent
+        - qits:desk-admin
+        - qits:desk
   /deployments/api/deployment-requests:
     get:
       summary: "Deployment requests, newest-first — by environment, by project, or\

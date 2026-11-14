@@ -106,7 +106,7 @@ class DatabaseMovesTest {
     // The service was stopped, the source closed, copied and verified, the claim switched.
     assertTrue(driver.calls().contains("scale:mv-a-qits-mvpin=0"), driver.calls().toString());
     assertEquals(
-        List.of("check", "admin", "extract", "ingest", "admin"),
+        List.of("check", "size", "space", "admin", "extract", "ingest", "admin"),
         containers.shots().stream().map(DatabaseContainers.OneShot::purpose).toList());
     PdResource claim = claimOf("qits-mvpin", "mv-a", "db");
     assertEquals("qits_mvpin", claim.databaseName);
@@ -553,6 +553,250 @@ class DatabaseMovesTest {
     PdDatabaseMove settled = QuarkusTransaction.requiringNew().call(() -> moveRows.findById(id));
     assertEquals(PdDatabaseMoveState.REFUSED, settled.state);
     assertNull(settled.serviceName);
+  }
+
+  // --- the space check (qits-2243) -------------------------------------------------------------
+
+  private static final long GIB = 1L << 30;
+
+  @Test
+  void theIncidentsMoveIsRefusedBeforeItsServiceStops() {
+    // 2026-11-14: public/qits_platform_mirror -> public/qits_mirror, 19 GB on a filesystem with 42
+    // GB free. The dump and the restored copy shared that filesystem and filled it.
+    serversRunningIn("sp-a");
+    claim("qits-spmirror", "sp-a", "db", "qits_platform_spmirror", "public");
+    driver.scriptDeclaredReplicas("sp-a-qits-spmirror", 1);
+    containers.script("size", shot -> FakeDatabaseContainers.sized(19 * GIB));
+    containers.script("space", shot -> FakeDatabaseContainers.oneFilesystem(42 * GIB));
+
+    ResourceException refused =
+        assertThrows(
+            ResourceException.class,
+            () ->
+                moves.beforeProvisioning(
+                    "qits-spmirror", "sp-a", null, DeploymentDriver.Exposure.PUBLIC,
+                    one("db", "qits_spmirror")));
+
+    assertEquals(
+        "refusing to move public/qits_platform_spmirror to public/qits_spmirror: it is 19.0 GiB, and"
+            + " the target's filesystem has 42.0 GiB free where the dump and the copy need 46.8 GiB"
+            + " (qits.deployments.database-move.space-factor 1.1, space-reserve 5 GiB); free space"
+            + " first",
+        refused.getMessage());
+    // Nothing stopped, nothing was copied, the claim is where it was.
+    assertTrue(driver.calls().stream().noneMatch(call -> call.startsWith("scale:")), driver.calls().toString());
+    assertEquals(
+        List.of("check", "size", "space"),
+        containers.shots().stream().map(DatabaseContainers.OneShot::purpose).toList());
+    assertEquals("qits_platform_spmirror", claimOf("qits-spmirror", "sp-a", "db").databaseName);
+    // The size is asked of the source, the free space of the target with the volume mounted...
+    DatabaseContainers.OneShot size = containers.shots("size").get(0);
+    assertTrue(size.script().contains("pg_database_size('qits_platform_spmirror')"), size.script());
+    DatabaseContainers.OneShot space = containers.shots("space").get(0);
+    assertTrue(space.script().contains("COPY qits_df (line) FROM PROGRAM :'qits_df_cmd'"), space.script());
+    assertTrue(space.script().contains("df -Pk " + DatabaseContainers.MOUNT), space.script());
+    // ...and the volume measured is the move's, removed again on the refusal.
+    PdDatabaseMove row = movesOf("qits-spmirror").get(0);
+    assertEquals(PdDatabaseMoveState.REFUSED, row.state);
+    assertEquals(refused.getMessage(), row.detail);
+    assertEquals("qits-dbmove-" + row.id, space.volume());
+    assertEquals(List.of("qits-dbmove-" + row.id), containers.createdVolumes());
+    assertEquals(List.of("qits-dbmove-" + row.id), containers.removedVolumes());
+    assertEquals(19 * GIB, row.sourceBytes);
+    assertEquals(42 * GIB, row.targetFreeBytes);
+    assertEquals(42 * GIB, row.volumeFreeBytes);
+  }
+
+  @Test
+  void theSameMoveWithRoomToSpareProceedsAndRecordsWhatItMeasured() {
+    serversRunningIn("sp-b");
+    claim("qits-spfits", "sp-b", "db", "qits_platform_spfits", "public");
+    driver.scriptDeclaredReplicas("sp-b-qits-spfits", 1);
+    containers.script("size", shot -> FakeDatabaseContainers.sized(19 * GIB));
+    containers.script("space", shot -> FakeDatabaseContainers.oneFilesystem(47 * GIB));
+
+    moves.beforeProvisioning(
+        "qits-spfits", "sp-b", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_spfits"));
+
+    PdDatabaseMove row = movesOf("qits-spfits").get(0);
+    assertEquals(PdDatabaseMoveState.MOVED, row.state);
+    assertEquals(19 * GIB, row.sourceBytes);
+    assertEquals(47 * GIB, row.targetFreeBytes);
+    assertEquals(47 * GIB, row.volumeFreeBytes);
+    assertEquals(List.of("qits-dbmove-" + row.id), containers.createdVolumes(), "created once");
+    assertEquals("qits_spfits", claimOf("qits-spfits", "sp-b", "db").databaseName);
+  }
+
+  @Test
+  void separateFilesystemsAreCheckedEachForItsOwnCopy() {
+    // The dump volume is on the node's disk, the private server's data directory on another: each
+    // needs one copy and the reserve. 10 GiB → 16 GiB each. The volume's 20 GiB fits, the data's 15
+    // does not.
+    serversRunningIn("sp-c");
+    claim("qits-spsplit", "sp-c", "db", "qits_spsplit", "public");
+    containers.script("size", shot -> FakeDatabaseContainers.sized(10 * GIB));
+    containers.script(
+        "space",
+        shot ->
+            FakeDatabaseContainers.space(
+                "/dev/vdb", 100 * GIB, 15 * GIB, "/dev/sda1", 150 * GIB, 20 * GIB));
+
+    ResourceException refused =
+        assertThrows(
+            ResourceException.class,
+            () ->
+                moves.beforeProvisioning(
+                    "qits-spsplit", "sp-c", null, DeploymentDriver.Exposure.PRIVATE,
+                    one("db", "qits_spsplit")));
+
+    assertTrue(
+        refused.getMessage().contains(
+            "the target's data directory filesystem has 15.0 GiB free where the copy needs 16.0 GiB"),
+        refused.getMessage());
+    assertEquals("public", claimOf("qits-spsplit", "sp-c", "db").server);
+
+    // With room on both, the same move proceeds.
+    containers.reset();
+    containers.script("size", shot -> FakeDatabaseContainers.sized(10 * GIB));
+    containers.script(
+        "space",
+        shot ->
+            FakeDatabaseContainers.space(
+                "/dev/vdb", 100 * GIB, 17 * GIB, "/dev/sda1", 150 * GIB, 17 * GIB));
+    moves.beforeProvisioning(
+        "qits-spsplit", "sp-c", null, DeploymentDriver.Exposure.PRIVATE, one("db", "qits_spsplit"));
+    assertEquals("private", claimOf("qits-spsplit", "sp-c", "db").server);
+  }
+
+  @Test
+  void aBatchsMovesAreSummedOnTheFilesystemTheyShare() {
+    // Two databases of 10 GiB, one server, 40 GiB free: either alone needs 27 GiB and fits; both
+    // need 49 GiB and do not.
+    serversRunningIn("sp-d");
+    claim("qits-sptwo", "sp-d", "db", "qits_platform_sptwo", "public");
+    claim("qits-sptwo", "sp-d", "cache", "qits_platform_sptwo_cache", "public");
+    driver.scriptDeclaredReplicas("sp-d-qits-sptwo", 1);
+    containers.script("size", shot -> FakeDatabaseContainers.sized(10 * GIB));
+    containers.script("space", shot -> FakeDatabaseContainers.oneFilesystem(40 * GIB));
+
+    ResourceException refused =
+        assertThrows(
+            ResourceException.class,
+            () ->
+                moves.beforeProvisioning(
+                    "qits-sptwo",
+                    "sp-d",
+                    null,
+                    DeploymentDriver.Exposure.PUBLIC,
+                    List.of(
+                        new ResourceProvisioning.Resolved("db", "qits_sptwo"),
+                        new ResourceProvisioning.Resolved("cache", "qits_sptwo_cache"))));
+
+    assertTrue(
+        refused.getMessage().contains("this batch's 2 dumps and 2 copies (2 moves) need 49.0 GiB"),
+        refused.getMessage());
+    assertTrue(driver.calls().stream().noneMatch(call -> call.startsWith("scale:")));
+    List<PdDatabaseMove> rows = movesOf("qits-sptwo");
+    assertEquals(2, rows.size());
+    assertTrue(rows.stream().allMatch(row -> row.state == PdDatabaseMoveState.REFUSED), rows.toString());
+    assertEquals(1, rows.stream().map(row -> row.batchId).distinct().count(), "one batch");
+    assertEquals(2, containers.removedVolumes().size(), containers.removedVolumes().toString());
+  }
+
+  @Test
+  void aMeasureThatFailsRefusesTheMove() {
+    serversRunningIn("sp-e");
+    claim("qits-spblind", "sp-e", "db", "qits_platform_spblind", "public");
+    driver.scriptDeclaredReplicas("sp-e-qits-spblind", 1);
+    containers.script("size", shot -> new DatabaseContainers.Outcome(2, "psql: connection refused", false));
+
+    ResourceException refused =
+        assertThrows(
+            ResourceException.class,
+            () ->
+                moves.beforeProvisioning(
+                    "qits-spblind", "sp-e", null, DeploymentDriver.Exposure.PUBLIC,
+                    one("db", "qits_spblind")));
+    assertTrue(
+        refused.getMessage().startsWith(
+            "could not measure the size of public/qits_platform_spblind, so nothing was moved"),
+        refused.getMessage());
+    assertTrue(containers.shots("space").isEmpty());
+
+    // A free-space reading nobody can parse refuses the same way.
+    containers.reset();
+    containers.script("space", shot -> new DatabaseContainers.Outcome(0, "qits-data-df=garbage\n", false));
+    ResourceException unread =
+        assertThrows(
+            ResourceException.class,
+            () ->
+                moves.beforeProvisioning(
+                    "qits-spblind", "sp-e", null, DeploymentDriver.Exposure.PUBLIC,
+                    one("db", "qits_spblind")));
+    assertTrue(
+        unread.getMessage().contains("could not measure the free space of the public postgres' data"
+            + " directory and of the volume qits-dbmove-"),
+        unread.getMessage());
+    assertTrue(driver.calls().stream().noneMatch(call -> call.startsWith("scale:")));
+    assertTrue(containers.shots("extract").isEmpty());
+    assertEquals("qits_platform_spblind", claimOf("qits-spblind", "sp-e", "db").databaseName);
+  }
+
+  // --- the abort (qits-2243) -------------------------------------------------------------------
+
+  @Test
+  void anAbortWhileTheServiceDrainsEndsTheMoveAbortedAndScalesItBack() throws Exception {
+    serversRunningIn("ab-a");
+    claim("qits-abdrain", "ab-a", "db", "qits_platform_abdrain", "public");
+    driver.scriptDeclaredReplicas("ab-a-qits-abdrain", 1);
+    containers.scriptDrain(DatabaseContainers.Drain.RUNNING);
+
+    java.util.concurrent.CompletableFuture<Throwable> worker =
+        java.util.concurrent.CompletableFuture.supplyAsync(
+            () -> {
+              try {
+                moves.beforeProvisioning(
+                    "qits-abdrain", "ab-a", null, DeploymentDriver.Exposure.PUBLIC,
+                    one("db", "qits_abdrain"));
+                return null;
+              } catch (Throwable thrown) {
+                return thrown;
+              }
+            });
+    String id = awaitState("qits-abdrain", PdDatabaseMoveState.STOPPING);
+
+    PdDatabaseMove asked = moves.abort(id, "an-operator");
+    assertEquals(PdDatabaseMoveState.STOPPING, asked.state);
+    Throwable thrown = worker.get(30, java.util.concurrent.TimeUnit.SECONDS);
+
+    assertTrue(thrown instanceof ResourceException, String.valueOf(thrown));
+    assertEquals("aborted by an-operator", thrown.getMessage());
+    PdDatabaseMove row = QuarkusTransaction.requiringNew().call(() -> moveRows.findById(id));
+    assertEquals(PdDatabaseMoveState.ABORTED, row.state);
+    assertEquals("aborted by an-operator", row.detail);
+    assertTrue(driver.calls().contains("scale:ab-a-qits-abdrain=1"), driver.calls().toString());
+    assertTrue(containers.removedVolumes().contains("qits-dbmove-" + id));
+    assertEquals(List.of(id), containers.killed());
+    assertTrue(containers.shots("extract").isEmpty(), "nothing was copied");
+    assertEquals("qits_platform_abdrain", claimOf("qits-abdrain", "ab-a", "db").databaseName);
+
+    // Finished now: a second abort is a conflict, not a flag nobody reads.
+    assertThrows(
+        eu.wohlben.qits.deployments.environments.error.ConflictException.class,
+        () -> moves.abort(id, "an-operator"));
+  }
+
+  private String awaitState(String application, PdDatabaseMoveState state) throws InterruptedException {
+    long deadline = System.currentTimeMillis() + 15_000;
+    while (System.currentTimeMillis() < deadline) {
+      for (PdDatabaseMove row : movesOf(application)) {
+        if (row.state == state) {
+          return row.id;
+        }
+      }
+      Thread.sleep(50);
+    }
+    throw new AssertionError(application + " never reached " + state + ": " + movesOf(application));
   }
 
   // --- drainWait (qits-2228) -----------------------------------------------------------------

@@ -24,6 +24,11 @@ import org.junit.jupiter.api.Test;
  * shut out while the admin still connects (the dump connects as the admin), {@link
  * DatabaseScripts#reopenSql} lets the role back in, and the {@code ALLOW_CONNECTIONS false} the
  * first cut used shut the admin out too — which is the bug it had.
+ *
+ * <p>The space check's measures (qits-2243) run here the same way: {@link DatabaseScripts#sizeSql}
+ * as written, and {@link DatabaseScripts#spaceSql} with the {@code df} command spelled out as the
+ * literal psql's {@code \set} assembles — the server's own superuser running {@code df} through
+ * {@code COPY FROM PROGRAM}, read back through the parser the move uses.
  */
 class DatabaseScriptsPostgresTest {
 
@@ -85,6 +90,51 @@ class DatabaseScriptsPostgresTest {
       execute(admin, DatabaseScripts.reopenSql(database, database));
     }
     asRole(database, database).close();
+  }
+
+  @Test
+  void theSourceSizeIsTheServersOwnAnswer() throws SQLException {
+    String database = provisioned();
+    StringBuilder printed = new StringBuilder();
+    try (Connection admin = admin("postgres");
+        Statement asked = admin.createStatement();
+        ResultSet rows = asked.executeQuery(DatabaseScripts.sizeSql(database))) {
+      while (rows.next()) {
+        printed.append(rows.getString(1)).append('\n');
+      }
+    }
+    Long size = DatabaseScripts.sizeAnswer(printed.toString());
+    assertTrue(size != null && size > 0, printed.toString());
+  }
+
+  @Test
+  void theDataDirectorysFreeSpaceIsReadByTheServersOwnDf() throws SQLException {
+    StringBuilder printed = new StringBuilder();
+    try (Connection admin = admin("postgres")) {
+      String dataDirectory;
+      try (Statement asked = admin.createStatement();
+          ResultSet rows = asked.executeQuery("SHOW data_directory")) {
+        rows.next();
+        dataDirectory = rows.getString(1);
+      }
+      // What `\set qits_df_cmd 'df -Pk "' :data_directory '"'` assembles, quoted by :'qits_df_cmd'.
+      String literal = "'df -Pk \"" + dataDirectory.replace("'", "''") + "\"'";
+      String[] statements = DatabaseScripts.spaceSql(literal).split(";\n");
+      try (Statement run = admin.createStatement()) {
+        run.execute(statements[0]);
+        run.execute(statements[1]);
+        try (ResultSet rows = run.executeQuery(statements[2])) {
+          while (rows.next()) {
+            printed.append(rows.getString(1)).append('\n');
+          }
+        }
+      }
+    }
+    DatabaseScripts.Filesystem data =
+        DatabaseScripts.filesystem(printed.toString(), DatabaseScripts.DATA_DF_MARKER);
+    assertTrue(data != null, printed.toString());
+    assertTrue(data.totalBytes() > 0 && data.freeBytes() >= 0, data.toString());
+    assertTrue(data.freeBytes() <= data.totalBytes(), data.toString());
   }
 
   @Test
