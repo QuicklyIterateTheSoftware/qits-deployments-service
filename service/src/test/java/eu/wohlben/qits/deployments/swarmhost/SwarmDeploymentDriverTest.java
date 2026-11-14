@@ -3923,11 +3923,32 @@ class SwarmDeploymentDriverTest {
     // move has to wait out rather than giving up after its own fixed stop-timeout.
     SwarmDeploymentDriver driver = driver();
     cli.script(
-        "--format {{.Spec.TaskTemplate.ContainerSpec.StopGracePeriod}} dev-qits-edge-private",
+        "--format {{json .Spec.TaskTemplate.ContainerSpec.StopGracePeriod}} dev-qits-edge-private",
         result(0, "600000000000\n"));
 
     assertEquals(
         Optional.of(Duration.ofMinutes(10)), driver.stopGracePeriod("dev-qits-edge-private"));
+  }
+
+  @Test
+  void theStopGracePeriodReadsGoDurationTextToo() {
+    // What a plain template printed for dev-qits-edge on 2026-11-14: Go duration text, which the
+    // first reader took for nothing, so the edge's rename aborted after the two-minute floor.
+    SwarmDeploymentDriver driver = driver();
+    cli.script(".Spec.TaskTemplate.ContainerSpec.StopGracePeriod", result(0, "10m0s\n"));
+    assertEquals(Optional.of(Duration.ofMinutes(10)), driver.stopGracePeriod("dev-qits-edge"));
+
+    assertEquals(90_000_000_000L, SwarmDeploymentDriver.goDurationNanos("1m30s"));
+    assertEquals(1_500_000_000L, SwarmDeploymentDriver.goDurationNanos("1.5s"));
+    assertEquals(500_000_000L, SwarmDeploymentDriver.goDurationNanos("500ms"));
+    assertEquals(-1L, SwarmDeploymentDriver.goDurationNanos("ten minutes"));
+  }
+
+  @Test
+  void aJsonNullStopGracePeriodAnswersEmpty() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script(".Spec.TaskTemplate.ContainerSpec.StopGracePeriod", result(0, "null\n"));
+    assertTrue(driver.stopGracePeriod("dev-qits-gateway").isEmpty());
   }
 
   @Test

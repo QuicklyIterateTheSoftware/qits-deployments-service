@@ -319,13 +319,20 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       "{{if .Spec.Mode.Replicated}}{{.Spec.Mode.Replicated.Replicas}}{{end}}";
 
   /**
-   * The live service's {@code stop_grace_period}, off its spec — swarm stores it as a plain
-   * integer count of nanoseconds, or prints {@code <no value>} for a service created with none
-   * stated. {@link #stopGracePeriod} is the one reader, for a database move's drain wait
-   * (qits-2228).
+   * The live service's {@code stop_grace_period}, off its spec, as JSON. The field is a Go {@code
+   * *time.Duration}: a plain template prints it as Go duration text ({@code 10m0s}), which the first
+   * reader took for a count of nanoseconds and read as nothing, so the move waited its two-minute
+   * floor and aborted the public edge's rename (qits-2174, 2026-11-14). {@code json} prints the
+   * integer count of nanoseconds, or {@code null} for a service created with none stated. {@link
+   * #stopGracePeriod} is the one reader, for a database move's drain wait (qits-2228), and it reads
+   * the duration text as well.
    */
   static final String STOP_GRACE_PERIOD_FORMAT =
-      "{{.Spec.TaskTemplate.ContainerSpec.StopGracePeriod}}";
+      "{{json .Spec.TaskTemplate.ContainerSpec.StopGracePeriod}}";
+
+  /** Go's duration text, as {@code time.Duration.String()} writes it: {@code 1h2m3.5s}, {@code 500ms}. */
+  private static final java.util.regex.Pattern GO_DURATION_PART =
+      java.util.regex.Pattern.compile("(\\d+(?:\\.\\d+)?)(h|ms|m|us|\u00b5s|ns|s)");
 
   /**
    * How many tasks a service this component creates runs. One, everywhere: the applications on this
@@ -3718,15 +3725,37 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       return Optional.empty();
     }
     String raw = safe(inspected.output()).strip();
-    if (raw.isEmpty() || "<no value>".equals(raw)) {
+    if (raw.isEmpty() || "<no value>".equals(raw) || "null".equals(raw)) {
       return Optional.empty();
     }
+    long nanos;
     try {
-      long nanos = Long.parseLong(raw);
-      return nanos <= 0 ? Optional.empty() : Optional.of(Duration.ofNanos(nanos));
-    } catch (NumberFormatException e) {
-      return Optional.empty();
+      nanos = Long.parseLong(raw);
+    } catch (NumberFormatException notAnInteger) {
+      nanos = goDurationNanos(raw);
     }
+    return nanos <= 0 ? Optional.empty() : Optional.of(Duration.ofNanos(nanos));
+  }
+
+  /** Go duration text in nanoseconds, or {@code -1} when {@code text} is not one. */
+  static long goDurationNanos(String text) {
+    java.util.regex.Matcher part = GO_DURATION_PART.matcher(text);
+    int at = 0;
+    double nanos = 0;
+    while (part.find() && part.start() == at) {
+      double value = Double.parseDouble(part.group(1));
+      nanos +=
+          switch (part.group(2)) {
+            case "h" -> value * 3_600e9;
+            case "m" -> value * 60e9;
+            case "s" -> value * 1e9;
+            case "ms" -> value * 1e6;
+            case "us", "\u00b5s" -> value * 1e3;
+            default -> value;
+          };
+      at = part.end();
+    }
+    return at == text.length() && at > 0 ? (long) nanos : -1;
   }
 
   /**
