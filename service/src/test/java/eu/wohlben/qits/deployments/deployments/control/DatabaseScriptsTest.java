@@ -54,6 +54,10 @@ class DatabaseScriptsTest {
     assertTrue(provision.contains("\\getenv role_password QITS_ROLE_PASSWORD"), provision);
     assertTrue(provision.contains("ALTER ROLE qits_x WITH LOGIN PASSWORD :'role_password'"), provision);
     assertFalse(DatabaseScripts.provision("qits_x", "qits_x", false).contains("ALTER ROLE"));
+    // qits-2248: the grant runs in the target database's own session, not in postgres'.
+    assertTrue(
+        provision.contains("-d qits_x <<'QITS_SQL'\nGRANT USAGE ON SCHEMA pg_toast TO qits_x;"),
+        provision);
     // The heredoc delimiter is quoted, so the shell expands nothing inside the SQL.
     assertTrue(provision.contains("<<'QITS_SQL'"), provision);
     assertTrue(DatabaseScripts.ingest("qits_y", "qits_y", false).contains("--role=qits_y"));

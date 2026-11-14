@@ -93,6 +93,33 @@ class DatabaseScriptsPostgresTest {
   }
 
   @Test
+  void theToastGrantLetsTheRoleNameItsOwnToastAndIsIdempotent() throws SQLException {
+    // qits-2248: the private provisioning's grant, as written, run in the target database twice.
+    String database = provisioned();
+    try (Connection admin = admin(database)) {
+      execute(admin, DatabaseScripts.toastUsageSql(database));
+      execute(admin, DatabaseScripts.toastUsageSql(database));
+    }
+    try (Connection owner = asRole(database, database)) {
+      // `items` is all int and has no TOAST; a text column is what gives a table one.
+      execute(owner, "CREATE TABLE blobs (data text);\n");
+    }
+    try (Connection owner = asRole(database, database);
+        Statement read = owner.createStatement();
+        ResultSet toast =
+            read.executeQuery(
+                "SELECT reltoastrelid::regclass::text FROM pg_class WHERE relname = 'blobs'")) {
+      toast.next();
+      String relation = toast.getString(1);
+      try (Statement scan = owner.createStatement();
+          ResultSet rows = scan.executeQuery("SELECT count(*) FROM " + relation)) {
+        rows.next();
+        assertEquals(0, rows.getLong(1), "the owner reads its own TOAST by name: " + relation);
+      }
+    }
+  }
+
+  @Test
   void theSourceSizeIsTheServersOwnAnswer() throws SQLException {
     String database = provisioned();
     StringBuilder printed = new StringBuilder();

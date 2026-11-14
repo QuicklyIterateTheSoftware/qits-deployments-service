@@ -80,6 +80,11 @@ final class DatabaseScripts {
    * the stored password, or the fresh one when nothing was stored) and left alone when present — or,
    * with {@code rotate}, reset to it: the reconcile arm, for a role the registry knows no password
    * for. The database is created owned by the role and closed to {@code PUBLIC}, or re-owned.
+   *
+   * <p>A second session, in the target database itself, grants the role {@code USAGE} on schema
+   * {@code pg_toast} — {@code PgResourceProvisioner}'s {@code ensureToastUsage} and its reason
+   * (qits-2248): the blob store's partition shrink names its own TOAST relation, and only a
+   * superuser may by default. A schema grant belongs to one database's catalog, hence the session.
    */
   static String provision(String database, String role, boolean rotate) {
     String db = id(database);
@@ -117,7 +122,19 @@ final class DatabaseScripts {
             + db
             + " FROM public;\n"
             + "\\endif";
-    return psql(ADMIN_DATABASE, sql);
+    return "set -eu\n"
+        + psqlStep(ADMIN_DATABASE, sql, null)
+        + psqlStep(db, toastUsageSql(role), null);
+  }
+
+  /**
+   * {@code USAGE} on schema {@code pg_toast} for the role, run in its own database (qits-2248): the
+   * blob store's partition shrink scans its own TOAST relation by name. Narrow — every toast table
+   * keeps its owner's privileges, so the role reads only the TOAST of tables it already owns.
+   * Idempotent, so every provisioning re-asserts it.
+   */
+  static String toastUsageSql(String role) {
+    return "GRANT USAGE ON SCHEMA pg_toast TO " + id(role) + ";";
   }
 
   /** Prints {@value #EXISTS_MARKER}{@code t} or {@code f}: whether the database exists there. */

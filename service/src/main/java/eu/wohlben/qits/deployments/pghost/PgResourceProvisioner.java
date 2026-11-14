@@ -72,6 +72,7 @@ public class PgResourceProvisioner implements ResourceProvisioner {
 
       String passwordInEffect = ensureRole(admin, role, request);
       ensureDatabase(admin, database, role);
+      ensureToastUsage(request, database, role);
       return new Result(true, passwordInEffect, null);
     } catch (SQLException e) {
       // The message is postgres', and postgres does not put passwords in its errors — but the
@@ -138,6 +139,42 @@ public class PgResourceProvisioner implements ResourceProvisioner {
       }
     }
     execute(admin, "alter database " + database + " owner to " + role);
+  }
+
+  /**
+   * Grant the role {@code USAGE} on schema {@code pg_toast} in its own database (qits-2248).
+   *
+   * <p><b>Why.</b> The shared blob store (qits-blobstore, in qits-artifacts and qits-mirror) gives
+   * disk back from an oversized partition by finding the chunks in the last pages of the
+   * partition's TOAST relation — a TID range scan on {@code pg_toast.pg_toast_NNN} — moving them,
+   * and letting VACUUM truncate the emptied end. The role owns that table and its TOAST, yet is
+   * refused with {@code permission denied for schema pg_toast}: nobody but a superuser has {@code
+   * USAGE} there. A privilege-free heuristic was tried live instead and moved a GiB to give back 770
+   * KB, so the role has to be able to name its own TOAST.
+   *
+   * <p><b>Why this is narrow.</b> Schema {@code USAGE} only lets a role resolve names in it; every
+   * toast table keeps its owner's privileges, so the role reads the TOAST of tables it already owns
+   * and nothing of anyone else's — and the grant is per database, made in this one alone.
+   *
+   * <p><b>A second connection, to the target.</b> A schema grant is a statement about one database's
+   * catalog, so it cannot be made from {@code postgres}. {@code GRANT} is idempotent, and since
+   * {@code ensure} runs on every deployment, a database provisioned before this converges on its
+   * next one — a moved database included, whose deployment ensures it after the switch.
+   */
+  private static void ensureToastUsage(Request request, String database, String role)
+      throws SQLException {
+    String url = "jdbc:postgresql://" + request.host() + ":" + request.port() + "/" + database;
+    try (Connection target =
+        DriverManager.getConnection(url, request.adminUsername(), request.adminPassword())) {
+      target.setAutoCommit(true);
+      execute(target, toastUsageSql(role));
+    }
+    LOG.debugf("Granted %s usage on schema pg_toast in %s", role, database);
+  }
+
+  /** The grant itself, the identifier re-validated as every DDL string here is. Package-private. */
+  static String toastUsageSql(String role) {
+    return "grant usage on schema pg_toast to " + PdIdentifiers.requireDatabaseName(role);
   }
 
   /**

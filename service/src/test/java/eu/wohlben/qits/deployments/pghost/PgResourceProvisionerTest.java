@@ -210,6 +210,63 @@ public class PgResourceProvisionerTest {
         "...which is not postgres' default, and is therefore the revoke's doing");
   }
 
+  /** {@code has_schema_privilege} on {@code pg_toast}, asked IN {@code database}: it is per catalog. */
+  private static String toastUsage(String database, String role) throws Exception {
+    try (Connection admin =
+            DriverManager.getConnection(
+                "jdbc:postgresql://localhost:" + EmbeddedPg.port() + "/" + database,
+                EmbeddedPg.USER,
+                EmbeddedPg.PASSWORD);
+        Statement sql = admin.createStatement();
+        ResultSet answered =
+            sql.executeQuery(
+                "select has_schema_privilege('" + role + "', 'pg_toast', 'USAGE')::text")) {
+      answered.next();
+      return answered.getString(1);
+    }
+  }
+
+  @Test
+  public void theRoleMayNameItsOwnToastAndOnlyInItsOwnDatabase() throws Exception {
+    // qits-2248: the blob store's partition shrink scans pg_toast.pg_toast_NNN by name, and without
+    // the grant the owning role is refused the schema. Granted in the role's database alone, and a
+    // second ensure — every redeployment — re-asserts it without complaint.
+    String database = name();
+    String other = name();
+    execute("create database " + other);
+
+    ResourceProvisioner.Result first = provisioner.ensure(request(database, null));
+    assertTrue(first.ok(), String.valueOf(first.detail()));
+    assertEquals("true", toastUsage(database, database));
+
+    ResourceProvisioner.Result again = provisioner.ensure(request(database, FRESH));
+    assertTrue(again.ok(), String.valueOf(again.detail()));
+    assertEquals("true", toastUsage(database, database), "idempotent on the next deployment");
+    assertEquals(
+        "false", toastUsage(other, database), "...and not postgres' default anywhere else");
+  }
+
+  @Test
+  public void aDatabaseProvisionedBeforeTheGrantConvergesOnItsNextEnsure() throws Exception {
+    // Existing databases have no grant; ensure runs on every deployment, so they heal there.
+    String database = name();
+    provisioner.ensure(request(database, null));
+    try (Connection admin =
+            DriverManager.getConnection(
+                "jdbc:postgresql://localhost:" + EmbeddedPg.port() + "/" + database,
+                EmbeddedPg.USER,
+                EmbeddedPg.PASSWORD);
+        Statement sql = admin.createStatement()) {
+      sql.execute("revoke usage on schema pg_toast from " + database);
+    }
+    assertEquals("false", toastUsage(database, database));
+
+    ResourceProvisioner.Result result = provisioner.ensure(request(database, FRESH));
+
+    assertTrue(result.ok(), String.valueOf(result.detail()));
+    assertEquals("true", toastUsage(database, database));
+  }
+
   @Test
   public void aDuplicateIsTheOutcomeThatWasAskedForAndNotAFailure() {
     // Both convergence steps check then create, and the window between the two is real: the deploy
