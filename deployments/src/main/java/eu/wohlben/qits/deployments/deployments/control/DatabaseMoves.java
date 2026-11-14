@@ -86,6 +86,13 @@ import org.jboss.logging.Logger;
  *       target, which is where provisioning finds the claim.
  * </ol>
  *
+ * <p><b>Two names on ONE server are a rename, not a copy</b> (qits-2193, the owner's ruling of
+ * 2026-11-14): steps 2 to 4 are {@link #renameInPlace} instead — {@code ALTER DATABASE … RENAME TO
+ * …} and the role with it, in one transaction, the password set again and {@code CONNECT} granted
+ * back under the new name. Instant, needing no space and nothing to compare; the switch then keeps
+ * no copy ({@code kept_database} and {@code drop_after} null), and an abort renames it back. A dump
+ * and a restore stay for a move between the servers.
+ *
  * <p><b>Every container joins exactly ONE network</b> — the server's own — so a move between the
  * servers is two containers that share a volume rather than one container that spans two networks,
  * and a move between two names on one server runs both on that one network. See {@link
@@ -98,11 +105,12 @@ import org.jboss.logging.Logger;
  * <p><b>Refused before anything stops</b>: a move of this deployer's own databases (it cannot stop
  * itself, and its own pools are the connections the close would terminate), a target database another
  * claim already holds, a target database that already exists on the target server and is not an
- * earlier aborted attempt of this same move — and a batch that does not FIT (qits-2243, {@link
- * MoveSpace}): the source's {@code pg_database_size}, the free space of the target's data directory
- * (its own {@code df}) and of the move's volume are measured first, each copy counts as {@code
- * space-factor × size}, every filesystem keeps {@code space-reserve} free, and a measure that fails
- * refuses too. The row records the three readings either way.
+ * earlier aborted attempt of this same move — and a batch whose copies do not FIT (qits-2243, {@link
+ * MoveSpace}). Only a move between the servers copies, so only it is measured: the source's {@code
+ * pg_database_size}, the free space of the target's data directory (its own {@code df}) and of the
+ * move's volume, each copy counting as {@code space-factor × size}, every filesystem keeping {@code
+ * space-reserve} free; a measure that fails refuses too. The row records the three readings either
+ * way — null for a rename in place, which needs no space.
  *
  * <p><b>An operator may abort a move that is running</b> ({@link #abort}, qits-2243) — up to its
  * switch, never after it: the request thread records who asked and kills the move's running one-shot,
@@ -244,9 +252,10 @@ public class DatabaseMoves {
                       + where(DatabaseServer.parse(move.sourceServer), move.sourceDatabase)
                       + " to "
                       + where(DatabaseServer.parse(move.targetServer), move.targetDatabase)
-                      + " (the source kept as "
-                      + move.keptDatabase
-                      + ", fenced), its service "
+                      + (move.keptDatabase == null
+                          ? " (renamed in place)"
+                          : " (the source kept as " + move.keptDatabase + ", fenced)")
+                      + ", its service "
                       + (move.serviceName == null ? "(none was running)" : move.serviceName)
                       + " stopped")
           .collect(Collectors.joining("; "));
@@ -389,6 +398,11 @@ public class DatabaseMoves {
     String sourceDatabase() {
       return claim.database();
     }
+
+    /** Two names on one server: a rename in place, not a copy (qits-2193). */
+    boolean inPlace() {
+      return claim.server() == targetServer;
+    }
   }
 
   /**
@@ -488,8 +502,9 @@ public class DatabaseMoves {
   }
 
   /**
-   * Measure every move of the batch, and refuse the batch when it does not fit or cannot be measured
-   * (qits-2243) — after {@link #refusal} and before anything stops, so the refusal path is the one
+   * Measure every move of the batch that COPIES — between the two servers; a rename in place on one
+   * server writes nothing and is skipped, recording no reading — and refuse the batch when those do
+   * not fit or cannot be measured (qits-2243) — after {@link #refusal} and before anything stops, so the refusal path is the one
    * every other refusal takes: recorded, the service still running, the deployment failed.
    *
    * <p>Per move: the volume {@code qits-dbmove-<id>} is created first (the dump will be written into
@@ -501,6 +516,11 @@ public class DatabaseMoves {
     List<MoveSpace.Measured> measured = new ArrayList<>();
     String failure = null;
     for (Planned move : planned) {
+      if (move.inPlace()) {
+        // A rename in place (qits-2193) writes no dump and no copy: nothing to measure, no volume.
+        measured.add(new MoveSpace.Measured(null, null, null));
+        continue;
+      }
       String volume = VOLUME_PREFIX + move.id();
       Long size = null;
       DatabaseScripts.Filesystem data = null;
@@ -567,6 +587,9 @@ public class DatabaseMoves {
       List<MoveSpace.Move> batchMoves = new ArrayList<>();
       for (int i = 0; i < planned.size(); i++) {
         Planned move = planned.get(i);
+        if (move.inPlace()) {
+          continue;
+        }
         batchMoves.add(
             new MoveSpace.Move(
                 where(move.sourceServer(), move.sourceDatabase()),
@@ -577,7 +600,7 @@ public class DatabaseMoves {
     }
     if (failure != null) {
       for (int i = 0; i < planned.size(); i++) {
-        if (i < measured.size()) {
+        if (i < measured.size() && !planned.get(i).inPlace()) {
           containers.removeVolume(VOLUME_PREFIX + planned.get(i).id());
         }
         recordRefusal(planned.get(i), failure, batch, i < measured.size() ? measured.get(i) : null);
@@ -634,14 +657,21 @@ public class DatabaseMoves {
           move.resourceName(),
           where(move.sourceServer(), move.sourceDatabase()),
           where(move.targetServer(), move.targetDatabase()),
-          MoveSpace.describe(measured.get(i), spaceFactor, reserve));
+          move.inPlace()
+              ? "a rename in place, which needs no space"
+              : MoveSpace.describe(measured.get(i), spaceFactor, reserve));
     }
     try {
       try {
         checkAborted(ids);
         stopServices(planned, ids);
         for (int i = 0; i < planned.size(); i++) {
-          copy(planned.get(i), ids.get(i), ids);
+          Planned move = planned.get(i);
+          if (move.inPlace()) {
+            renameInPlace(move, ids.get(i), ids);
+          } else {
+            copy(move, ids.get(i), ids);
+          }
         }
         // The last moment an abort is honoured: from here on the claims switch.
         synchronized (abortLock) {
@@ -797,6 +827,88 @@ public class DatabaseMoves {
   }
 
   /**
+   * One move between two names on the same server, renamed in place (qits-2193, the owner's ruling
+   * of 2026-11-14): {@code ALTER DATABASE … RENAME TO …} and the role with it, in one transaction,
+   * the password set again and {@code CONNECT} granted back — instant, needing no space, where a
+   * dump and a restore of a large store loaded the shared postgres for half an hour and died with
+   * it (qits-2243). There is nothing to compare: it is the same data under another name. The claim
+   * switches with the rest of the batch, in {@link #finishSwitch}.
+   *
+   * <p><b>Pre-switch, so an abort renames it back</b> — {@link #abortBatch}, with the same script
+   * and the names swapped. The rename is one transaction, so after any failure the database is
+   * under exactly one of the two names; the way back is idempotent over both, and a restart finding
+   * the row {@code RENAMING} or {@code VERIFIED} takes the same way back. Until the claim switches it
+   * names the source, so the source name is where the data has to be.
+   */
+  private void renameInPlace(Planned move, String id, List<String> batch) {
+    checkAborted(batch);
+    String image;
+    try {
+      image = admin.image(move.sourceServer(), move.environmentName());
+    } catch (ResourceException unreachable) {
+      throw new MoveFailure(unreachable.getMessage());
+    }
+    update(id, row -> row.state = PdDatabaseMoveState.RENAMING);
+    DatabaseContainers.Outcome renamed =
+        renameShot(
+            move.sourceServer(),
+            move.environmentName(),
+            image,
+            move.sourceDatabase(),
+            move.targetDatabase(),
+            leftover(move),
+            move.claim().password());
+    checkAborted(batch);
+    if (!renamed.ok()) {
+      throw new MoveFailure(
+          "the rename of "
+              + where(move.sourceServer(), move.sourceDatabase())
+              + " to `"
+              + move.targetDatabase()
+              + "` failed ("
+              + verdict(renamed)
+              + "): "
+              + tail(renamed.output()));
+    }
+    update(id, row -> row.state = PdDatabaseMoveState.VERIFIED);
+  }
+
+  /** The rename-in-place one-shot, either way round; the password, when known, as a secret. */
+  private DatabaseContainers.Outcome renameShot(
+      DatabaseServer server,
+      String environmentName,
+      String image,
+      String from,
+      String to,
+      boolean dropLeftover,
+      String password) {
+    return containers.run(
+        admin.shot(
+            "rename",
+            server,
+            environmentName,
+            image,
+            null,
+            password == null ? Map.of() : Map.of(DatabaseScripts.ROLE_PASSWORD, password),
+            DatabaseScripts.renameInPlace(from, to, dropLeftover, password != null)),
+        ContainerResourceProvisioner.TIMEOUT);
+  }
+
+  /**
+   * Whether a row is a move renamed in place that has not switched yet — the abort's word for
+   * "rename it back" rather than "drop the target". A same-server row a copy wrote before qits-2193
+   * (an interrupted one, met by the restart after this release) is never one: it was {@code
+   * EXTRACTING} or {@code INGESTING}, or {@code VERIFIED} with its manifests read.
+   */
+  static boolean renamePending(PdDatabaseMove row) {
+    if (row.sourceServer == null || !row.sourceServer.equals(row.targetServer)) {
+      return false;
+    }
+    return row.state == PdDatabaseMoveState.RENAMING
+        || (row.state == PdDatabaseMoveState.VERIFIED && row.sourceCounts == null);
+  }
+
+  /**
    * Extract, ingest and compare one move, recording each step. Its volume exists already — {@link
    * #measure} created it. An abort is asked after each step, and before a failed step is reported, so
    * a one-shot the abort killed reads as the abort it was.
@@ -893,12 +1005,18 @@ public class DatabaseMoves {
                 () -> {
                   PdDatabaseMove row = moves.findById(id);
                   if (row.state == PdDatabaseMoveState.VERIFIED) {
+                    boolean inPlace = renamePending(row);
                     switchClaim(row);
-                    row.keptDatabase = DatabaseScripts.keptName(row.sourceDatabase, Instant.now());
+                    if (!inPlace) {
+                      row.keptDatabase = DatabaseScripts.keptName(row.sourceDatabase, Instant.now());
+                    }
                     row.state = PdDatabaseMoveState.SWITCHING;
                   }
                   return row;
                 });
+    if (switched.keptDatabase == null) {
+      return finishRenamed(id);
+    }
     DatabaseServer source = DatabaseServer.parse(switched.sourceServer);
     DatabaseContainers.Outcome renamed =
         admin(
@@ -949,6 +1067,37 @@ public class DatabaseMoves {
     return done;
   }
 
+  /**
+   * The rest of a switch renamed in place: nothing to rename aside, no volume, no copy to keep — so
+   * no {@code kept_database} and no {@code drop_after}, and the retention sweep never meets it. The
+   * way back is a rename back, which is a move like this one.
+   */
+  private PdDatabaseMove finishRenamed(String id) {
+    PdDatabaseMove done =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  PdDatabaseMove row = moves.findById(id);
+                  row.state = PdDatabaseMoveState.MOVED;
+                  row.finishedAt = Instant.now();
+                  row.dropAfter = null;
+                  row.detail = RENAMED_IN_PLACE;
+                  return row;
+                });
+    LOG.infof(
+        "Renamed the database %s of %s (%s) in place on %s: %s → %s",
+        done.resourceName,
+        done.applicationName,
+        done.environmentName,
+        done.sourceServer,
+        done.sourceDatabase,
+        done.targetDatabase);
+    return done;
+  }
+
+  /** The detail of a move renamed in place. */
+  static final String RENAMED_IN_PLACE = "renamed in place";
+
   /** The claim row takes the target server and database; its password is the one it had. */
   private void switchClaim(PdDatabaseMove move) {
     PdResource claim =
@@ -987,11 +1136,17 @@ public class DatabaseMoves {
    * source, remove the volume, record {@code ABORTED} with the reason — then scale each stopped
    * service back to what it ran. Each step is idempotent and a failed one is a WARN and the next
    * one still runs: an abort that stopped half-way would leave the application down.
+   *
+   * <p>A move renamed in place (qits-2193) is renamed BACK instead — {@link #renameBack}, never a
+   * drop, since the target name may be where the data is. One whose way back cannot run at all is
+   * the exception to "the next step still runs": it is left unfinished and its service stopped, and
+   * the next settle pass tries again.
    */
   void abortBatch(String batch, String reason) {
     List<PdDatabaseMove> rows =
         QuarkusTransaction.requiringNew().call(() -> moves.list("batchId = ?1 order by createdAt", batch));
     Map<String, Integer> services = new LinkedHashMap<>();
+    Set<String> keptDown = new LinkedHashSet<>();
     for (PdDatabaseMove row : rows) {
       if (row.state.switched() || PdDatabaseMoveState.TERMINAL.contains(row.state)) {
         continue;
@@ -999,7 +1154,34 @@ public class DatabaseMoves {
       List<String> problems = new ArrayList<>();
       DatabaseServer source = DatabaseServer.parse(row.sourceServer);
       DatabaseServer target = DatabaseServer.parse(row.targetServer);
-      if (row.state == PdDatabaseMoveState.INGESTING || row.state == PdDatabaseMoveState.VERIFIED) {
+      String why = reason;
+      if (row.detail != null && row.detail.contains(RENAME_BACK_OWED)) {
+        // An earlier pass could not rename it back; its reason is the one that stands.
+        why = row.detail.substring(0, Math.max(0, row.detail.indexOf("\n[" + RENAME_BACK_OWED)));
+      }
+      if (renamePending(row)) {
+        String unresolved = renameBack(row, problems);
+        if (unresolved != null) {
+          // The data may be under the target name while the claim still names the source: neither
+          // ABORTED nor the service started. The row stays unfinished, so the next settle pass
+          // (every observation tick) tries the way back again.
+          String owed = why + "\n[" + RENAME_BACK_OWED + ": " + unresolved + "]";
+          update(row.id, moved -> moved.detail = owed);
+          if (row.serviceName != null) {
+            keptDown.add(row.serviceName);
+          }
+          LOG.errorf(
+              "Could not undo the in-place rename of %s (%s) on %s, %s → %s, so its service stays"
+                  + " stopped and the next pass tries again: %s",
+              row.applicationName,
+              row.resourceName,
+              row.sourceServer,
+              row.sourceDatabase,
+              row.targetDatabase,
+              unresolved);
+          continue;
+        }
+      } else if (row.state == PdDatabaseMoveState.INGESTING || row.state == PdDatabaseMoveState.VERIFIED) {
         String role = targetRoleUnclaimed(row) ? row.targetDatabase : null;
         DatabaseContainers.Outcome dropped =
             safely(() -> admin(target, row.environmentName, DatabaseScripts.drop(row.targetDatabase, role)));
@@ -1007,7 +1189,7 @@ public class DatabaseMoves {
           problems.add("the target " + row.targetDatabase + " was not dropped: " + tail(dropped.output()));
         }
       }
-      if (row.state != PdDatabaseMoveState.QUEUED) {
+      if (row.state != PdDatabaseMoveState.QUEUED && !renamePending(row)) {
         DatabaseContainers.Outcome reopened =
             safely(() -> admin(source, row.environmentName, DatabaseScripts.reopen(row.sourceDatabase, row.sourceDatabase)));
         if (!reopened.ok()) {
@@ -1019,7 +1201,7 @@ public class DatabaseMoves {
         services.putIfAbsent(row.serviceName, row.serviceReplicas);
       }
       String detail =
-          problems.isEmpty() ? reason : reason + "\n[the abort is incomplete: " + String.join("; ", problems) + "]";
+          problems.isEmpty() ? why : why + "\n[the abort is incomplete: " + String.join("; ", problems) + "]";
       update(
           row.id,
           moved -> {
@@ -1035,6 +1217,7 @@ public class DatabaseMoves {
           where(target, row.targetDatabase),
           detail);
     }
+    keptDown.forEach(services::remove);
     services.forEach(
         (service, replicas) -> {
           DeploymentDriver.ScaleResult scaled = driver.scale(service, replicas);
@@ -1042,6 +1225,76 @@ public class DatabaseMoves {
             LOG.warnf("Could not scale %s back to %d after an aborted move: %s", service, replicas, scaled.detail());
           }
         });
+  }
+
+  /** The mark on a row whose in-place rename an abort still owes undoing. */
+  static final String RENAME_BACK_OWED = "the rename back is owed";
+
+  /**
+   * The way back of a move renamed in place: the same script with the names swapped, run only while
+   * the claim still names the source. Idempotent over both states the one-transaction rename can
+   * have left — renamed (it renames back) or not (it renames nothing, and re-opens the source).
+   * Should the way back itself fail, the source re-opened under its own name is enough: it IS
+   * there, so the rename never ran or was undone, and only a leftover under the target name remains.
+   *
+   * @return null when the source is back under its own name and open (anything less than clean is
+   *     added to {@code problems}); otherwise why not — the row must not be closed on that
+   */
+  private String renameBack(PdDatabaseMove row, List<String> problems) {
+    DatabaseServer server = DatabaseServer.parse(row.sourceServer);
+    Optional<Claimed> claim = inPlaceClaim(row);
+    if (claim.isPresent() && row.targetDatabase.equals(claim.get().database())) {
+      // Something already switched the claim onto the target: the data is where the claim is.
+      problems.add("the claim already holds " + row.targetDatabase + ", so nothing was renamed back");
+      return null;
+    }
+    String password = claim.map(Claimed::password).orElse(null);
+    DatabaseContainers.Outcome back =
+        safely(
+            () ->
+                renameShot(
+                    server,
+                    row.environmentName,
+                    admin.image(server, row.environmentName),
+                    row.targetDatabase,
+                    row.sourceDatabase,
+                    false,
+                    password));
+    if (back.ok()) {
+      return null;
+    }
+    DatabaseContainers.Outcome reopened =
+        safely(() -> admin(server, row.environmentName, DatabaseScripts.reopen(row.sourceDatabase, row.sourceDatabase)));
+    if (reopened.ok()) {
+      problems.add(
+          "the rename back failed ("
+              + tail(back.output())
+              + "), but the source is there under its own name and re-opened");
+      return null;
+    }
+    return "the rename back failed: " + tail(back.output()) + "; re-opening the source failed: " + tail(reopened.output());
+  }
+
+  /** The claim an in-place move of {@code row} concerns, under either of its two names. */
+  private Optional<Claimed> inPlaceClaim(PdDatabaseMove row) {
+    return QuarkusTransaction.requiringNew()
+        .call(
+            () ->
+                java.util.stream.Stream.of(row.sourceDatabase, row.targetDatabase)
+                    .flatMap(database -> resources.listByDatabase(database).stream())
+                    .filter(claim -> ResourceProvisioning.RESOURCE_TYPE.equals(claim.resourceType))
+                    .filter(claim -> row.environmentName.equals(claim.environmentName))
+                    .filter(claim -> row.resourceName.equals(claim.resourceName))
+                    .filter(claim -> row.sourceServer.equals(DatabaseServer.parse(claim.server).wire()))
+                    .findFirst()
+                    .map(
+                        claim ->
+                            new Claimed(
+                                claim.id,
+                                claim.applicationName,
+                                claim.databaseName,
+                                DatabaseServer.parse(claim.server),
+                                claim.password)));
   }
 
   /** Whether no claim on the target server is the target role — so an abort may drop it. */
