@@ -1146,8 +1146,9 @@ container (qits-2175, `DatabaseScripts`, identifiers re-validated at the line th
 `exec` is still not in the docker vocabulary and must not enter it. The postgres superuser password comes from
 `qits.deployments.postgres.admin-password` (deployment config, the domain that already
 holds the socket), has no default, is never stored in a row and never reaches an argv. **Provisioning
-never `DROP`s.** The one `DROP` is a database move's (qits-2175): the target of an aborted move, and
-the kept copy of a finished one once its retention has run out.
+never `DROP`s.** The one `DROP` is a database move's (qits-2175): the target of an aborted copy, and
+the kept copy of a finished one once its retention has run out. A move renamed in place
+(qits-2193) drops nothing but an earlier aborted attempt's leftover while its source still exists.
 
 **The `platformdeployments` database is credential-bearing.** `pd_resource.password` is the single
 authority for every provisioned application's credential — a postgres password or an idp client
@@ -1457,6 +1458,30 @@ place: nothing. Anything else is a MOVE, recorded step by step in `pd_database_m
    `ALLOW_CONNECTIONS false` (nothing connects to a kept copy again); the volume
    goes; `drop_after = now + qits.deployments.database-move.retention` (`P7D`). One INFO line names
    both databases and both sides' row totals.
+
+**Two names on the SAME server are a rename, not a copy** (qits-2193, the owner's ruling of
+2026-11-14). The dump and restore of a large store on the shared postgres (`qits_platform_mirror` →
+`qits_mirror`, qits-2243) loaded it for half an hour until its health — and the deployer's — went
+down and the restart aborted the move, twice. So when source and target server are one, steps 2–4
+are one `rename` one-shot (`DatabaseMoves.renameInPlace`, `DatabaseScripts.renameInPlace`), state
+`RENAMING`: the source's backends terminated again, then ONE transaction — `ALTER DATABASE <src>
+RENAME TO <dst>` and `ALTER ROLE <src> RENAME TO <dst>` (the role is the database name; a `DO`
+block, only while `<src>` exists, so a repeat after a lost answer renames nothing), the role's
+password set again from the claim (postgres CLEARS an MD5 password on a role rename; SCRAM survives),
+`GRANT CONNECT` under the new name. Instant, no space, nothing to compare. With an earlier ABORTED
+attempt's leftover under the target name it is dropped first — only while `<src>` still exists, so
+it can never be the data. The switch then keeps no copy: `kept_database`, `drop_after` and the
+counts stay null, `detail` is `renamed in place`, one INFO `Renamed the database <res> of <app>
+(<env>) in place on <server>: <src> → <dst>`, and the retention sweep never meets the row. The way
+back is a rename back — the same script, names swapped. **The rename runs before the claim
+switches**, so an abort (or a restart finding `RENAMING`, or `VERIFIED` with no counts) runs that
+way back, never a `DROP`; it is idempotent over both states the one-transaction rename can leave.
+Should the way back fail, a plain re-open of the source settles it when the source is there; when
+even that fails the row is left `RENAMING` with `the rename back is owed` in its detail, the service
+is NOT scaled back up (its spec names the source), and the next settle pass (every observation tick)
+tries again. A same-server row a copy wrote before qits-2193 (`EXTRACTING`/`INGESTING`, or
+`VERIFIED` with counts) is still aborted by dropping its target. A move between the servers is the
+dump and restore above, unchanged.
 
 Every container joins exactly ONE network (`ContainerSpec.network`, never `extraNetworks`), so a
 cross-server move is two containers sharing a volume. The moves of one deployment are one BATCH:
@@ -2646,9 +2671,10 @@ deployed here — runs the path it always ran. Seven things about it, each easy 
 
 **Exempt, never moved by a rename:**
 
-- database and role NAMES are not renamed in place: an unpinned resource whose convention name
-  follows the application is MOVED to the new name (qits-2175, copied and verified, the old kept
-  for the retention); pin the old name in `resources:` to keep it as it is.
+- database and role NAMES do not move by themselves: an unpinned resource whose convention name
+  follows the application is MOVED to the new name (qits-2175) — on the same server that move is a
+  rename in place (qits-2193), between the servers a verified copy with the old kept for the
+  retention; pin the old name in `resources:` to keep it as it is.
 - published maven/npm coordinates and `quarkus.package.output-name`.
 - java package roots.
 - the idp issuer constants (`ResourceProvisioning.IDP_APPLICATION`,

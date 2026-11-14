@@ -16,6 +16,11 @@ public enum PdDatabaseMoveState {
   QUEUED,
   /** The application's service is being scaled to zero and the source closed to connections. */
   STOPPING,
+  /**
+   * A move between two names on one server (qits-2193): the source database and its role being
+   * renamed to the target in place — no extract, no ingest. An abort renames it back.
+   */
+  RENAMING,
   /** {@code pg_dump} of the source, and its per-table counts, into the move's volume. */
   EXTRACTING,
   /** The target role and database created, the dump restored, the target's counts read. */
@@ -24,7 +29,11 @@ public enum PdDatabaseMoveState {
   VERIFIED,
   /** The claim points at the target; the source is being renamed aside and the volume removed. */
   SWITCHING,
-  /** Done: the claim is the target, the source is kept closed until {@code drop_after}. */
+  /**
+   * Done: the claim is the target, the source is kept closed until {@code drop_after} — or, for a
+   * move renamed in place, there is no copy to keep ({@code kept_database} and {@code drop_after}
+   * null): the way back is a rename back.
+   */
   MOVED,
   /** Undone: the target dropped, the source re-opened, the service scaled back. {@code detail} says why. */
   ABORTED,

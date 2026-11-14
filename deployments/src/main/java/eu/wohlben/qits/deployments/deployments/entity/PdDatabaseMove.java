@@ -74,7 +74,10 @@ public class PdDatabaseMove extends PanacheEntityBase {
   @Column(name = "spec_database", length = 64)
   public String specDatabase;
 
-  /** What the source was renamed to at the switch: {@code <database>_moved_<yyyyMMddHHmm>}. */
+  /**
+   * What the source was renamed to at the switch: {@code <database>_moved_<yyyyMMddHHmm>}. Null for a
+   * move renamed in place (qits-2193), which keeps no copy.
+   */
   @Column(name = "kept_database", length = 64)
   public String keptDatabase;
 

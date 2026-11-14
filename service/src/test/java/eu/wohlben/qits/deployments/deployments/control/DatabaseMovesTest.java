@@ -95,7 +95,8 @@ class DatabaseMovesTest {
   @Test
   void aPinRemovedMovesTheDataRatherThanProvisioningAnEmptyDatabase() {
     // The reproduction the brief opens with: the claim says qits_platform_mvpin, the spec now
-    // resolves qits_mvpin. Before qits-2175 provisioning answered with an EMPTY qits_mvpin.
+    // resolves qits_mvpin. Before qits-2175 provisioning answered with an EMPTY qits_mvpin. Two
+    // names on one server: since qits-2193 a rename in place, not a dump and a restore.
     serversRunningIn("mv-a");
     claim("qits-mvpin", "mv-a", "db", "qits_platform_mvpin", "public");
     driver.scriptDeclaredReplicas("mv-a-qits-mvpin", 1);
@@ -103,10 +104,10 @@ class DatabaseMovesTest {
     moves.beforeProvisioning(
         "qits-mvpin", "mv-a", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_mvpin"));
 
-    // The service was stopped, the source closed, copied and verified, the claim switched.
+    // The service was stopped, the source closed, renamed in place, the claim switched.
     assertTrue(driver.calls().contains("scale:mv-a-qits-mvpin=0"), driver.calls().toString());
     assertEquals(
-        List.of("check", "admin", "extract", "ingest", "admin"),
+        List.of("check", "admin", "rename"),
         containers.shots().stream().map(DatabaseContainers.OneShot::purpose).toList());
     PdResource claim = claimOf("qits-mvpin", "mv-a", "db");
     assertEquals("qits_mvpin", claim.databaseName);
@@ -119,24 +120,22 @@ class DatabaseMovesTest {
     assertEquals(PdDatabaseMove.Origin.DEPLOYMENT, move.origin);
     assertEquals("qits_platform_mvpin", move.sourceDatabase);
     assertEquals("qits_mvpin", move.targetDatabase);
-    assertTrue(move.keptDatabase.startsWith("qits_platform_mvpin_moved_"), move.keptDatabase);
+    assertNull(move.keptDatabase, "a rename keeps no copy");
+    assertNull(move.dropAfter, "so there is nothing for the retention to drop");
+    assertNull(move.sourceCounts, "and nothing to count: it is the same data");
+    assertEquals(DatabaseMoves.RENAMED_IN_PLACE, move.detail);
     assertEquals("mv-a-qits-mvpin", move.serviceName);
     assertEquals(1, move.serviceReplicas);
-    assertNotNull(move.sourceCounts);
-    assertEquals(move.sourceCounts, move.targetCounts);
-    assertNotNull(move.dropAfter);
-    assertTrue(
-        move.dropAfter.isAfter(Instant.now().plus(6, ChronoUnit.DAYS)),
-        "the shipped retention is seven days: " + move.dropAfter);
-    // The dump travelled in a volume of the move's own, which is gone again.
-    assertEquals(List.of("qits-dbmove-" + move.id), containers.createdVolumes());
-    assertTrue(containers.removedVolumes().contains("qits-dbmove-" + move.id));
-    // The ingest is given the claim's password as a secret, never in its script.
-    DatabaseContainers.OneShot ingest = containers.shots("ingest").get(0);
-    assertEquals(PASSWORD, ingest.secrets().get(DatabaseScripts.ROLE_PASSWORD));
-    assertFalse(ingest.script().contains(PASSWORD));
-    assertTrue(ingest.script().contains("CREATE DATABASE qits_mvpin OWNER qits_mvpin"));
-    assertTrue(ingest.script().contains("--no-owner"), ingest.script());
+    assertEquals(List.of(), containers.createdVolumes(), "no dump, so no volume");
+    // The rename runs on the one server's network, and is given the claim's password as a secret,
+    // never in its script, to set again after the role rename.
+    DatabaseContainers.OneShot rename = containers.shots("rename").get(0);
+    assertEquals("qits-net", rename.network());
+    assertEquals(PASSWORD, rename.secrets().get(DatabaseScripts.ROLE_PASSWORD));
+    assertFalse(rename.script().contains(PASSWORD));
+    assertTrue(rename.script().contains("ALTER DATABASE qits_platform_mvpin RENAME TO qits_mvpin;"), rename.script());
+    assertTrue(rename.script().contains("ALTER ROLE qits_platform_mvpin RENAME TO qits_mvpin;"), rename.script());
+    assertTrue(rename.script().contains("GRANT CONNECT ON DATABASE qits_mvpin TO qits_mvpin;"), rename.script());
 
     // ...and provisioning then finds the claim where it now is, with the password it had.
     List<DeploymentDriver.ResourceBinding> bindings =
@@ -144,6 +143,161 @@ class DatabaseMovesTest {
     assertEquals(PASSWORD, provisioner.requests().get(0).storedPassword());
     assertEquals(
         "jdbc:postgresql://mv-a-qits-oci-postgresql:5432/qits_mvpin", bindings.get(0).value("URL"));
+
+    // The sweep has no kept copy to drop.
+    containers.reset();
+    moves.sweepExpired();
+    assertTrue(containers.shots().stream().noneMatch(shot -> shot.script().contains("qits_platform_mvpin")));
+  }
+
+  @Test
+  void aRenameInPlaceThatFailsIsRenamedBackAndTheServiceScaledBack() {
+    serversRunningIn("mv-q");
+    claim("qits-mvrnfail", "mv-q", "db", "qits_mvrnfail_old", "public");
+    driver.scriptDeclaredReplicas("mv-q-qits-mvrnfail", 1);
+    containers.script(
+        "rename",
+        shot ->
+            shot.script().contains("RENAME TO qits_mvrnfail;")
+                ? new DatabaseContainers.Outcome(3, "ERROR: database is being accessed by other users", false)
+                : new DatabaseContainers.Outcome(0, "", false));
+
+    ResourceException aborted =
+        assertThrows(
+            ResourceException.class,
+            () ->
+                moves.beforeProvisioning(
+                    "qits-mvrnfail", "mv-q", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_mvrnfail")));
+
+    assertTrue(aborted.getMessage().contains("the rename of public/qits_mvrnfail_old"), aborted.getMessage());
+    List<DatabaseContainers.OneShot> renames = containers.shots("rename");
+    assertEquals(2, renames.size(), "the rename, then the way back");
+    String back = renames.get(1).script();
+    assertTrue(back.contains("ALTER DATABASE qits_mvrnfail RENAME TO qits_mvrnfail_old;"), back);
+    assertTrue(back.contains("GRANT CONNECT ON DATABASE qits_mvrnfail_old TO qits_mvrnfail_old;"), back);
+    assertFalse(back.contains("DROP"), "the way back never drops: the target name may hold the data");
+    assertEquals(PASSWORD, renames.get(1).secrets().get(DatabaseScripts.ROLE_PASSWORD));
+    assertTrue(
+        containers.shots("admin").stream().noneMatch(shot -> shot.script().contains("DROP")),
+        "nothing is dropped");
+    assertEquals("qits_mvrnfail_old", claimOf("qits-mvrnfail", "mv-q", "db").databaseName);
+    PdDatabaseMove move = movesOf("qits-mvrnfail").get(0);
+    assertEquals(PdDatabaseMoveState.ABORTED, move.state);
+    assertTrue(driver.calls().contains("scale:mv-q-qits-mvrnfail=1"), driver.calls().toString());
+  }
+
+  @Test
+  void aRenameBackThatCannotRunKeepsTheServiceStoppedUntilAPassCompletesIt() {
+    serversRunningIn("mv-r");
+    claim("qits-mvrnowed", "mv-r", "db", "qits_mvrnowed_old", "public");
+    driver.scriptDeclaredReplicas("mv-r-qits-mvrnowed", 1);
+    // The postgres goes away mid-rename: the answer is lost, and neither the way back nor the
+    // re-open gets through.
+    containers.script("rename", shot -> new DatabaseContainers.Outcome(-1, "connection refused", true));
+    containers.script(
+        "admin",
+        shot ->
+            shot.script().contains("GRANT CONNECT")
+                ? new DatabaseContainers.Outcome(2, "connection refused", false)
+                : new DatabaseContainers.Outcome(0, "", false));
+
+    assertThrows(
+        ResourceException.class,
+        () ->
+            moves.beforeProvisioning(
+                "qits-mvrnowed", "mv-r", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_mvrnowed")));
+
+    PdDatabaseMove owed = movesOf("qits-mvrnowed").get(0);
+    assertEquals(PdDatabaseMoveState.RENAMING, owed.state, "never ABORTED on a way back that did not run");
+    assertTrue(owed.detail.contains(DatabaseMoves.RENAME_BACK_OWED), owed.detail);
+    assertFalse(driver.calls().contains("scale:mv-r-qits-mvrnowed=1"), "not started on a missing database");
+    assertEquals("qits_mvrnowed_old", claimOf("qits-mvrnowed", "mv-r", "db").databaseName);
+
+    // The postgres is back: the next settle pass renames it back and starts the service.
+    containers.reset();
+    moves.settleInterrupted(false);
+
+    PdDatabaseMove settled = movesOf("qits-mvrnowed").get(0);
+    assertEquals(PdDatabaseMoveState.ABORTED, settled.state);
+    assertTrue(settled.detail.startsWith("the rename of public/qits_mvrnowed_old"), settled.detail);
+    assertFalse(settled.detail.contains(DatabaseMoves.RENAME_BACK_OWED), settled.detail);
+    assertTrue(
+        containers.shots("rename").get(0).script().contains("ALTER DATABASE qits_mvrnowed RENAME TO qits_mvrnowed_old;"));
+    assertTrue(driver.calls().contains("scale:mv-r-qits-mvrnowed=1"), driver.calls().toString());
+  }
+
+  @Test
+  void aRestartAfterTheRenameButBeforeTheSwitchRenamesItBack() {
+    serversRunningIn("mv-s");
+    claim("qits-mvrnboot", "mv-s", "db", "qits_mvrnboot_old", "public");
+    String id = UUID.randomUUID().toString();
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              PdDatabaseMove row = new PdDatabaseMove();
+              row.id = id;
+              row.batchId = id;
+              row.applicationName = "qits-mvrnboot";
+              row.environmentName = "mv-s";
+              row.resourceName = "db";
+              row.sourceServer = "public";
+              row.sourceDatabase = "qits_mvrnboot_old";
+              row.targetServer = "public";
+              row.targetDatabase = "qits_mvrnboot";
+              row.origin = PdDatabaseMove.Origin.DEPLOYMENT;
+              row.state = PdDatabaseMoveState.VERIFIED;
+              row.serviceName = "mv-s-qits-mvrnboot";
+              row.serviceReplicas = 2;
+              row.createdAt = Instant.now();
+              moveRows.persist(row);
+            });
+
+    moves.settleInterrupted(true);
+
+    PdDatabaseMove settled = QuarkusTransaction.requiringNew().call(() -> moveRows.findById(id));
+    assertEquals(PdDatabaseMoveState.ABORTED, settled.state);
+    String back = containers.shots("rename").get(0).script();
+    assertTrue(back.contains("ALTER DATABASE qits_mvrnboot RENAME TO qits_mvrnboot_old;"), back);
+    assertTrue(containers.shots("admin").stream().noneMatch(shot -> shot.script().contains("DROP")));
+    assertEquals("qits_mvrnboot_old", claimOf("qits-mvrnboot", "mv-s", "db").databaseName);
+    assertTrue(driver.calls().contains("scale:mv-s-qits-mvrnboot=2"), driver.calls().toString());
+  }
+
+  @Test
+  void aSameServerCopyARestartInterruptedBeforeThisReleaseIsStillDroppedNotRenamedBack() {
+    // A row the dump-and-restore wrote before qits-2193: INGESTING with its source counted. Its
+    // target is a partial copy, so the abort drops it as it always did.
+    serversRunningIn("mv-t");
+    String id = UUID.randomUUID().toString();
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              PdDatabaseMove row = new PdDatabaseMove();
+              row.id = id;
+              row.batchId = id;
+              row.applicationName = "qits-mvoldcopy";
+              row.environmentName = "mv-t";
+              row.resourceName = "db";
+              row.sourceServer = "public";
+              row.sourceDatabase = "qits_platform_mvoldcopy";
+              row.targetServer = "public";
+              row.targetDatabase = "qits_mvoldcopy";
+              row.origin = PdDatabaseMove.Origin.DEPLOYMENT;
+              row.state = PdDatabaseMoveState.INGESTING;
+              row.sourceCounts = "{\"public.items\":3}";
+              row.createdAt = Instant.now();
+              moveRows.persist(row);
+            });
+
+    moves.settleInterrupted(true);
+
+    assertEquals(
+        PdDatabaseMoveState.ABORTED,
+        QuarkusTransaction.requiringNew().call(() -> moveRows.findById(id)).state);
+    assertEquals(List.of(), containers.shots("rename"));
+    assertTrue(
+        containers.shots("admin").stream()
+            .anyMatch(shot -> shot.script().contains("DROP DATABASE IF EXISTS qits_mvoldcopy WITH (FORCE)")));
   }
 
   @Test
@@ -317,7 +471,7 @@ class DatabaseMovesTest {
                     "qits-mvbad",
                     "mv-g",
                     null,
-                    DeploymentDriver.Exposure.PUBLIC,
+                    DeploymentDriver.Exposure.PRIVATE,
                     one("db", "qits_mvbad")));
 
     assertTrue(aborted.getMessage().contains("public.items"), aborted.getMessage());
@@ -325,7 +479,7 @@ class DatabaseMovesTest {
     // The claim never moved...
     PdResource claim = claimOf("qits-mvbad", "mv-g", "db");
     assertEquals("qits_mvbad_old", claim.databaseName);
-    assertEquals("public", claim.server);
+    assertEquals("public", claim.server, "a copy between the servers: only that one compares");
     // ...the target was dropped and the source re-opened, after the extract and ingest...
     List<String> admin =
         containers.shots("admin").stream().map(DatabaseContainers.OneShot::script).toList();
@@ -368,7 +522,7 @@ class DatabaseMovesTest {
                     "qits-mvfail",
                     "mv-h",
                     null,
-                    DeploymentDriver.Exposure.PUBLIC,
+                    DeploymentDriver.Exposure.PRIVATE,
                     one("db", "qits_mvfail")));
 
     assertTrue(aborted.getMessage().contains("exit 3"), aborted.getMessage());

@@ -271,6 +271,90 @@ final class DatabaseScripts {
             + "')\n\\gexec");
   }
 
+  /**
+   * A move between two names on ONE server (qits-2193, the owner's ruling of 2026-11-14): the
+   * database and its role renamed in place, instant and needing no space — never a dump and a
+   * restore of a store the shared postgres has to hold twice. The same script is the way back, with
+   * the names swapped.
+   *
+   * <p>One admin session: the source's backends terminated once more (the service is already at
+   * zero and the source fenced; {@code ALTER DATABASE … RENAME} refuses while anyone else is
+   * connected, and waits a few seconds for a terminated backend to go); with {@code dropLeftover},
+   * what an earlier ABORTED attempt of this move left under the target name — only while the source
+   * is still there, so this can never drop the data itself; then ONE transaction: {@link
+   * #renameInPlaceSql}, the role's password set again (postgres CLEARS an MD5 password on a role
+   * rename, the role name being its salt; SCRAM survives, and setting it again is harmless), and
+   * {@code CONNECT} granted back under the new name. Either all of it commits or none of it does.
+   *
+   * <p><b>Idempotent, and strict.</b> A database already renamed is not renamed again — the rest
+   * still runs, so a repeat after a lost answer re-opens it; both names present is an error (the
+   * rename refuses an existing name), and neither present is an error (the {@code GRANT} names a
+   * database that does not exist).
+   *
+   * @param password whether {@value #ROLE_PASSWORD} carries the role's password to set again
+   */
+  static String renameInPlace(String from, String to, boolean dropLeftover, boolean password) {
+    String source = id(from);
+    String target = id(to);
+    StringBuilder sql = new StringBuilder();
+    if (password) {
+      sql.append("\\getenv role_password ").append(ROLE_PASSWORD).append('\n');
+    }
+    sql.append("SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE datname = '")
+        .append(source)
+        .append("' AND pid <> pg_backend_pid();\n");
+    if (dropLeftover) {
+      String sourceThere = "EXISTS (SELECT 1 FROM pg_database WHERE datname = '" + source + "')";
+      sql.append("SELECT 'DROP DATABASE ")
+          .append(target)
+          .append(" WITH (FORCE)' WHERE ")
+          .append(sourceThere)
+          .append(" AND EXISTS (SELECT 1 FROM pg_database WHERE datname = '")
+          .append(target)
+          .append("')\n\\gexec\n")
+          .append("SELECT 'DROP ROLE ")
+          .append(target)
+          .append("' WHERE ")
+          .append(sourceThere)
+          .append(" AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '")
+          .append(source)
+          .append("') AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '")
+          .append(target)
+          .append("')\n\\gexec\n");
+    }
+    sql.append("BEGIN;\n").append(renameInPlaceSql(from, to)).append('\n');
+    if (password) {
+      sql.append("ALTER ROLE ").append(target).append(" WITH LOGIN PASSWORD :'role_password';\n");
+    }
+    sql.append(reopenSql(to, to)).append("\nCOMMIT;");
+    return psql(ADMIN_DATABASE, sql.toString());
+  }
+
+  /**
+   * {@link #renameInPlace}'s rename, plain SQL — what the real-postgres test runs over JDBC: while
+   * the source database exists, it is renamed to the target and its role (the role IS the database
+   * name) with it, in the same statement block; once it is gone, nothing.
+   */
+  static String renameInPlaceSql(String from, String to) {
+    String source = id(from);
+    String target = id(to);
+    return "DO $qits$\nBEGIN\n"
+        + "  IF EXISTS (SELECT 1 FROM pg_database WHERE datname = '"
+        + source
+        + "') THEN\n"
+        + "    ALTER DATABASE "
+        + source
+        + " RENAME TO "
+        + target
+        + ";\n"
+        + "    ALTER ROLE "
+        + source
+        + " RENAME TO "
+        + target
+        + ";\n"
+        + "  END IF;\nEND\n$qits$;";
+  }
+
   /** Drop a database, connections and all, and optionally the role that owned it. */
   static String drop(String database, String role) {
     String sql = "DROP DATABASE IF EXISTS " + id(database) + " WITH (FORCE);";
