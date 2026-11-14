@@ -437,8 +437,10 @@ public class BuildDeploymentIT {
     operatorRead(UPDATED_SLUG);
     ReportAssertions.assertDeclaredEdge(
         CATEGORY, UPDATED_SLUG, NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
-    // One more than the create: the drift check's question about qits-private (epic qits-1976).
-    ReportAssertions.assertEdgeCount(CATEGORY, UPDATED_SLUG, 13);
+    // Two more than the create: the drift check's question about qits-private (epic qits-1976),
+    // and the drift check's question about every OTHER attached network (qits-2174, qits-2197) —
+    // here the stand-in's one fabricated task network id, which never resolves to a name.
+    ReportAssertions.assertEdgeCount(CATEGORY, UPDATED_SLUG, 14);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY,
         UPDATED_SLUG,

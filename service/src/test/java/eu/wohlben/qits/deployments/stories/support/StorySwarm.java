@@ -100,6 +100,16 @@ public final class StorySwarm {
    */
   public static final String UNPUBLISHED_MARKER = "story-unpublished";
 
+  /**
+   * The one fabricated task id the stand-in's {@code service inspect} ever answers with when no
+   * sharper format matches (see {@code sid} in {@link #SCRIPT}) — which is what a {@code --format}
+   * asking for a live service's attached network targets gets back, since the script has no real
+   * swarm state to report one from. It never resolves to a network (qits-2174, task qits-2197: the
+   * drift check asks), so {@link #updateCalls} pins the one further {@code network inspect} call
+   * that answering costs, every time.
+   */
+  private static final String FAKE_TASK_NETWORK_ID = "x7q2ph41e0nk9vas3mdt6ycbu";
+
   private static final Object LOCK = new Object();
 
   private static boolean registered;
@@ -305,7 +315,7 @@ public final class StorySwarm {
         label("service ps " + service, "0"));
   }
 
-  /** …and the nine a replace asks: the create's, less the create, plus the live env and the drift check's overlay. */
+  /** …and the ten a replace asks: the create's, less the create, plus the live env and the drift check's overlay. */
   public static List<String> updateCalls(String service, String application, String sha) {
     return List.of(
         label("pull " + image(StoryTarget.imageRef(application, sha)), "0"),
@@ -320,6 +330,12 @@ public final class StorySwarm {
         // The network-drift check (epic qits-1976) resolves both managed overlays, so it can tell a
         // service on the wrong one; the private overlay does not exist until something private asks.
         label("network inspect qits-private", "1"),
+        // The drift check now reads EVERY network the live service is attached to, not just the two
+        // managed ones (qits-2174, task qits-2197): a target id it cannot match against a managed
+        // network is asked its own name with a further `network inspect`, so a leftover attachment
+        // is seen rather than silently skipped. The stand-in's one fabricated task id never resolves
+        // to a network, so it is always this one more call, left out of the live set.
+        label("network inspect " + FAKE_TASK_NETWORK_ID, "1"),
         label("service update " + service, "0"),
         // …and the verdict is read off UpdateStatus, matched against when this process issued it.
         label("service update-status " + service, "0"));

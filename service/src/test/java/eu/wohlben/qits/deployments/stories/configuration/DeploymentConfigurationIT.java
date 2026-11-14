@@ -213,12 +213,34 @@ public class DeploymentConfigurationIT {
       ReportAssertions.assertEdge(
           CATEGORY, READ_SLUG, StorySwarm.KIND, StoryTarget.SERVICE, StorySwarm.ORCHESTRATOR, call);
     }
+    // Two calls that belong to the process, not to this deployment: the startup placement backfill
+    // (qits.deployments.deployments.control.DeployService.backfillLabels, qits-2174, task qits-2197)
+    // asks `service ls` for every service still carrying no placement label — none here, so it
+    // reads and stops — and the leftover-overlay sweep that runs right after it asks `network
+    // inspect qits-platform` once to see whether anything is still attached. Both run once per
+    // boot on the worker, and this story is the first to drain after the shared process starts, so
+    // they land here rather than on the deployment this story is actually about.
+    ReportAssertions.assertEdge(
+        CATEGORY,
+        READ_SLUG,
+        StorySwarm.KIND,
+        StoryTarget.SERVICE,
+        StorySwarm.ORCHESTRATOR,
+        StorySwarm.label("service ls", "0"));
+    ReportAssertions.assertEdge(
+        CATEGORY,
+        READ_SLUG,
+        StorySwarm.KIND,
+        StoryTarget.SERVICE,
+        StorySwarm.ORCHESTRATOR,
+        StorySwarm.label("network inspect qits-platform", "0"));
     ReportAssertions.assertDeclaredEdge(
         CATEGORY, READ_SLUG, NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
     // One setting written, one event in, one peer read (the spec), eight questions to the
-    // orchestrator, one store. No configuration service and no credential mint: the settings are
-    // rows in the store this component already has.
-    ReportAssertions.assertEdgeCount(CATEGORY, READ_SLUG, 12);
+    // orchestrator for this deployment plus two the process made once at boot (above), one store.
+    // No configuration service and no credential mint: the settings are rows in the store this
+    // component already has.
+    ReportAssertions.assertEdgeCount(CATEGORY, READ_SLUG, 14);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY,
         READ_SLUG,
