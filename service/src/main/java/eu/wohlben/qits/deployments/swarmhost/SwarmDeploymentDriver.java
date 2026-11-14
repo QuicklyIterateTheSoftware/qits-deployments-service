@@ -403,6 +403,18 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   private final Map<String, String> edgeVipsBefore = new ConcurrentHashMap<>();
 
+  /**
+   * The services this process updated while they stood at 0 desired replicas — a database move's
+   * stop (qits-2228) or an operator's pause — written by {@link #apply}, read and cleared by {@link
+   * #awaitConverged} (qits-2234). Swarm's updater rolls only the slots that hold a task, and a
+   * service at 0 has none: the orchestrator creates the restored replica straight at the new spec,
+   * and the update never writes an {@code UpdateStatus} at all. Measured live on 2026-11-14:
+   * dev-qits-maintenance, stopped by its move, answered "no update status" for the whole 180 s
+   * while its new task ran healthy. For these services ONLY, an empty status is read off the
+   * tasks — there is no predecessor whose {@code Running} could be mistaken for the successor's.
+   */
+  private final Set<String> updatedFromZero = ConcurrentHashMap.newKeySet();
+
   /** The wait between two polls of a stopping task. A seam so the suite's clock moves instead. */
   @FunctionalInterface
   interface Pause {
@@ -809,6 +821,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
         return new ApplyResult(ApplyOutcome.REFUSED, twinStillStopping);
       }
     }
+    // Asked before the update, which restores the replica count: a service standing at 0 has no
+    // slot for swarm's updater to roll, so its update writes no UpdateStatus (qits-2234).
+    boolean stoodAtZero =
+        updating && !self && parseReplicas(inspectReplicas(target).output()).orElse(-1) == 0;
     ContainerProcess.Result result = run(argv, APPLY_TIMEOUT);
     if (result.exitCode() != 0 || result.timedOut()) {
       LOG.warnf(
@@ -832,7 +848,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       // update's terminal state until the daemon has replaced it, and one poll of that is a
       // deployment declared live 43 milliseconds after it was issued.
       rememberIssued(target);
+      if (stoodAtZero) {
+        updatedFromZero.add(target);
+      } else {
+        updatedFromZero.remove(target);
+      }
     } else if (!updating) {
+      updatedFromZero.remove(target);
       // A create has no update to wait for, and a service that was removed and made again must not
       // inherit the removed one's issue instant — its empty status would then never settle. That
       // second sentence is the recreate above, which is exactly such a service.
@@ -934,6 +956,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // Null when nothing issued an update for this service — the first deployment of an
     // application, or an instance that did not perform the update it is asking about.
     Instant issued = issuedUpdates.get(name);
+    boolean fromZero = updatedFromZero.contains(name);
     String last = "(never inspected)";
     try {
       while (true) {
@@ -950,7 +973,15 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
         String startedAt = parts.length > 1 ? parts[1].strip() : "";
         String message = parts.length > 2 ? parts[2].strip() : "";
         String stale = issued == null ? null : notThisUpdate(state, startedAt, issued);
-        if (stale != null) {
+        if (stale != null && fromZero && state.isEmpty()) {
+          // An update of a service that stood at 0: swarm never writes a status for it, and there
+          // is no predecessor, so the tasks at the issued image are the verdict (qits-2234).
+          last = "not started yet (no update status, and no task of the issued image running)";
+          Convergence resumed = resumedFromZeroVerdict(name);
+          if (resumed != null) {
+            return resumed;
+          }
+        } else if (stale != null) {
           // Somebody else's update, or not this one yet. Keep waiting, and remember the wording so
           // the timeout can say what it kept seeing.
           last = stale;
@@ -1022,7 +1053,33 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       // The verdict is reached, however it went: this update is nobody's in-flight state now.
       issuedUpdates.remove(name);
       issuedImages.remove(name);
+      updatedFromZero.remove(name);
     }
+  }
+
+  /**
+   * The verdict of an update of a service that stood at 0 replicas, read off its tasks: converged
+   * once a task desired {@code Running} runs the issued image and is {@code Running} — healthy,
+   * since swarm holds a task in {@code Starting} until its healthcheck passes, which is the same
+   * reading {@link #observe} gives the observation pass. Null (keep waiting) otherwise: a task that
+   * failed is replaced by swarm, and the caller's deadline is what ends the wait.
+   */
+  private Convergence resumedFromZeroVerdict(String name) {
+    String image = issuedImages.get(name);
+    if (image == null || image.isBlank()) {
+      return null;
+    }
+    ContainerProcess.Result listed =
+        run(
+            SwarmArgv.servicePs(runtime, name, List.of(DESIRED_RUNNING), true, TASK_EVIDENCE_FORMAT),
+            INSPECT_TIMEOUT);
+    if (listed.exitCode() != 0) {
+      return null;
+    }
+    boolean serving =
+        taskRows(listed.output()).stream()
+            .anyMatch(row -> row.running() && sameImage(row.image(), image));
+    return serving ? Convergence.converged(List.of()) : null;
   }
 
   /**

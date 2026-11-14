@@ -120,6 +120,12 @@ public class DeploymentObserver {
   @Inject PdDeploymentRepository deployments;
   @Inject DeploymentDriver driver;
 
+  /** The announcement a recovered {@code FAILED} row owes — see {@link DeployService#announceRecovered}. */
+  @Inject DeployService deployService;
+
+  /** What one recovery bracket did: the rows it retired, and whether the row it flipped was FAILED. */
+  private record Recovery(List<String> retired, boolean fromFailed) {}
+
   /**
    * Consecutive dead observations per deployment id. In memory on purpose: it is a debounce, not a
    * fact about the world, and a restart that loses it simply spends two more passes agreeing. Keyed
@@ -237,14 +243,16 @@ public class DeploymentObserver {
    */
   private void recover(Candidate candidate, HealthGate.Poll observed) {
     Instant at = Instant.now();
-    List<String> retired =
+    Recovery recovery =
         DbRetry.inNewTx(
             "The observed recovery of deployment " + candidate.deploymentId(),
             () -> {
               PdDeployment row = deployments.findById(candidate.deploymentId());
               if (row == null || !RECOVERABLE.contains(row.status)) {
-                return List.<String>of(); // deleted, or already settled by a deployment
+                // deleted, or already settled by a deployment
+                return new Recovery(List.of(), false);
               }
+              boolean fromFailed = row.status == PdDeploymentStatus.FAILED;
               List<String> stale = new ArrayList<>();
               for (PdDeployment previous :
                   deployments.listActiveByApplication(
@@ -264,15 +272,23 @@ public class DeploymentObserver {
               // Flushed, a lost connection is a body failure — certainly not committed, so safe to
               // run again.
               deployments.flush();
-              return List.copyOf(stale);
+              return new Recovery(List.copyOf(stale), fromFailed);
             },
             CUTOVER_BUDGET);
+    List<String> retired = recovery.retired();
     LOG.infof(
         "Recovered deployment %s by observation: %s is %s, so the row that said %s was wrong%s",
         candidate.deploymentId(),
         candidate.containerName(),
         describe(observed),
         retired.isEmpty() ? "" : " (retired " + retired.size() + " row(s) it never decommissioned)");
+    if (recovery.fromFailed()) {
+      // A FAILED deployment never reached its cutover's DeploymentActive, so nobody has said it is
+      // live — and a release request's deployment gate waits on exactly that (qits-2234). Only the
+      // bracket that flipped the row gets here, so it is said once. GONE and SCALED_TO_ZERO rows
+      // were ACTIVE, and announced, before.
+      deployService.announceRecovered(candidate.deploymentId(), at);
+    }
   }
 
   /**

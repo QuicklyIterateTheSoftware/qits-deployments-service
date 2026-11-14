@@ -2300,6 +2300,84 @@ class SwarmDeploymentDriverTest {
     assertTrue(converged.detail().contains("not started yet"), converged.detail());
   }
 
+  /**
+   * An update issued while the live service stands at 0 desired replicas — a database move's stop
+   * (qits-2228). Swarm's updater has no slot to roll, so it never writes an UpdateStatus.
+   */
+  private SwarmDeploymentDriver driverThatUpdatedAServiceAtZero() {
+    SwarmDeploymentDriver driver = driver();
+    driver.clock = Clock.fixed(ISSUED, ZoneOffset.UTC);
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    cli.script(".Spec.Mode.Replicated", result(0, "0"));
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, driver.apply(spec()).outcome());
+    return driver;
+  }
+
+  @Test
+  void anUpdateOfAServiceAMoveStoppedConvergesByItsRunningTaskAtTheNewImage() {
+    // qits-2234, live on 2026-11-14: dev-qits-maintenance, scaled to 0 by its database move, was
+    // updated to the new image with its replica restored, ran healthy at once, and the deployment
+    // still failed after 180 s on "not started yet (no update status)". With no predecessor task
+    // there is nothing for the task check to mistake for the successor.
+    SwarmDeploymentDriver driver = driverThatUpdatedAServiceAtZero();
+    cli.script(".UpdateStatus", result(0, "||"));
+    cli.script(
+        "service ps",
+        result(0, "newtask1|" + IMAGE + "@sha256:aa|Running|Running 20 seconds ago|"));
+
+    DeploymentDriver.Convergence converged =
+        driver.awaitConverged("dev-qits-gateway", Duration.ZERO);
+
+    assertEquals(
+        DeploymentDriver.ConvergenceOutcome.CONVERGED, converged.outcome(), converged.detail());
+    assertTrue(
+        String.join(" ", cli.matching("service ps")).contains("desired-state=running"),
+        "only the tasks swarm wants running count: " + cli.calls);
+  }
+
+  @Test
+  void anUpdateOfAServiceAMoveStoppedStillFailsWithNoHealthyTaskOfTheNewImage() {
+    // The other half: the fallback reads the new image's RUNNING task, not any task. One still
+    // starting (its healthcheck not passed) or one of another image is not this deployment serving.
+    SwarmDeploymentDriver driver = driverThatUpdatedAServiceAtZero();
+    cli.script(".UpdateStatus", result(0, "||"));
+    cli.script(
+        "service ps",
+        result(
+            0,
+            "newtask1|" + IMAGE + "|Running|Starting 20 seconds ago|\n"
+                + "oldtask1|qits-platform-artifacts:8080/qits/qits-gateway:old|Running|Running 1"
+                + " hour ago|"));
+
+    DeploymentDriver.Convergence converged =
+        driver.awaitConverged("dev-qits-gateway", Duration.ZERO);
+
+    assertEquals(DeploymentDriver.ConvergenceOutcome.FAILED, converged.outcome());
+    assertTrue(converged.detail().contains("no update status"), converged.detail());
+  }
+
+  @Test
+  void anUpdateOfAServiceThatWasRunningNeverConvergesOnTheTasks() {
+    // The fallback is for a service that stood at 0 alone. One standing at 1 keeps the rule above:
+    // its predecessor at the same image (a config-only redeploy) is Running, and is not a verdict.
+    SwarmDeploymentDriver driver = driver();
+    driver.clock = Clock.fixed(ISSUED, ZoneOffset.UTC);
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    cli.script(".Spec.Mode.Replicated", result(0, "1"));
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, driver.apply(spec()).outcome());
+    cli.script(".UpdateStatus", result(0, "||"));
+    cli.script(
+        "service ps", result(0, "predtask|" + IMAGE + "|Running|Running 1 hour ago|"));
+
+    DeploymentDriver.Convergence converged =
+        driver.awaitConverged("dev-qits-gateway", Duration.ZERO);
+
+    assertEquals(DeploymentDriver.ConvergenceOutcome.FAILED, converged.outcome());
+    assertTrue(converged.detail().contains("not started yet"), converged.detail());
+  }
+
   @Test
   void theSkewToleranceIsFiveSecondsAndItIsAnEdgeRatherThanAFeeling() {
     // The daemon stamps StartedAt after the CLI returned, so only a clock disagreement can make

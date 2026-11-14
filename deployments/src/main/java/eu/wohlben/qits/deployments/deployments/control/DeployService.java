@@ -620,10 +620,12 @@ public class DeployService implements ReleaseAnnouncements {
    * <b>this one</b>, whose self-update is handed to the orchestrator and never announces from {@link
    * #execute}. That cost it its own route and its own navigation entry: the deployer's UI was
    * unreachable and absent from the menu on every platform, while every other application announced
-   * normally. {@link DeploymentObserver}'s later corrections still announce nothing — a demotion and
-   * a recovery restate an outcome hours later and a consumer would have to know the second statement
-   * supersedes the first — but an adoption is not a correction: it is the FIRST statement anybody
-   * makes about a deployment that went live, made by the instance that lived to make it.
+   * normally. {@link DeploymentObserver}'s later corrections announce nothing — a demotion and a
+   * recovery of a row that was ACTIVE once restate an outcome hours later and a consumer would have
+   * to know the second statement supersedes the first — but an adoption is not a correction: it is
+   * the FIRST statement anybody makes about a deployment that went live, made by the instance that
+   * lived to make it. The one observer correction that is also a first statement, a {@code FAILED}
+   * row found serving its own image, announces the same way: see {@link #announceRecovered}.
    *
    * <p><b>It announces from the ROW and reaches no peer</b> — V3's routing columns, written at queue
    * time — because this runs at boot and the boot in question is the one right after a cutover. See
@@ -736,27 +738,86 @@ public class DeployService implements ReleaseAnnouncements {
   private List<InFlight> inFlight() {
     List<PdDeployment> rows = new ArrayList<>(deployments.listByStatus(PdDeploymentStatus.QUEUED));
     rows.addAll(deployments.listByStatus(PdDeploymentStatus.STARTING));
-    return rows.stream()
-        .map(
-            row ->
-                new InFlight(
-                    row.id,
-                    row.applicationName,
-                    row.environmentId,
-                    row.status,
-                    row.containerName,
-                    row.imageTag(),
-                    row.commitSha,
-                    row.runId,
-                    row.causationId,
-                    row.routes,
-                    row.upstreamPort,
-                    row.browserHost,
-                    row.navigationEntries,
-                    row.apiDocs,
-                    row.navigationLabel,
-                    row.navigationPosition))
-        .toList();
+    return rows.stream().map(DeployService::inFlightOf).toList();
+  }
+
+  private static InFlight inFlightOf(PdDeployment row) {
+    return new InFlight(
+        row.id,
+        row.applicationName,
+        row.environmentId,
+        row.status,
+        row.containerName,
+        row.imageTag(),
+        row.commitSha,
+        row.runId,
+        row.causationId,
+        row.routes,
+        row.upstreamPort,
+        row.browserHost,
+        row.navigationEntries,
+        row.apiDocs,
+        row.navigationLabel,
+        row.navigationPosition);
+  }
+
+  /**
+   * The {@code DeploymentActive} of a {@code FAILED} row that {@link DeploymentObserver} found
+   * serving and recovered (qits-2234) — announced exactly as {@link #announceAdopted} announces an
+   * adoption, off the row's own routing snapshot, because it is the same kind of statement: the
+   * FIRST anybody makes about a deployment that went live. A deployment that ended {@code FAILED}
+   * never reached the cutover's {@link #announceActive}, so without this a release request's
+   * deployment gate waits forever on a version that is in fact serving — measured on 2026-11-14,
+   * dev-qits-maintenance after its database move.
+   *
+   * <p><b>Called once per deployment</b>: the observer calls it only from the bracket that flipped
+   * the row from {@code FAILED} to {@code ACTIVE}, which a second pass finds {@code ACTIVE} and
+   * leaves alone. A recovery from {@code GONE} or {@code SCALED_TO_ZERO} does not come here: those
+   * rows were {@code ACTIVE} once, and announced then.
+   *
+   * <p><b>And only when the service runs the row's own image</b> — {@link #verdictOn}'s check. A
+   * swarm service keeps its name across deployments, so a healthy task under the row's name may be
+   * the predecessor that a failed update left serving; announcing the row's version over it would
+   * tell a release request a version is live that is not.
+   *
+   * <p>Never throws, and runs outside every transaction but the read: it is bookkeeping on the
+   * observation pass, which must not fail over an announcement.
+   */
+  void announceRecovered(String deploymentId, Instant finishedAt) {
+    try {
+      InFlight row =
+          QuarkusTransaction.requiringNew()
+              .call(
+                  () -> {
+                    PdDeployment deployment = deployments.findById(deploymentId);
+                    return deployment == null ? null : inFlightOf(deployment);
+                  });
+      if (row == null || row.containerName() == null) {
+        return;
+      }
+      if (row.upstreamPort() == null) {
+        // A row written before V3's routing columns: its snapshot is the spec's, which takes a peer
+        // and patience this pass must not spend. Nothing is announced rather than an empty frame.
+        LOG.warnf(
+            "Recovered deployment %s records no routing snapshot, so its recovery is announced by"
+                + " nobody",
+            deploymentId);
+        return;
+      }
+      DeploymentDriver.RunningImage running = driver.runningImage(row.containerName()).orElse(null);
+      if (running == null || !ImageRefs.carries(running.imageRef(), row.imageTag())) {
+        LOG.warnf(
+            "Recovered deployment %s is not announced: %s runs %s, not %s",
+            deploymentId,
+            row.containerName(),
+            running == null ? "nothing" : running.imageRef(),
+            row.imageTag());
+        return;
+      }
+      announceAdopted(row, finishedAt);
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "Announcing the recovery of deployment %s failed", deploymentId);
+    }
   }
 
   /** The decision table above, asked of the runtime. */
