@@ -8,6 +8,7 @@ import eu.wohlben.qits.containers.driver.swarm.ServiceSpec.Mount;
 import eu.wohlben.qits.containers.driver.swarm.ServiceSpec.Publish;
 import eu.wohlben.qits.containers.driver.swarm.ServiceSpec.UpdatePolicy;
 import eu.wohlben.qits.containers.driver.swarm.ServiceUpdate;
+import eu.wohlben.qits.deployments.deployments.control.DatabaseMoves;
 import eu.wohlben.qits.deployments.deployments.control.DeclaredShape;
 import eu.wohlben.qits.deployments.deployments.control.DeployedIdentity;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentDriver;
@@ -18,6 +19,7 @@ import eu.wohlben.qits.deployments.deployments.control.ExtrasSnapshot;
 import eu.wohlben.qits.deployments.deployments.control.HealthGate;
 import eu.wohlben.qits.deployments.deployments.control.DockerCredentialFile;
 import eu.wohlben.qits.deployments.deployments.control.ResourceProvisioning;
+import eu.wohlben.qits.deployments.deployments.control.SelfMove;
 import eu.wohlben.qits.deployments.deployments.control.ServiceExtras;
 import eu.wohlben.qits.deployments.environments.control.PdIdentifiers;
 import eu.wohlben.qits.deployments.environments.control.PdNetworks;
@@ -512,6 +514,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
 
   @ConfigProperty(name = "qits.deployments.health-start-period-seconds")
   long healthStartPeriodSeconds;
+
+  /** What a successor that moves its own databases first adds to its start period (qits-2209). */
+  @ConfigProperty(name = DatabaseMoves.SELF_TIMEOUT_KEY)
+  Duration selfMoveTimeout;
 
   @ConfigProperty(name = "qits.deployments.swarm.update-monitor-seconds")
   long updateMonitorSeconds;
@@ -1350,6 +1356,12 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     }
     String twin = SEED_STACK_PREFIX + name;
     return serviceExists(twin) ? twin : null;
+  }
+
+  @Override
+  public Optional<String> ownService() {
+    String own = ownServiceName();
+    return own.isBlank() ? Optional.empty() : Optional.of(own);
   }
 
   /** The seed stack's twin counts: it is the deployer too, under the stack's prefix. */
@@ -2837,12 +2849,24 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
               + PdIdentifiers.requireHealthPath(spec.healthPath())
               + " || exit 1";
     }
+    Duration startPeriod = Duration.ofSeconds(healthStartPeriodSeconds);
+    if (movesBeforeStart(spec)) {
+      // The deployer's successor moves its own databases before it listens (qits-2209): its start
+      // period covers that move too, or swarm would call it unhealthy half-way through the copy.
+      startPeriod = startPeriod.plus(selfMoveTimeout);
+    }
     service.health(
         new Health(
             command,
             Duration.ofSeconds(healthIntervalSeconds),
             healthRetries,
-            Duration.ofSeconds(healthStartPeriodSeconds)));
+            startPeriod));
+  }
+
+  /** Whether the spec hands a database move to the process it starts (qits-2209). */
+  static boolean movesBeforeStart(ServiceSpec spec) {
+    return spec.resources().stream()
+        .anyMatch(binding -> binding.value(SelfMove.SUFFIX) != null);
   }
 
   /**

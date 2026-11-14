@@ -70,6 +70,36 @@ public class BootResourceRegistrationTest {
   }
 
   @Test
+  public void aBootRecordsTheServerItsUrlNames() {
+    // qits-2209: after the deployer moved its own database to the private server, the claim must
+    // say so from the successor's first boot, or its next self-deploy plans the same move again.
+    registration.record(
+        BootResourceRegistration.RESOURCE_NAME,
+        "jdbc:postgresql://boot-s-qits-oci-postgresql:5432/qits_deployments_s",
+        "qits_deployments_s",
+        "a-password-for-the-server-test",
+        "boot-s");
+    assertEquals("public", rowOf("boot-s").server);
+
+    registration.record(
+        BootResourceRegistration.RESOURCE_NAME,
+        "jdbc:postgresql://boot-s-qits-oci-postgresql-private:5432/qits_deployments_s",
+        "qits_deployments_s",
+        "a-password-for-the-server-test",
+        "boot-s");
+    assertEquals("private", rowOf("boot-s").server);
+
+    // A host that is neither server leaves the column as it was.
+    registration.record(
+        BootResourceRegistration.RESOURCE_NAME,
+        "jdbc:postgresql://localhost:5432/qits_deployments_s",
+        "qits_deployments_s",
+        "a-password-for-the-server-test",
+        "boot-s");
+    assertEquals("private", rowOf("boot-s").server);
+  }
+
+  @Test
   public void aSecondBootRewritesTheOneRowRatherThanAddingAnother() {
     registration.record(
         BootResourceRegistration.RESOURCE_NAME,

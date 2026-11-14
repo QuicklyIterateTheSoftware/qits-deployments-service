@@ -223,4 +223,51 @@ class DatabaseScriptsPostgresTest {
       execute(admin, "DROP DATABASE " + target + ";\n");
     }
   }
+
+  /** {@link DatabaseScripts#describeSql}'s answer, read the way the self-move reads it. */
+  private static java.util.Map<String, DatabaseScripts.Described> describe(Connection admin, String... names)
+      throws SQLException {
+    StringBuilder output = new StringBuilder();
+    try (Statement statement = admin.createStatement()) {
+      for (String part : DatabaseScripts.describeSql(names).split(";\n")) {
+        String sql = part.strip();
+        if (sql.isEmpty()) {
+          continue;
+        }
+        try (ResultSet rows = statement.executeQuery(sql.endsWith(";") ? sql : sql + ";")) {
+          while (rows.next()) {
+            output.append(rows.getString(1)).append('\n');
+          }
+        }
+      }
+    }
+    return DatabaseScripts.describeAnswer(output.toString(), names);
+  }
+
+  @Test
+  void theSelfMovesMarkIsTheDatabasesCommentAndTravelsWithARename() throws SQLException {
+    // qits-2209: the deployer's own move keeps its state in the database's comment, because the
+    // old and the new process each read a different database. The rename must carry it along.
+    String database = provisioned();
+    String target = database.replace("qits_fence_", "qits_marked_");
+    try (Connection admin = admin("postgres")) {
+      java.util.Map<String, DatabaseScripts.Described> before = describe(admin, database, target);
+      assertTrue(before.get(database).exists());
+      assertEquals("", before.get(database).mark());
+      assertFalse(before.get(target).exists());
+
+      execute(admin, DatabaseScripts.commentSql(database, "qits-self-move:m-1:renaming"));
+      execute(admin, DatabaseScripts.closeSql(database, database));
+      renameInPlace(admin, database, target);
+
+      java.util.Map<String, DatabaseScripts.Described> after = describe(admin, database, target);
+      assertFalse(after.get(database).exists());
+      assertEquals("qits-self-move:m-1:renaming", after.get(target).mark());
+
+      execute(admin, DatabaseScripts.commentSql(target, null));
+      assertEquals("", describe(admin, target).get(target).mark());
+      execute(admin, "DROP DATABASE " + target + " WITH (FORCE);\nDROP ROLE " + target + ";\n");
+    }
+    assertThrows(IllegalArgumentException.class, () -> DatabaseScripts.commentSql(target, "x' OR '1"));
+  }
 }

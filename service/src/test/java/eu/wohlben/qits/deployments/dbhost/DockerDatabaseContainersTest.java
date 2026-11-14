@@ -193,6 +193,50 @@ class DockerDatabaseContainersTest {
     assertEquals(List.of("docker", "rm", "-f", "3f2a9c1b7d4e"), calls.get(1).argv());
   }
 
+  @Test
+  void aSelfMoveMarkerIsLabelledAndFoundAgainByItsLabels() {
+    // qits-2209: the deployer's own move keeps its plan on a labelled volume, which the next start
+    // lists by label and reads back.
+    DockerDatabaseContainers containers = DockerDatabaseContainers.standalone("docker", 65536);
+    containers.scriptCli(
+        (argv, environment, timeout) -> {
+          calls.add(new Call(argv, environment));
+          if (argv.get(1).equals("volume") && argv.get(2).equals("ls")) {
+            return new ContainerProcess.Result(0, "qits-dbmove-m-1\n", false, false);
+          }
+          if (argv.get(1).equals("volume") && argv.get(2).equals("inspect")) {
+            return new ContainerProcess.Result(
+                0,
+                DockerDatabaseContainers.NAMESPACE_PREFIX + "kind=self-move\n"
+                    + DockerDatabaseContainers.NAMESPACE_PREFIX + "self-move=a|b|c\n"
+                    + "com.example.other=x\n",
+                false,
+                false);
+          }
+          return new ContainerProcess.Result(0, "", false, false);
+        });
+
+    assertTrue(containers.createVolume("qits-dbmove-m-1", Map.of("kind", "self-move", "self-move", "a|b|c")));
+    Map<String, Map<String, String>> found = containers.labelledVolumes("kind", "self-move");
+
+    List<String> create = calls.get(0).argv();
+    assertTrue(containsPair(create, "--label", DockerDatabaseContainers.NAMESPACE_PREFIX + "kind=self-move"), create.toString());
+    assertTrue(containsPair(create, "--label", DockerDatabaseContainers.NAMESPACE_PREFIX + "self-move=a|b|c"), create.toString());
+    assertEquals(
+        List.of("docker", "volume", "ls", "-q", "--filter", "label=" + DockerDatabaseContainers.NAMESPACE_PREFIX + "kind=self-move"),
+        calls.get(1).argv());
+    assertEquals(Map.of("qits-dbmove-m-1", Map.of("kind", "self-move", "self-move", "a|b|c")), found);
+  }
+
+  @Test
+  void aVolumeListingThatFailsIsNotReadAsNone() {
+    DockerDatabaseContainers containers = DockerDatabaseContainers.standalone("docker", 65536);
+    containers.scriptCli((argv, environment, timeout) -> new ContainerProcess.Result(1, "Cannot connect", false, false));
+
+    org.junit.jupiter.api.Assertions.assertThrows(
+        IllegalStateException.class, () -> containers.labelledVolumes("kind", "self-move"));
+  }
+
   private static boolean containsPair(List<String> argv, String flag, String value) {
     for (int i = 0; i + 1 < argv.size(); i++) {
       if (argv.get(i).equals(flag) && argv.get(i + 1).equals(value)) {

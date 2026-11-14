@@ -281,6 +281,7 @@ public class BootResourceRegistration {
       String password,
       String environmentName) {
     String database = databaseOf(url);
+    Optional<DatabaseServer> server = serverOf(url, environmentName);
     QuarkusTransaction.requiringNew()
         .run(
             () -> {
@@ -297,6 +298,10 @@ public class BootResourceRegistration {
               resource.resourceType = RESOURCE_TYPE;
               resource.databaseName = database;
               resource.roleName = username;
+              // The server too, when the url names one of the two (qits-2209): after the deployer
+              // moved its own database the claim must say where it is from the first boot on, or
+              // the next self-deploy would plan the same move again.
+              server.ifPresent(found -> resource.server = found.wire());
               // Whatever this process was actually started with wins over whatever was recorded:
               // the environment is the truth, and a row that disagreed with it would send the next
               // self-deploy down the reconcile arm against a credential that works.
@@ -316,6 +321,28 @@ public class BootResourceRegistration {
     LOG.infof(
         "Recorded this instance's own resource: %s/%s uses database %s as %s",
         environmentName == null ? "platform" : environmentName, resourceName, database, username);
+  }
+
+  /**
+   * Which of the two postgres servers a JDBC url's host is in that tier, or empty when it is
+   * neither — a bootstrap's own address, say, which then leaves the row's server as it is.
+   */
+  static Optional<DatabaseServer> serverOf(String url, String environmentName) {
+    if (environmentName == null) {
+      return Optional.empty();
+    }
+    String hostAndDatabase = SelfMove.hostAndDatabase(url);
+    int slash = hostAndDatabase.indexOf('/');
+    if (slash <= 0) {
+      return Optional.empty();
+    }
+    String host = hostAndDatabase.substring(0, slash);
+    for (DatabaseServer server : DatabaseServer.values()) {
+      if (server.host(environmentName).equals(host)) {
+        return Optional.of(server);
+      }
+    }
+    return Optional.empty();
   }
 
   /**

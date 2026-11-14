@@ -102,8 +102,11 @@ import org.jboss.logging.Logger;
  * copied and verified, and only then does any claim switch. An application with two databases that
  * came back up with one moved and one not would be pointed at a store it left behind.
  *
- * <p><b>Refused before anything stops</b>: a move of this deployer's own databases (it cannot stop
- * itself, and its own pools are the connections the close would terminate), a target database another
+ * <p><b>The deployer's own databases are handed over, not moved here</b> (qits-2209): it cannot stop
+ * itself, so {@link #plan} decides the move and its successor runs it before it starts — see {@link
+ * SelfMove}.
+ *
+ * <p><b>Refused before anything stops</b>: a target database another
  * claim already holds, a target database that already exists on the target server and is not an
  * earlier aborted attempt of this same move — and a batch whose copies do not FIT (qits-2243, {@link
  * MoveSpace}). Only a move between the servers copies, so only it is measured: the source's {@code
@@ -167,6 +170,15 @@ public class DatabaseMoves {
   /** The deadline of each extract or ingest container. */
   @ConfigProperty(name = "qits.deployments.database-move.timeout")
   Duration timeout;
+
+  /**
+   * The deadline of the deployer's own extract and ingest, which its successor runs before it starts
+   * (qits-2209). The self-update's health start period grows by the same amount.
+   */
+  @ConfigProperty(name = SELF_TIMEOUT_KEY)
+  Duration selfTimeout;
+
+  public static final String SELF_TIMEOUT_KEY = "qits.deployments.database-move.self-timeout";
 
   /**
    * How long the stop waits for the service's tasks to be gone — a FLOOR, not the whole answer
@@ -293,11 +305,30 @@ public class DatabaseMoves {
    *     target and a deferred one its claim's database
    * @param planned the moves {@link #run} performs; empty is every deployment with nothing to move
    */
-  record Pending(List<ResourceProvisioning.Resolved> resolved, List<Planned> planned) {
+  record Pending(
+      List<ResourceProvisioning.Resolved> resolved, List<Planned> planned, List<Planned> handedOver) {
 
-    /** The names of the resources a move touches — the only ones provisioned after the switch. */
+    Pending(List<ResourceProvisioning.Resolved> resolved, List<Planned> planned) {
+      this(resolved, planned, List.of());
+    }
+
+    /**
+     * The names of the resources a move touches — none of them is provisioned before the stop. A
+     * move this deployment runs is provisioned after its switch; one handed over is not provisioned
+     * at all (see {@link #handedOverResources}).
+     */
     Set<String> movedResources() {
-      return planned.stream()
+      return java.util.stream.Stream.concat(planned.stream(), handedOver.stream())
+          .map(Planned::resourceName)
+          .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    /**
+     * The deployer's own moves (qits-2209): its successor runs them before it starts, so nothing
+     * here stops, copies or provisions them. Their bindings come from {@link #handOverBindings}.
+     */
+    Set<String> handedOverResources() {
+      return handedOver.stream()
           .map(Planned::resourceName)
           .collect(Collectors.toCollection(LinkedHashSet::new));
     }
@@ -383,6 +414,18 @@ public class DatabaseMoves {
     }
     if (planned.isEmpty()) {
       return new Pending(List.copyOf(effective), List.of());
+    }
+    if (BootResourceRegistration.APPLICATION.equals(applicationName)) {
+      // The deployer's own databases (qits-2209): it cannot stop itself, so its successor moves
+      // them. Decided and refused here like any move; nothing stops.
+      for (Planned move : planned) {
+        String refusal = selfRefusal(move);
+        if (refusal != null) {
+          recordRefusal(move, refusal, move.id(), null);
+          throw new ResourceException(refusal);
+        }
+      }
+      return new Pending(List.copyOf(effective), List.of(), List.copyOf(planned));
     }
 
     // Every refusal before anything stops.
@@ -477,6 +520,130 @@ public class DatabaseMoves {
         .filter(row -> row.databaseName != null);
   }
 
+  /**
+   * Why the deployer's own move must not be handed over, or null (qits-2209): a target another claim
+   * holds, or a target that exists and is not a leftover of an earlier self-move — its comment says
+   * which ({@link SelfMove#leftover}). Asked before the self-update, so a refusal stops nothing.
+   */
+  private String selfRefusal(Planned move) {
+    if (renamedOnto(move)) {
+      return "refusing to move "
+          + where(move.sourceServer(), move.sourceDatabase())
+          + ": the deployer moves only its own claims, not a predecessor's";
+    }
+    String elsewhere =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () ->
+                    resources.listByDatabase(move.targetDatabase()).stream()
+                        .filter(row -> !row.id.equals(move.claim().id()))
+                        // Only a claim on the target server itself: each tier has its own servers.
+                        .filter(row -> move.environmentName().equals(row.environmentName))
+                        .filter(row -> DatabaseServer.parse(row.server) == move.targetServer())
+                        .map(row -> row.applicationName)
+                        .findFirst()
+                        .orElse(null));
+    if (elsewhere != null) {
+      return "refusing to move "
+          + where(move.sourceServer(), move.sourceDatabase())
+          + " to `"
+          + move.targetDatabase()
+          + "`: that database is already provisioned for "
+          + elsewhere;
+    }
+    try {
+      DatabaseContainers.Outcome asked =
+          containers.run(
+              admin.shot(
+                  "check",
+                  move.targetServer(),
+                  move.environmentName(),
+                  admin.image(move.targetServer(), move.environmentName()),
+                  null,
+                  Map.of(),
+                  DatabaseScripts.describe(move.targetDatabase())),
+              ContainerResourceProvisioner.TIMEOUT);
+      Map<String, DatabaseScripts.Described> seen =
+          asked.ok() ? DatabaseScripts.describeAnswer(asked.output(), move.targetDatabase()) : null;
+      if (seen == null) {
+        return "could not ask the "
+            + move.targetServer().wire()
+            + " postgres whether `"
+            + move.targetDatabase()
+            + "` exists, so nothing was moved: "
+            + tail(asked.output());
+      }
+      DatabaseScripts.Described target = seen.get(move.targetDatabase());
+      if (target.exists() && !SelfMove.leftover(target.mark())) {
+        return "refusing to move "
+            + where(move.sourceServer(), move.sourceDatabase())
+            + " onto "
+            + where(move.targetServer(), move.targetDatabase())
+            + ": that database already exists there, and no earlier move of the deployer left it";
+      }
+      // Both images are read now, while the deployer can still say why it cannot move.
+      admin.image(move.sourceServer(), move.environmentName());
+    } catch (ResourceException unreachable) {
+      return unreachable.getMessage() + ", so nothing was moved";
+    }
+    return null;
+  }
+
+  /** Whether the claim is a predecessor's — a rename, which the deployer refuses for itself. */
+  private static boolean renamedOnto(Planned move) {
+    return !move.applicationName().equals(move.claim().applicationName());
+  }
+
+  /**
+   * The bindings the deployer's successor gets for its handed-over moves (qits-2209): each one names
+   * the TARGET — the database the successor will run on — with the claim's role password, and
+   * carries the {@link SelfMove.Step} as {@code QITS_RESOURCE_<NAME>_MOVE}. Nothing is provisioned:
+   * the successor's copy or rename makes the target.
+   */
+  List<DeploymentDriver.ResourceBinding> handOverBindings(Pending pending) {
+    List<DeploymentDriver.ResourceBinding> bindings = new ArrayList<>();
+    for (Planned move : pending.handedOver()) {
+      String environment = move.environmentName();
+      SelfMove.Step step =
+          new SelfMove.Step(
+              move.id(),
+              environment,
+              move.resourceName(),
+              move.sourceServer(),
+              move.sourceServer().host(environment),
+              admin.network(move.sourceServer()),
+              move.sourceDatabase(),
+              move.targetServer(),
+              move.targetServer().host(environment),
+              admin.network(move.targetServer()),
+              move.targetDatabase(),
+              // One image for both one-shots, the source server's — what a copy always uses.
+              admin.image(move.sourceServer(), environment),
+              admin.adminUsername(),
+              selfTimeout.toSeconds());
+      bindings.add(
+          new DeploymentDriver.ResourceBinding(
+              move.resourceName(),
+              List.of(
+                  new DeploymentDriver.ResourceBinding.Value(
+                      "URL",
+                      ResourceProvisioning.jdbcUrl(move.targetServer(), environment, move.targetDatabase())),
+                  new DeploymentDriver.ResourceBinding.Value("USERNAME", move.targetDatabase()),
+                  new DeploymentDriver.ResourceBinding.Value("PASSWORD", move.claim().password()),
+                  new DeploymentDriver.ResourceBinding.Value(SelfMove.SUFFIX, step.encode()))));
+      LOG.infof(
+          "%s (%s) hands the move of `%s` from %s to %s to its successor, which runs it before it"
+              + " starts (move %s)",
+          move.applicationName(),
+          environment,
+          move.resourceName(),
+          where(move.sourceServer(), move.sourceDatabase()),
+          where(move.targetServer(), move.targetDatabase()),
+          move.id());
+    }
+    return List.copyOf(bindings);
+  }
+
   /** Why this move must not start, or null. Asked of every move of the batch before any starts. */
   private String refusal(Planned move) {
     if (BootResourceRegistration.APPLICATION.equals(move.applicationName())
@@ -485,8 +652,8 @@ public class DatabaseMoves {
           + where(move.sourceServer(), move.sourceDatabase())
           + ": it is "
           + BootResourceRegistration.APPLICATION
-          + "'s own database, and the deployer cannot stop itself to copy it; the deployer moving"
-          + " its own databases is qits-2209";
+          + "'s own database, and only the deployer's own deployment moves it, through its"
+          + " successor (qits-2209)";
     }
     String elsewhere =
         QuarkusTransaction.requiringNew()
@@ -1675,7 +1842,8 @@ public class DatabaseMoves {
     if (BootResourceRegistration.APPLICATION.equals(application)) {
       throw new ConflictException(
           BootResourceRegistration.APPLICATION
-              + "'s own databases are not moved by the deployer: it cannot stop itself to copy them");
+              + "'s own databases move only with its own deployment, when its exposure changes:"
+              + " its successor moves them before it starts (qits-2209)");
     }
     PdEnvironment tier =
         environments

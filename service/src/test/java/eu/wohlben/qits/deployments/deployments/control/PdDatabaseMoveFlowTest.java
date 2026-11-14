@@ -820,6 +820,66 @@ class PdDatabaseMoveFlowTest {
   }
 
   @Test
+  void theDeployersOwnDeployHandsItsMoveToItsSuccessorAndStopsNothing() throws Exception {
+    // qits-2209: qits-deployments goes private. Its own deploy cannot stop itself, so it hands both
+    // moves to the successor: the self-update carries bindings to the private server and the moves.
+    String token = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+    String environment = "dbself-" + token;
+    createDesignatedEnvironment(environment);
+    driver.scriptRunningImage(environment + "-qits-oci-postgresql", "registry.example/qits/pg:1");
+    driver.scriptRunningImage(environment + "-qits-oci-postgresql-private", "registry.example/qits/pg:1");
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              for (String[] claim :
+                  List.of(
+                      new String[] {"db", "qits_deployments"},
+                      new String[] {"eventstream", "qits_deployments_eventstream"})) {
+                PdResource row = new PdResource();
+                row.id = UUID.randomUUID().toString();
+                row.applicationName = "qits-deployments";
+                row.environmentName = environment;
+                row.resourceName = claim[0];
+                row.resourceType = "postgresql";
+                row.databaseName = claim[1];
+                row.roleName = claim[1];
+                row.password = "the-deployers-own-password";
+                row.server = "public";
+                row.createdAt = java.time.Instant.now();
+                resources.persist(row);
+              }
+            });
+    specs.script(
+        "qits-deployments",
+        declaring(
+            DeploymentDriver.Exposure.PRIVATE,
+            List.of(new ResourceSpec("db", null), new ResourceSpec("eventstream", "qits_deployments_eventstream"))));
+    driver.scriptApply(
+        new DeploymentDriver.ApplyResult(DeploymentDriver.ApplyOutcome.HANDED_OFF, "the swarm manager arbitrates"));
+
+    release("qits-deployments", "2026.101.120000");
+
+    assertTrue(driver.calls().stream().noneMatch(call -> call.startsWith("scale:")), driver.calls().toString());
+    assertTrue(provisioner.requests().isEmpty(), "neither database is provisioned: the successor makes them");
+    assertEquals(
+        List.of("check", "check"),
+        containers.shots().stream().map(DatabaseContainers.OneShot::purpose).toList(),
+        "nothing extracted or ingested by the running deployer");
+    DeploymentDriver.ServiceSpec spec = driver.applied().get(driver.applied().size() - 1);
+    assertEquals(2, spec.resources().size());
+    for (DeploymentDriver.ResourceBinding binding : spec.resources()) {
+      assertTrue(binding.value("URL").startsWith("jdbc:postgresql://" + environment + "-qits-oci-postgresql-private:5432/"));
+      assertEquals("the-deployers-own-password", binding.value("PASSWORD"));
+      SelfMove.Step step = SelfMove.Step.parse(binding.value(SelfMove.SUFFIX));
+      assertEquals(binding.name(), step.resource());
+      assertEquals(DatabaseServer.PUBLIC, step.sourceServer());
+      assertEquals(DatabaseServer.PRIVATE, step.targetServer());
+    }
+    // The claims stay where the data is until a process bound elsewhere boots.
+    assertEquals("public", claim("qits-deployments", environment).server);
+  }
+
+  @Test
   void theDoorRefusesWhatItCanTellIsWrongBeforeQueueingAnything() {
     createDesignatedEnvironment("dbmv-r-" + UUID.randomUUID().toString().substring(0, 8));
     given()
