@@ -154,4 +154,35 @@ class DatabaseScriptsTest {
     assertEquals(DatabaseServer.PUBLIC, DatabaseServer.parse(null));
     assertThrows(IllegalArgumentException.class, () -> DatabaseServer.parse("elsewhere"));
   }
+
+  @Test
+  void theSelfMovesStateIsTheDatabasesCommentReadAndWrittenAsText() {
+    // qits-2209: describe names each database once, and its answer reads back by name.
+    String described = DatabaseScripts.describe("qits_deployments", "qits_platform_deployments");
+    assertTrue(described.contains("'qits-db=qits_deployments='"), described);
+    assertTrue(described.contains("shobj_description(oid, 'pg_database')"), described);
+    Map<String, DatabaseScripts.Described> answer =
+        DatabaseScripts.describeAnswer(
+            "qits-db=qits_deployments=true=qits-self-move:m:verified\nqits-db=qits_platform_deployments=false=\n",
+            "qits_deployments",
+            "qits_platform_deployments");
+    assertEquals(new DatabaseScripts.Described(true, "qits-self-move:m:verified"), answer.get("qits_deployments"));
+    assertEquals(new DatabaseScripts.Described(false, ""), answer.get("qits_platform_deployments"));
+    assertNull(
+        DatabaseScripts.describeAnswer("qits-db=qits_deployments=true=\n", "qits_deployments", "qits_other"),
+        "a name the output does not answer is no answer");
+
+    assertTrue(DatabaseScripts.comment("qits_deployments", "qits-self-move:m:done").contains(
+        "COMMENT ON DATABASE qits_deployments IS 'qits-self-move:m:done';"));
+    assertTrue(DatabaseScripts.comment("qits_deployments", null).contains("COMMENT ON DATABASE qits_deployments IS NULL;"));
+    assertThrows(IllegalArgumentException.class, () -> DatabaseScripts.comment("qits_deployments", "x'; DROP"));
+
+    // The ingest marks the database it creates in the same session, before the restore.
+    String ingest = DatabaseScripts.ingest("qits_deployments", "qits_deployments", true, "qits-self-move:m:copying");
+    assertTrue(
+        ingest.indexOf("COMMENT ON DATABASE qits_deployments IS 'qits-self-move:m:copying';")
+            < ingest.indexOf("pg_restore"),
+        ingest);
+    assertFalse(DatabaseScripts.ingest("qits_deployments", "qits_deployments", false).contains("COMMENT"));
+  }
 }

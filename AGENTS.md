@@ -1500,7 +1500,7 @@ dump and restore above, unchanged.
 Every container joins exactly ONE network (`ContainerSpec.network`, never `extraNetworks`), so a
 cross-server move is two containers sharing a volume. The moves of one deployment are one BATCH:
 stopped once, all copied and verified, then all switched — or all aborted. **Refused before anything
-stops**: this deployer's own databases (moving them is qits-2209), a target another claim holds, a target that already exists
+stops**: a target another claim holds, a target that already exists
 on the target server and is not an earlier ABORTED attempt of the same move — and **a batch whose
 copies do not fit** (qits-2243, after a dump and restore of a 19 GB database onto 42 GB free filled
 the node's disk and took its postgres down). **The check applies to copies between the servers
@@ -1519,6 +1519,39 @@ nothing was moved"), a refusal removes the volumes, and `source_bytes`/`target_f
 the successor no longer declares by NAME is still refused (`refuseAbandonedPredecessorClaims`), and
 `ensurePostgres` keeps a belt: a claim whose database differs from the resolved one is refused
 rather than re-provisioned, should anything reach provisioning without the move.
+
+**The deployer's own databases move through its successor** (qits-2209, the owner's rulings of
+2026-11-14: a failed move restores the original service; no person in a deploy). The deployer cannot
+stop itself, so its own deploy only DECIDES: `plan` turns each move into a `SelfMove.Step` (refused
+before anything stops when the target exists and is not a leftover of an earlier self-move), nothing
+is stopped, copied or provisioned, and the self-update carries `QITS_RESOURCE_<NAME>_URL` already
+naming the TARGET plus `QITS_RESOURCE_<NAME>_MOVE`, the encoded step. Its health start period grows
+by `qits.deployments.database-move.self-timeout` (`PT10M`), which is also the copy's deadline. The
+deployer is `stop-first`, so nothing writes when the successor starts.
+
+- **`main` moves before Quarkus starts** (`dbhost/DeploymentsMain` → `SelfMoveBoot`, plain Java, env
+  and docker socket only, so no datasource and no Flyway yet). A copy runs extract, ingest, compare
+  as above; a same-server move is the rename in place. The SOURCE is not written by a copy at all.
+  Any failure undoes what this start changed and exits 1: the task fails, swarm's
+  `--update-failure-action rollback` starts the old deployer, on its untouched source.
+- **The state lives where both processes can read it**: a marker volume `qits-dbmove-<id>`
+  (labels `…dbmove.kind=self-move`, `…dbmove.self-move=<step>`; also the dump's volume) from before
+  the first change until the end, and the target's COMMENT `qits-self-move:<id>:copying|verified|
+  renaming|done` (a rename marks the source first; the comment travels with it).
+- **Which end a process is bound to decides** (its own `QITS_RESOURCE_<NAME>_URL`): every start
+  lists the markers; bound to a marker's SOURCE means swarm rolled back, and it UNDOES the step — a
+  copy's target dropped (only while the source exists, only when marked by this move), a rename
+  renamed back. Bound to the TARGET means the move is in effect. A step marked `done` is never
+  undone, and a step found `verified` or done on a restart is never redone, so writes made after
+  the switch are never lost. An ordinary start costs one `docker volume ls`.
+- **`SelfMoveFinish`, once swarm says `completed`**: the `pd_database_move` row (`MOVED`), the
+  target marked `done`, a copy's source renamed `<db>_moved_<stamp>` and kept for the retention, the
+  marker removed. A failure keeps the marker; the next start finishes it. `BootResourceRegistration`
+  records the claim's SERVER off the url host, so from the successor's first boot the claim says
+  where the data is and the next self-deploy plans nothing.
+- `QITS_RESOURCE_<NAME>_MOVE` is the one resource variable not kept when unstated
+  (`keptByTheDeployer`): the next update removes it. The operator's door still answers 409 for the
+  deployer: its databases move only with its own deployment.
 
 **A deployment that fails AFTER its move switched ROLLS BACK, and only then is FAILED** (qits-2249,
 the owner's ruling of 2026-11-14 — "FAILED after the switch, the application is DOWN" is not an end

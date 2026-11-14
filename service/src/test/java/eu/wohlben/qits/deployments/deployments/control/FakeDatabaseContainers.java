@@ -47,6 +47,7 @@ public class FakeDatabaseContainers implements DatabaseContainers {
   private final List<String> killed = Collections.synchronizedList(new ArrayList<>());
   private final Map<String, Function<OneShot, Outcome>> scripted = new ConcurrentHashMap<>();
   private final Map<String, Runnable> onKill = new ConcurrentHashMap<>();
+  private final Map<String, Map<String, String>> labelled = new ConcurrentHashMap<>();
   private volatile Drain drain = Drain.DRAINED;
 
   public void reset() {
@@ -56,6 +57,7 @@ public class FakeDatabaseContainers implements DatabaseContainers {
     killed.clear();
     scripted.clear();
     onKill.clear();
+    labelled.clear();
     drain = Drain.DRAINED;
   }
 
@@ -145,12 +147,30 @@ public class FakeDatabaseContainers implements DatabaseContainers {
       return answer.apply(shot);
     }
     return switch (shot.purpose()) {
-      case "check" -> new Outcome(0, DatabaseScripts.EXISTS_MARKER + "f\n", false);
+      case "check" -> shot.script().contains(DatabaseScripts.DESCRIBE_MARKER)
+          ? absent(shot.script())
+          : new Outcome(0, DatabaseScripts.EXISTS_MARKER + "f\n", false);
       case "size" -> sized(DEFAULT_SIZE);
       case "space" -> oneFilesystem(DEFAULT_FREE);
       case "extract", "ingest" -> printing(MANIFEST);
       default -> new Outcome(0, "", false);
     };
+  }
+
+  /** What {@link DatabaseScripts#describe} prints when none of the databases it names exists. */
+  static Outcome absent(String script) {
+    StringBuilder out = new StringBuilder();
+    java.util.regex.Matcher names =
+        java.util.regex.Pattern.compile("'" + DatabaseScripts.DESCRIBE_MARKER + "([a-z0-9_]+)='").matcher(script);
+    while (names.find()) {
+      out.append(DatabaseScripts.DESCRIBE_MARKER).append(names.group(1)).append("=false=\n");
+    }
+    return new Outcome(0, out.toString(), false);
+  }
+
+  /** What {@link DatabaseScripts#describe} prints for one database that exists with {@code mark}. */
+  public static Outcome described(String database, String mark) {
+    return new Outcome(0, DatabaseScripts.DESCRIBE_MARKER + database + "=true=" + mark + "\n", false);
   }
 
   @Override
@@ -160,8 +180,30 @@ public class FakeDatabaseContainers implements DatabaseContainers {
   }
 
   @Override
+  public boolean createVolume(String volume, Map<String, String> labels) {
+    created.add(volume);
+    if (!labels.isEmpty()) {
+      labelled.put(volume, Map.copyOf(labels));
+    }
+    return true;
+  }
+
+  @Override
+  public Map<String, Map<String, String>> labelledVolumes(String key, String value) {
+    Map<String, Map<String, String>> found = new java.util.TreeMap<>();
+    labelled.forEach(
+        (volume, labels) -> {
+          if (value.equals(labels.get(key))) {
+            found.put(volume, labels);
+          }
+        });
+    return found;
+  }
+
+  @Override
   public boolean removeVolume(String volume) {
     removed.add(volume);
+    labelled.remove(volume);
     return true;
   }
 

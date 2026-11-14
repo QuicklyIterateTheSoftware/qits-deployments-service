@@ -255,9 +255,27 @@ public class DockerDatabaseContainers implements DatabaseContainers {
     }
   }
 
+  /**
+   * An instance for use before Quarkus starts (qits-2209): the deployer's successor moves its own
+   * databases in {@code main}, where there is no CDI and no config yet.
+   */
+  public static DockerDatabaseContainers standalone(String runtime, int outputMaxChars) {
+    DockerDatabaseContainers containers = new DockerDatabaseContainers();
+    containers.runtime = runtime;
+    containers.outputMaxChars = outputMaxChars;
+    containers.dockerConfigDir = Optional.empty();
+    return containers;
+  }
+
   @Override
   public boolean createVolume(String volume) {
+    return createVolume(volume, Map.of());
+  }
+
+  @Override
+  public boolean createVolume(String volume, Map<String, String> extra) {
     Map<String, String> labels = new LinkedHashMap<>(NAMESPACE.forVolume(OWNER, "database-move", volume));
+    extra.forEach((key, value) -> labels.put(NAMESPACE.key(key), value));
     ContainerProcess.Result created =
         call(
             DockerArgv.volumeCreate(runtime, NAMESPACE, new VolumeSpec(volume), labels),
@@ -268,6 +286,49 @@ public class DockerDatabaseContainers implements DatabaseContainers {
       return false;
     }
     return true;
+  }
+
+  /**
+   * {@code docker volume ls -q --filter label=<ns.key>=<value>}, then one {@code docker volume
+   * inspect} per volume for its labels — the library's two verbs. Labels outside this component's
+   * namespace are left out; the namespace is cut off the rest.
+   */
+  @Override
+  public Map<String, Map<String, String>> labelledVolumes(String key, String value) {
+    ContainerProcess.Result listed =
+        call(DockerArgv.volumeLs(runtime, Map.of(NAMESPACE.key(key), value)), Map.of(), CALL_TIMEOUT);
+    if (listed.exitCode() != 0 || listed.timedOut()) {
+      throw new IllegalStateException("could not list the volumes: " + firstLine(listed.output()));
+    }
+    Map<String, Map<String, String>> volumes = new LinkedHashMap<>();
+    for (String line : String.valueOf(listed.output()).split("\n")) {
+      String volume = line.strip();
+      if (volume.isEmpty()) {
+        continue;
+      }
+      ContainerProcess.Result inspected =
+          call(DockerArgv.volumeInspectLabels(runtime, volume), Map.of(), CALL_TIMEOUT);
+      if (inspected.exitCode() != 0 || inspected.timedOut()) {
+        throw new IllegalStateException(
+            "could not read the labels of " + volume + ": " + firstLine(inspected.output()));
+      }
+      volumes.put(volume, shortLabels(inspected.output()));
+    }
+    return volumes;
+  }
+
+  /** {@code key=value} lines, the namespace cut off; lines of another namespace are dropped. */
+  static Map<String, String> shortLabels(String output) {
+    Map<String, String> labels = new LinkedHashMap<>();
+    for (String line : String.valueOf(output).split("\n")) {
+      String entry = line.strip();
+      int eq = entry.indexOf('=');
+      if (eq <= 0 || !entry.startsWith(NAMESPACE_PREFIX)) {
+        continue;
+      }
+      labels.put(entry.substring(NAMESPACE_PREFIX.length(), eq), entry.substring(eq + 1));
+    }
+    return labels;
   }
 
   @Override

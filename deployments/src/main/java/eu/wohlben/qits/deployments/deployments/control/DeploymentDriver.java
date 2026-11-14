@@ -179,9 +179,13 @@ public interface DeploymentDriver {
    * {@link #RESOURCE_PREFIX} — and so a variable an update keeps on the live service whether or not
    * the argv states it. The swarm driver's {@link #keptWhenUnstated} answers with it, and the spec
    * parser refuses such a key in {@code image_defaults:} with it.
+   *
+   * <p>A handed-over move, {@code QITS_RESOURCE_<NAME>_MOVE} (qits-2209), is the one resource
+   * variable that is NOT kept: it belongs to the one update that carried it.
    */
   static boolean keptByTheDeployer(String key) {
-    return DEPLOYER_OWN_VARIABLES.contains(key) || key.startsWith(RESOURCE_PREFIX);
+    return DEPLOYER_OWN_VARIABLES.contains(key)
+        || (key.startsWith(RESOURCE_PREFIX) && !key.endsWith("_" + SelfMove.SUFFIX));
   }
 
   /** The environment a service belongs to. Every service has one. */
@@ -640,6 +644,15 @@ public interface DeploymentDriver {
    */
   default boolean isOwnService(String name) {
     return false;
+  }
+
+  /**
+   * The name of the service this process is a task of, when the driver can tell (qits-2209): the
+   * deployer's successor waits on it before it finishes moving its own databases. Empty for a
+   * driver that cannot tell.
+   */
+  default Optional<String> ownService() {
+    return Optional.empty();
   }
 
   /**

@@ -115,6 +115,7 @@ class SwarmDeploymentDriverTest {
     driver.healthIntervalSeconds = 3;
     driver.healthRetries = 3;
     driver.healthStartPeriodSeconds = 60;
+    driver.selfMoveTimeout = java.time.Duration.ofMinutes(10);
     driver.updateMonitorSeconds = 60;
     driver.flatNetwork = "qits-net";
     driver.privateNetwork = "qits-private";
@@ -1917,6 +1918,33 @@ class SwarmDeploymentDriverTest {
     }
     assertFalse(driver.keptWhenUnstated("QITS_EVENTS_URL"));
     assertFalse(driver.keptWhenUnstated("HAND_ADDED"));
+    // A handed-over move belongs to the one update that carried it (qits-2209): the next update
+    // removes it, or every later start would see a move again.
+    assertFalse(driver.keptWhenUnstated("QITS_RESOURCE_DB_MOVE"));
+  }
+
+  @Test
+  void aSuccessorThatMovesItsDatabasesFirstGetsTheMoveAddedToItsStartPeriod() {
+    // qits-2209: the deployer's successor copies its own databases before it listens, so swarm must
+    // not call it unhealthy half-way through the copy.
+    DeploymentDriver.ResourceBinding moving =
+        new DeploymentDriver.ResourceBinding(
+            "db",
+            List.of(
+                new DeploymentDriver.ResourceBinding.Value("URL", "jdbc:postgresql://h:5432/qits_x"),
+                new DeploymentDriver.ResourceBinding.Value("USERNAME", "qits_x"),
+                new DeploymentDriver.ResourceBinding.Value("PASSWORD", "pw"),
+                new DeploymentDriver.ResourceBinding.Value("MOVE", "the-step")));
+
+    List<String> argv =
+        driver()
+            .buildCreateArgv(
+                spec(DeploymentDriver.UpdateOrder.STOP_FIRST, List.of(moving)), "dev-qits-gateway", List.of("qits-net"));
+
+    assertTrue(argv.containsAll(List.of("--health-start-period", "660s")), argv.toString());
+    assertTrue(argv.contains("QITS_RESOURCE_DB_MOVE=the-step"), argv.toString());
+    List<String> plain = driver().buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
+    assertTrue(plain.containsAll(List.of("--health-start-period", "60s")), "every other start is as it was");
   }
 
   @Test

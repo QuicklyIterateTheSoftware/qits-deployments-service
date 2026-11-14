@@ -102,6 +102,21 @@ public interface DatabaseContainers {
   /** Create the named volume a move's two containers share. Creating one that exists is a no-op. */
   boolean createVolume(String volume);
 
+  /**
+   * {@link #createVolume(String)}, with {@code labels} added (qits-2209). The keys are short — {@code
+   * kind}, {@code self-move} — and the implementation puts them in its own namespace.
+   */
+  boolean createVolume(String volume, Map<String, String> labels);
+
+  /**
+   * Every volume that carries the label {@code key=value}, with all of its labels in the short form
+   * {@link #createVolume(String, Map)} took them in (qits-2209). Empty when there is none.
+   *
+   * @throws IllegalStateException when the runtime cannot answer — "none" and "could not ask" must
+   *     not read the same
+   */
+  Map<String, Map<String, String>> labelledVolumes(String key, String value);
+
   /** Remove the named volume. Removing one that is already gone counts as done. */
   boolean removeVolume(String volume);
 

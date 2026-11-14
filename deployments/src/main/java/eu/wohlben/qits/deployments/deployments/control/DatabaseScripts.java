@@ -141,6 +141,81 @@ final class DatabaseScripts {
     return null;
   }
 
+  /** The marker {@link #describe} prints before each database's line. */
+  static final String DESCRIBE_MARKER = "qits-db=";
+
+  /** What a mark may contain: it is spliced into a SQL literal, so no quote and no space. */
+  private static final String MARK = "[a-z0-9:-]{1,120}";
+
+  /**
+   * For each database: whether it exists, and its comment (qits-2209). Prints one line per name,
+   * {@value #DESCRIBE_MARKER}{@code <name>=<true|false>=<comment or nothing>}. The deployer's own move
+   * keeps its state in that comment, so a process that boots later can read it back.
+   */
+  static String describe(String... databases) {
+    return psql(ADMIN_DATABASE, describeSql(databases));
+  }
+
+  /** {@link #describe}'s statements, plain SQL — what the real-postgres test runs over JDBC. */
+  static String describeSql(String... databases) {
+    StringBuilder sql = new StringBuilder();
+    for (String database : databases) {
+      String db = id(database);
+      sql.append("SELECT '")
+          .append(DESCRIBE_MARKER)
+          .append(db)
+          .append("=' || EXISTS (SELECT 1 FROM pg_database WHERE datname = '")
+          .append(db)
+          .append("') || '=' || coalesce((SELECT shobj_description(oid, 'pg_database') FROM")
+          .append(" pg_database WHERE datname = '")
+          .append(db)
+          .append("'), '');\n");
+    }
+    return sql.toString().strip();
+  }
+
+  /** One database as {@link #describe} saw it. {@code mark} is empty when it has no comment. */
+  record Described(boolean exists, String mark) {}
+
+  /**
+   * What {@link #describe} printed, by name — or null when a name is missing from the output: a
+   * script that did not finish says nothing about any of them.
+   */
+  static Map<String, Described> describeAnswer(String output, String... databases) {
+    Map<String, Described> found = new TreeMap<>();
+    for (String line : lines(output)) {
+      if (!line.startsWith(DESCRIBE_MARKER)) {
+        continue;
+      }
+      String[] parts = line.substring(DESCRIBE_MARKER.length()).split("=", 3);
+      if (parts.length < 2) {
+        return null;
+      }
+      // `text || boolean` prints `true`/`false`; psql's own boolean column prints `t`/`f`.
+      boolean exists = "t".equals(parts[1]) || "true".equals(parts[1]);
+      found.put(parts[0], new Described(exists, parts.length > 2 ? parts[2].strip() : ""));
+    }
+    for (String database : databases) {
+      if (!found.containsKey(database)) {
+        return null;
+      }
+    }
+    return found;
+  }
+
+  /** Set the database's comment to {@code mark}, or clear it when {@code mark} is null. */
+  static String comment(String database, String mark) {
+    return psql(ADMIN_DATABASE, commentSql(database, mark));
+  }
+
+  /** {@link #comment}'s statement, plain SQL. */
+  static String commentSql(String database, String mark) {
+    if (mark != null && !mark.matches(MARK)) {
+      throw new IllegalArgumentException("not a mark: " + mark);
+    }
+    return "COMMENT ON DATABASE " + id(database) + " IS " + (mark == null ? "NULL" : "'" + mark + "'") + ";";
+  }
+
   /**
    * The source's size, for the move's space check (qits-2243): prints {@value #SIZE_MARKER}{@code
    * <bytes>}, {@code pg_database_size} — what the database occupies on disk, which is what a dump
@@ -328,6 +403,15 @@ final class DatabaseScripts {
    * a grant to say.
    */
   static String ingest(String database, String role, boolean dropLeftover) {
+    return ingest(database, role, dropLeftover, null);
+  }
+
+  /**
+   * {@link #ingest}, with {@code mark} set as the new database's comment in the same session that
+   * creates it (qits-2209). A crash during the restore then leaves a database that says whose
+   * leftover it is.
+   */
+  static String ingest(String database, String role, boolean dropLeftover, String mark) {
     String db = id(database);
     String r = id(role);
     String manifest = DatabaseContainers.MOUNT + "/target.counts";
@@ -353,6 +437,7 @@ final class DatabaseScripts {
             + " OWNER "
             + r
             + ";\n"
+            + (mark == null ? "" : commentSql(database, mark) + "\n")
             + "REVOKE ALL ON DATABASE "
             + db
             + " FROM public;";

@@ -3160,6 +3160,9 @@ public class DeployService implements ReleaseAnnouncements {
       return;
     }
     Set<String> moved = pending.movedResources();
+    // The deployer's own moves (qits-2209) are its successor's to run: never stopped, copied or
+    // provisioned here. The successor gets a binding to the target plus the move itself.
+    Set<String> handedOver = pending.handedOverResources();
     // A rename's FIRST deployment carries the predecessor's settings over, in the claim transfer's
     // own transaction. Not on a later one: a successor already deployed has been configured since,
     // and a key-wise copy would resurrect what was removed. The copy rides the half that provisions
@@ -3283,7 +3286,22 @@ public class DeployService implements ReleaseAnnouncements {
     }
     // ...and the moved resources, provisioned where the moves put them. From here on every failure
     // reaches `finish` with a rollback pending, and is undone there.
-    if (!moved.isEmpty()) {
+    if (!handedOver.isEmpty()) {
+      try {
+        for (DeploymentDriver.ResourceBinding binding : databaseMoves.handOverBindings(pending)) {
+          provisioned.put(binding.name(), binding);
+        }
+      } catch (RuntimeException e) {
+        LOG.warnf("Could not hand the database moves of %s over: %s", plan.applicationName(), e.getMessage());
+        finish(
+            deploymentId,
+            target,
+            PdDeploymentStatus.FAILED,
+            "[database move failed: " + e.getMessage() + "]");
+        return;
+      }
+    }
+    if (moved.size() > handedOver.size()) {
       try {
         for (DeploymentDriver.ResourceBinding binding :
             resourceProvisioning.ensureAll(
@@ -3292,7 +3310,7 @@ public class DeployService implements ReleaseAnnouncements {
                 plan.renamedFrom(),
                 plan.exposure(),
                 pending.resolved(),
-                resource -> moved.contains(resource.name()),
+                resource -> moved.contains(resource.name()) && !handedOver.contains(resource.name()),
                 settingsAfterTheMove ? settingsCopy : null)) {
           provisioned.put(binding.name(), binding);
         }
@@ -5035,6 +5053,11 @@ public class DeployService implements ReleaseAnnouncements {
     String trimmed = output.strip();
     int newline = trimmed.indexOf('\n');
     return newline < 0 ? trimmed : trimmed.substring(0, newline);
+  }
+
+  /** Run {@code task} on the deploy worker, behind whatever is queued (qits-2209). */
+  void enqueue(Runnable task) {
+    worker.submit(task);
   }
 
   /**

@@ -454,29 +454,90 @@ class DatabaseMovesTest {
   }
 
   @Test
-  void theDeployersOwnDatabaseIsRefusedBeforeAnythingStops() {
+  void theDeployersOwnDatabasesAreHandedToItsSuccessorAndNothingStops() {
+    // qits-2209: the deployer going private moves both its databases to the private server. It
+    // cannot stop itself, so it decides the move and hands it over; nothing stops or copies here.
     serversRunningIn("mv-e");
     claim("qits-deployments", "mv-e", "db", "qits_deployments", "public");
+    claim("qits-deployments", "mv-e", "eventstream", "qits_deployments_eventstream", "public");
     driver.scriptDeclaredReplicas("mv-e-qits-deployments", 1);
+
+    DatabaseMoves.Pending pending =
+        moves.plan(
+            "qits-deployments",
+            "mv-e",
+            null,
+            DeploymentDriver.Exposure.PRIVATE,
+            List.of(
+                new ResourceProvisioning.Resolved("db", "qits_deployments"),
+                new ResourceProvisioning.Resolved("eventstream", "qits_deployments_eventstream")));
+
+    assertEquals(List.of(), pending.planned(), "nothing for this process to run");
+    assertEquals(java.util.Set.of("db", "eventstream"), pending.handedOverResources());
+    assertEquals(pending.handedOverResources(), pending.movedResources(), "so neither is provisioned");
+    assertTrue(driver.calls().stream().noneMatch(call -> call.startsWith("scale:")), driver.calls().toString());
+    assertEquals(
+        List.of("check", "check"),
+        containers.shots().stream().map(DatabaseContainers.OneShot::purpose).toList(),
+        "only the question whether each target is free");
+    assertEquals("qits-private", containers.shots().get(0).network());
+
+    List<DeploymentDriver.ResourceBinding> bindings = moves.handOverBindings(pending);
+    assertEquals(2, bindings.size());
+    DeploymentDriver.ResourceBinding db = bindings.get(0);
+    assertEquals("jdbc:postgresql://mv-e-qits-oci-postgresql-private:5432/qits_deployments", db.value("URL"));
+    assertEquals("qits_deployments", db.value("USERNAME"));
+    assertEquals(PASSWORD, db.value("PASSWORD"), "the credential does not change");
+    SelfMove.Step step = SelfMove.Step.parse(db.value(SelfMove.SUFFIX));
+    assertEquals(DatabaseServer.PUBLIC, step.sourceServer());
+    assertEquals("mv-e-qits-oci-postgresql", step.sourceHost());
+    assertEquals("qits-net", step.sourceNetwork());
+    assertEquals(DatabaseServer.PRIVATE, step.targetServer());
+    assertEquals("qits-private", step.targetNetwork());
+    assertEquals(PUBLIC_IMAGE, step.image(), "the source server's image, as a copy uses");
+    assertFalse(db.value(SelfMove.SUFFIX).contains(PASSWORD), "no password in the plan");
+    assertEquals("eventstream", SelfMove.Step.parse(bindings.get(1).value(SelfMove.SUFFIX)).resource());
+
+    // Nothing switched yet: the claims say where the data is until the successor is bound elsewhere.
+    assertEquals("public", claimOf("qits-deployments", "mv-e", "db").server);
+    assertEquals(List.of(), movesOf("qits-deployments").stream().filter(r -> "mv-e".equals(r.environmentName)).toList());
+  }
+
+  @Test
+  void theDeployersOwnMoveOntoADatabaseNoMoveLeftIsRefusedBeforeTheHandOver() {
+    serversRunningIn("mv-e2");
+    claim("qits-deployments", "mv-e2", "db", "qits_deployments", "public");
+    containers.script("check", shot -> FakeDatabaseContainers.described("qits_deployments", ""));
 
     ResourceException refused =
         assertThrows(
             ResourceException.class,
             () ->
-                moves.beforeProvisioning(
+                moves.plan(
                     "qits-deployments",
-                    "mv-e",
+                    "mv-e2",
                     null,
-                    DeploymentDriver.Exposure.PUBLIC,
-                    one("db", "qits_deployments_moved_away")));
+                    DeploymentDriver.Exposure.PRIVATE,
+                    one("db", "qits_deployments")));
 
-    assertTrue(refused.getMessage().contains("own database"), refused.getMessage());
-    assertTrue(driver.calls().stream().noneMatch(call -> call.startsWith("scale:")));
-    assertEquals(List.of(), containers.shots());
-    assertEquals("qits_deployments", claimOf("qits-deployments", "mv-e", "db").databaseName);
+    assertTrue(refused.getMessage().contains("already exists"), refused.getMessage());
     assertTrue(
         movesOf("qits-deployments").stream()
-            .anyMatch(row -> row.state == PdDatabaseMoveState.REFUSED && "mv-e".equals(row.environmentName)));
+            .anyMatch(row -> row.state == PdDatabaseMoveState.REFUSED && "mv-e2".equals(row.environmentName)));
+  }
+
+  @Test
+  void theDeployersOwnLeftoverOfAnEarlierAttemptIsNoRefusal() {
+    serversRunningIn("mv-e3");
+    claim("qits-deployments", "mv-e3", "db", "qits_deployments", "public");
+    containers.script(
+        "check", shot -> FakeDatabaseContainers.described("qits_deployments", "qits-self-move:earlier:copying"));
+
+    DatabaseMoves.Pending pending =
+        moves.plan(
+            "qits-deployments", "mv-e3", null, DeploymentDriver.Exposure.PRIVATE, one("db", "qits_deployments"));
+
+    assertEquals(java.util.Set.of("db"), pending.handedOverResources());
   }
 
   @Test
