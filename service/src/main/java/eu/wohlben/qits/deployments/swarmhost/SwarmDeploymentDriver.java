@@ -3835,6 +3835,80 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   }
 
   /**
+   * One line per service of {@link #labelledServices}: its name, a tab, and its service labels as
+   * JSON. The name has no tab (it is a DNS label) and the JSON is one line, so the split is exact.
+   */
+  static final String SERVICE_ALL_LABELS_FORMAT = "{{.Spec.Name}}\t{{json .Spec.Labels}}";
+
+  private static final com.fasterxml.jackson.databind.ObjectMapper LABEL_JSON =
+      new com.fasterxml.jackson.databind.ObjectMapper();
+
+  /**
+   * The route tables' input (qits-2174): one {@code service ls -q --filter label=<app-name>} and ONE
+   * {@code service inspect} of every id it named. Either call failing — or a line that does not
+   * read — answers empty rather than a partial list, because a table built from a partial list
+   * withdraws the routes of whatever was left out; the next pass asks again.
+   */
+  @Override
+  public Optional<List<LabelledService>> labelledServices() {
+    ContainerProcess.Result listed =
+        run(
+            SwarmArgv.serviceLsQuiet(runtime, List.of(SwarmArgv.labelFilter(APP_NAME_LABEL))),
+            CLEANUP_TIMEOUT);
+    if (listed.exitCode() != 0 || listed.timedOut()) {
+      LOG.debugf("Could not list the services for the route tables: %s", listed.output());
+      return Optional.empty();
+    }
+    List<String> ids = lines(listed.output());
+    if (ids.isEmpty()) {
+      return Optional.of(List.of());
+    }
+    ContainerProcess.Result inspected = run(buildInspectAllArgv(ids), INSPECT_TIMEOUT);
+    if (inspected.exitCode() != 0 || inspected.timedOut()) {
+      LOG.debugf("Could not inspect the services for the route tables: %s", inspected.output());
+      return Optional.empty();
+    }
+    List<LabelledService> services = new ArrayList<>();
+    for (String line : lines(inspected.output())) {
+      int tab = line.indexOf('\t');
+      if (tab <= 0) {
+        LOG.debugf("Unreadable service inspect line for the route tables: %s", line);
+        return Optional.empty();
+      }
+      String name = line.substring(0, tab).strip();
+      String json = line.substring(tab + 1).strip();
+      Map<String, String> labels = new java.util.LinkedHashMap<>();
+      if (!json.isEmpty() && !json.equals("null")) {
+        try {
+          com.fasterxml.jackson.databind.JsonNode node = LABEL_JSON.readTree(json);
+          if (node == null || !node.isObject()) {
+            return Optional.empty();
+          }
+          node.fields()
+              .forEachRemaining(entry -> labels.put(entry.getKey(), entry.getValue().asText()));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException unreadable) {
+          LOG.debugf("Unreadable labels of %s for the route tables: %s", name, json);
+          return Optional.empty();
+        }
+      }
+      services.add(new LabelledService(name, labels));
+    }
+    return Optional.of(List.copyOf(services));
+  }
+
+  /**
+   * Package-private for the argv test: one {@code service inspect} of every id, one format — the
+   * library's argv for the first id ({@code SwarmArgv.serviceInspect} ends with the service), and
+   * the other ids after it, as {@code docker service inspect} takes them.
+   */
+  List<String> buildInspectAllArgv(List<String> ids) {
+    List<String> argv =
+        new ArrayList<>(SwarmArgv.serviceInspect(runtime, ids.get(0), SERVICE_ALL_LABELS_FORMAT));
+    argv.addAll(ids.subList(1, ids.size()));
+    return List.copyOf(argv);
+  }
+
+  /**
    * The backfill's one write per service: {@code service update --detach --label-add …} and
    * nothing else, so swarm changes no task. The exposure and placement are what the service's
    * network says now; a service on both networks, or on neither, is left for its next deployment

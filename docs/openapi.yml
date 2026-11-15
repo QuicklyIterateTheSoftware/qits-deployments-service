@@ -4,6 +4,27 @@
 openapi: 3.1.0
 components:
   schemas:
+    Application:
+      type: object
+      properties:
+        environment:
+          type: string
+        application:
+          type: string
+        exposure:
+          type: string
+        browserHost:
+          type: string
+        apiDocsPath:
+          type: string
+        endpoints:
+          type: array
+          items:
+            $ref: "#/components/schemas/Endpoint"
+        navigation:
+          type: array
+          items:
+            $ref: "#/components/schemas/Navigation"
     ApplicationSpec:
       type: object
       deprecated: true
@@ -53,6 +74,34 @@ components:
           $ref: "#/components/schemas/PdDeploymentRequestDto"
         deployment:
           $ref: "#/components/schemas/PdDeploymentDto"
+    EdgeRouteTableDto:
+      type: object
+      properties:
+        edge:
+          type: string
+        version:
+          type: integer
+          format: int64
+        builtAt:
+          type: string
+        applications:
+          type: array
+          items:
+            $ref: "#/components/schemas/Application"
+        withdrawn:
+          type: array
+          items:
+            $ref: "#/components/schemas/Withdrawn"
+    Endpoint:
+      type: object
+      properties:
+        path:
+          type: string
+        upstreamHost:
+          type: string
+        upstreamPort:
+          type: integer
+          format: int32
     EnvironmentResponse:
       type: object
       properties:
@@ -157,6 +206,18 @@ components:
         move:
           $ref: "#/components/schemas/PdDatabaseMoveDto"
         note:
+          type: string
+    Navigation:
+      type: object
+      properties:
+        slot:
+          type: string
+        label:
+          type: string
+        position:
+          type: integer
+          format: int32
+        subpath:
           type: string
     PdApplicationDto:
       type: object
@@ -599,6 +660,17 @@ components:
           type: array
           items:
             type: string
+    Withdrawn:
+      type: object
+      properties:
+        environment:
+          type: string
+        application:
+          type: string
+        host:
+          type: string
+        exposure:
+          type: string
   securitySchemes:
     SecurityScheme:
       type: openIdConnect
@@ -1131,6 +1203,38 @@ paths:
         - qits:desk-admin
         - qits:desk
         - qits:agent
+  /deployments/api/edge-routes/{edge}:
+    get:
+      summary: "The route table built for one edge: `public` (qits-edge) or `private`"
+      operationId: getEdgeRoutes
+      parameters:
+      - name: edge
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: "The stored table, as it is pushed to the edge"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EdgeRouteTableDto"
+        "404":
+          description: No edge of that name
+        "503":
+          description: No table has been built for that edge yet
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Edge Route Controller
+      security:
+      - SecurityScheme:
+        - qits:system
+        - qits:admin
+        - qits:agent
   /deployments/api/environments:
     get:
       summary: List environments
@@ -1618,4 +1722,4 @@ paths:
         - qits:system
 info:
   title: qits-platform-deployments API
-  version: 2026.1109.182422
+  version: 2026.1115.230135

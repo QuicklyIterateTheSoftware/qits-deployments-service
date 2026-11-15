@@ -412,8 +412,10 @@ public class BuildDeploymentIT {
     // One event in, one peer read — the git host, once — eight questions to the orchestrator, one
     // read back and one store behind all of it (the settings the argv carries are rows in it).
     // Nothing else: this component asks nobody who qits-ci is — the bearer is judged on keys
-    // fetched once, at startup.
-    ReportAssertions.assertEdgeCount(CATEGORY, CREATED_SLUG, 12);
+    // fetched once, at startup. One more since qits-2174 (task qits-2198): once live, the route
+    // tables are rebuilt off the services' labels — the `service ls` StorySwarm.ROUTE_TABLE_READ
+    // names, whose empty answer leaves nothing to inspect and nothing new to push.
+    ReportAssertions.assertEdgeCount(CATEGORY, CREATED_SLUG, 13);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY,
         CREATED_SLUG,
@@ -439,8 +441,9 @@ public class BuildDeploymentIT {
         CATEGORY, UPDATED_SLUG, NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
     // Two more than the create: the drift check's question about qits-private (epic qits-1976),
     // and the drift check's question about every OTHER attached network (qits-2174, qits-2197) —
-    // here the stand-in's one fabricated task network id, which never resolves to a name.
-    ReportAssertions.assertEdgeCount(CATEGORY, UPDATED_SLUG, 14);
+    // here the stand-in's one fabricated task network id, which never resolves to a name — and the
+    // route tables' `service ls` once it is live (qits-2174, task qits-2198), as for the create.
+    ReportAssertions.assertEdgeCount(CATEGORY, UPDATED_SLUG, 15);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY,
         UPDATED_SLUG,

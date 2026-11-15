@@ -312,10 +312,19 @@ public final class StorySwarm {
         label("service update-status " + service, "0"),
         // A service nothing has updated yet has no update status at all, so a first deployment's
         // verdict is the task itself — Running only once its healthcheck has passed.
-        label("service ps " + service, "0"));
+        label("service ps " + service, "0"),
+        ROUTE_TABLE_READ);
   }
 
-  /** …and the ten a replace asks: the create's, less the create, plus the live env and the drift check's overlay. */
+  /**
+   * The route tables' read after a deployment went live (qits-2174, task qits-2198,
+   * EdgeRoutePusher.afterDeploy): `service ls` of every service carrying the app-name label, and
+   * ONE `service inspect` of the ids it names. The stand-in answers that listing with no ids, so
+   * the inspect is never asked and the push has nothing new to carry — this one call, every time.
+   */
+  static final String ROUTE_TABLE_READ = label("service ls", "0");
+
+  /** …and the eleven a replace asks: the create's, less the create, plus the live env and the drift check's overlay. */
   public static List<String> updateCalls(String service, String application, String sha) {
     return List.of(
         label("pull " + image(StoryTarget.imageRef(application, sha)), "0"),
@@ -338,7 +347,9 @@ public final class StorySwarm {
         label("network inspect " + FAKE_TASK_NETWORK_ID, "1"),
         label("service update " + service, "0"),
         // …and the verdict is read off UpdateStatus, matched against when this process issued it.
-        label("service update-status " + service, "0"));
+        label("service update-status " + service, "0"),
+        // …and, live, the route tables are read again (qits-2174): see ROUTE_TABLE_READ.
+        ROUTE_TABLE_READ);
   }
 
   // --- the source --------------------------------------------------------------------------------

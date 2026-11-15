@@ -217,4 +217,9 @@ class ConsumerPactVerificationTest {
   Map<String, String> aRunningDatabaseMove() {
     return states.params(ProviderStates.A_RUNNING_DATABASE_MOVE);
   }
+
+  @State(ProviderStates.TWO_EDGES_WITH_ROUTES)
+  Map<String, String> twoEdgesWithRoutes() {
+    return states.params(ProviderStates.TWO_EDGES_WITH_ROUTES);
+  }
 }

@@ -39,6 +39,7 @@ public class EnvironmentOperations {
   @Inject EnvironmentService environments;
   @Inject DeployService deployService;
   @Inject DeploymentDriver driver;
+  @Inject EdgeRoutePusher edgeRoutes;
 
   /**
    * Where a tier's lifecycle leaves this component ({@link EnvironmentAnnouncer}). An {@code
@@ -193,6 +194,11 @@ public class EnvironmentOperations {
     int removed = driver.removeEnvironmentContainers(environmentId);
     if (removed > 0) {
       LOG.infof("Removed %d container(s) of environment %s", removed, environmentId);
+    }
+    if (removed > 0) {
+      // The tier's services left the labels, so they leave the route tables (qits-2174) — on the
+      // worker, where every rebuild runs, and never failing the teardown.
+      deployService.enqueue(edgeRoutes::refresh);
     }
     driver.detachPlatformPlane(List.copyOf(networks));
     for (String network : networks) {

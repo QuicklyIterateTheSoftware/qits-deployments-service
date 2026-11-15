@@ -341,6 +341,33 @@ public interface DeploymentDriver {
   }
 
   /**
+   * One service this component deployed, by name, with every service label it carries — the input
+   * the route tables are built from (qits-2174, {@code EdgeRouteTables}).
+   */
+  record LabelledService(String service, Map<String, String> labels) {
+
+    public LabelledService {
+      labels = labels == null ? Map.of() : Map.copyOf(labels);
+    }
+
+    /** The label's value, or null when the service does not carry it (or carries it blank). */
+    public String label(String key) {
+      String value = labels.get(key);
+      return value == null || value.isBlank() ? null : value.strip();
+    }
+  }
+
+  /**
+   * Every service carrying {@link #APP_NAME_LABEL}, with all of its service labels (qits-2174): one
+   * {@code service ls} and one {@code service inspect} of all of them. <b>Empty when the runtime
+   * could not be asked</b> — which is not the same answer as an empty list: a route table built from
+   * a failed read would withdraw every route the edges serve, so the caller builds nothing then.
+   */
+  default Optional<List<LabelledService>> labelledServices() {
+    return Optional.empty();
+  }
+
+  /**
    * Remove the leftover {@code qits-platform} overlay once nothing is attached to it (qits-2174) —
    * asked at startup and on every observation pass. Never any other network. Nothing for a driver
    * that has no such network.

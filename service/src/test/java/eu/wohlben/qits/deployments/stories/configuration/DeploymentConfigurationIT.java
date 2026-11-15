@@ -219,7 +219,9 @@ public class DeploymentConfigurationIT {
     // reads and stops — and the leftover-overlay sweep that runs right after it asks `network
     // inspect qits-platform` once to see whether anything is still attached. Both run once per
     // boot on the worker, and this story is the first to drain after the shared process starts, so
-    // they land here rather than on the deployment this story is actually about.
+    // they land here rather than on the deployment this story is actually about. (The same `service
+    // ls` label is also the route tables' read once the deployment is live, qits-2174 task qits-2198
+    // — StorySwarm.createCalls carries it — so it is one edge either way and the count holds.)
     ReportAssertions.assertEdge(
         CATEGORY,
         READ_SLUG,

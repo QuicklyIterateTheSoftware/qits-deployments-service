@@ -395,6 +395,15 @@ class GoldenMasterRecordingTest {
               202,
               null,
               null),
+          // qits-2174: the route table the private edge fetches at its start.
+          new Interaction(
+              ProviderStates.TWO_EDGES_WITH_ROUTES,
+              "getEdgeRoutes",
+              "GET",
+              "/deployments/api/edge-routes/{edge}",
+              200,
+              null,
+              null),
           // Recorded by GatedGoldenMasterRecordingTest: only a gated application answers 401.
           write(
               ProviderStates.THE_MACHINE_GATE_IS_ON,

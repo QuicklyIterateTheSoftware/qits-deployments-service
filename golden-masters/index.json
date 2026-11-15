@@ -955,6 +955,31 @@
           }
         }
       ]
+    },
+    {
+      "name": "two edges with routes",
+      "slug": "two-edges-with-routes",
+      "params": {
+        "edge": "private"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getEdgeRoutes",
+          "method": "GET",
+          "path": "/deployments/api/edge-routes/{edge}",
+          "status": 200,
+          "file": "two-edges-with-routes/getEdgeRoutes.json",
+          "frozen": {
+            "ids": [],
+            "instants": [
+              "$.builtAt"
+            ],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
     }
   ]
 }
