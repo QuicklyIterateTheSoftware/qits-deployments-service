@@ -173,6 +173,11 @@ class ConsumerPactVerificationTest {
     return states.params(ProviderStates.A_DEPLOYMENT_REQUEST);
   }
 
+  @State(ProviderStates.A_HELD_DEPLOYMENT_REQUEST)
+  Map<String, String> aHeldDeploymentRequest() {
+    return states.params(ProviderStates.A_HELD_DEPLOYMENT_REQUEST);
+  }
+
   @State(ProviderStates.AN_APPLICATION_RUNNING)
   Map<String, String> anApplicationRunning() {
     return states.params(ProviderStates.AN_APPLICATION_RUNNING);

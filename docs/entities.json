@@ -152,7 +152,7 @@
           "type" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$DeploymentRequestResponse",
           "kind" : "assembler",
           "via" : null,
-          "site" : "PdDeploymentRequestController.byId(String)"
+          "site" : "PdDeploymentRequestController.approve(String, SecurityContext)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$ListDeploymentRequestsResponse",
@@ -258,6 +258,14 @@
         }
       ],
       "operations" : [
+        {
+          "operationId" : "approveDeploymentRequest",
+          "method" : "POST",
+          "path" : "/deployment-requests/{id}/approve",
+          "dto" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$DeploymentRequestResponse",
+          "kind" : "returns",
+          "cardinality" : "single"
+        },
         {
           "operationId" : "decommissionApplication",
           "method" : "POST",
@@ -368,7 +376,7 @@
           "type" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$DeploymentRequestResponse",
           "kind" : "assembler",
           "via" : null,
-          "site" : "PdDeploymentRequestController.byId(String)"
+          "site" : "PdDeploymentRequestController.approve(String, SecurityContext)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$ListDeploymentRequestsResponse",
@@ -389,10 +397,16 @@
           "site" : "DatabaseMoves.coordinates(String, PdDeployment)"
         },
         {
-          "type" : "eu.wohlben.qits.deployments.deployments.control.RepositoryRef",
-          "kind" : "assembler",
+          "type" : "eu.wohlben.qits.deployments.deployments.control.DeployHold",
+          "kind" : "mapper",
           "via" : null,
-          "site" : "DatabaseMoves.coordinates(String, PdDeployment)"
+          "site" : "DeployService.approvalOf(PdDeploymentRequest)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.RepositoryRef",
+          "kind" : "mapper",
+          "via" : null,
+          "site" : "DeployService.approvalOf(PdDeploymentRequest)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
@@ -408,6 +422,14 @@
         }
       ],
       "operations" : [
+        {
+          "operationId" : "approveDeploymentRequest",
+          "method" : "POST",
+          "path" : "/deployment-requests/{id}/approve",
+          "dto" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$DeploymentRequestResponse",
+          "kind" : "returns",
+          "cardinality" : "single"
+        },
         {
           "operationId" : "getDeploymentRequest",
           "method" : "GET",
@@ -444,7 +466,7 @@
           "operationId" : "softwareReleased",
           "method" : "POST",
           "path" : "/events/software-released",
-          "dto" : "eu.wohlben.qits.deployments.deployments.control.RepositoryRef",
+          "dto" : "eu.wohlben.qits.deployments.deployments.control.DeployHold",
           "kind" : "body",
           "cardinality" : "single"
         }
@@ -471,6 +493,12 @@
           "site" : "DatabaseMoves.coordinates(String, PdDeployment)"
         },
         {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.DeployHold",
+          "kind" : "mapper",
+          "via" : null,
+          "site" : "ReleaseAcceptance.owedOf(PdOwedRelease)"
+        },
+        {
           "type" : "eu.wohlben.qits.deployments.deployments.control.RepositoryRef",
           "kind" : "mapper",
           "via" : null,
@@ -490,7 +518,7 @@
           "operationId" : "softwareReleased",
           "method" : "POST",
           "path" : "/events/software-released",
-          "dto" : "eu.wohlben.qits.deployments.deployments.control.RepositoryRef",
+          "dto" : "eu.wohlben.qits.deployments.deployments.control.DeployHold",
           "kind" : "body",
           "cardinality" : "single"
         }
@@ -705,16 +733,16 @@
           "site" : "DatabaseMoves.request(String, String, String, String, String)"
         },
         {
-          "type" : "eu.wohlben.qits.deployments.deployments.control.DatabaseMoves$Live",
-          "kind" : "mapper",
+          "type" : "eu.wohlben.qits.deployments.deployments.control.DeployHold",
+          "kind" : "assembler",
           "via" : null,
-          "site" : "DatabaseMoves.live(String, PdEnvironment)"
+          "site" : "DeployService.approvalOf(PdDeploymentRequest)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.deployments.control.RepositoryRef",
-          "kind" : "via",
-          "via" : "eu.wohlben.qits.deployments.deployments.control.DatabaseMoves$Live",
-          "site" : "Live.repository()"
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "DeployService.approvalOf(PdDeploymentRequest)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
@@ -790,6 +818,14 @@
           "path" : "/database-moves/{id}/abort",
           "dto" : "eu.wohlben.qits.deployments.api.PdDatabaseMoveController$MoveResponse",
           "kind" : "body",
+          "cardinality" : "single"
+        },
+        {
+          "operationId" : "approveDeploymentRequest",
+          "method" : "POST",
+          "path" : "/deployment-requests/{id}/approve",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
+          "kind" : "returns",
           "cardinality" : "single"
         },
         {
@@ -892,7 +928,7 @@
           "operationId" : "softwareReleased",
           "method" : "POST",
           "path" : "/events/software-released",
-          "dto" : "eu.wohlben.qits.deployments.deployments.control.RepositoryRef",
+          "dto" : "eu.wohlben.qits.deployments.deployments.control.DeployHold",
           "kind" : "body",
           "cardinality" : "single"
         },
@@ -951,6 +987,24 @@
           "kind" : "assembler",
           "via" : null,
           "site" : "PdServiceController.upsert(String, UpsertServiceRequest)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.DeployHold",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.control.DeployService$Target",
+          "site" : "DeployService.approvalOf(PdDeploymentRequest)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.DeployService$Target",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "DeployService.alreadyRegistered(String, String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.RepositoryRef",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.control.DeployService$Target",
+          "site" : "DeployService.approvalOf(PdDeploymentRequest)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.environments.control.ServiceCatalog$ApplicationView",
@@ -1055,6 +1109,14 @@
           "dto" : "eu.wohlben.qits.deployments.api.PdServiceController$ListServicesResponse",
           "kind" : "returns",
           "cardinality" : "collection"
+        },
+        {
+          "operationId" : "softwareReleased",
+          "method" : "POST",
+          "path" : "/events/software-released",
+          "dto" : "eu.wohlben.qits.deployments.deployments.control.DeployHold",
+          "kind" : "body",
+          "cardinality" : "single"
         },
         {
           "operationId" : "updateEnvironment",

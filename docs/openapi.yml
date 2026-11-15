@@ -336,6 +336,14 @@ components:
           $ref: "#/components/schemas/Instant"
         deploymentStatus:
           $ref: "#/components/schemas/PdDeploymentStatus"
+        deployHold:
+          type: boolean
+        releaseRequestQualifiedId:
+          type: string
+        approvedBy:
+          type: string
+        approvedAt:
+          $ref: "#/components/schemas/Instant"
     PdDeploymentStatus:
       type: string
       enum:
@@ -560,6 +568,10 @@ components:
           type: string
           pattern: \S
         priority:
+          type: string
+        deployHold:
+          type: boolean
+        releaseRequestQualifiedId:
           type: string
       required:
       - repoId
@@ -1047,6 +1059,45 @@ paths:
         - qits:desk
         - qits:agent
         - qits:system
+  /deployments/api/deployment-requests/{id}/approve:
+    post:
+      summary: Approve a deployment request held for manual approval — its deployment
+        is queued and runs on the worker
+      operationId: approveDeploymentRequest
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: Approved; the request and its queued deployment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentRequestResponse"
+        "404":
+          description: No such deployment request
+        "409":
+          description: "The request is not held, its gate already settled, or its\
+            \ version is no longer the application's newest release (approving it\
+            \ would be a rollback)"
+        "502":
+          description: The released spec could not be read
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Deployment Request Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:admin-agent
+        - qits:desk-admin
+        - qits:desk
+        - qits:agent
   /deployments/api/deployments:
     get:
       summary: "One tier's recorded deployments, newest-first"

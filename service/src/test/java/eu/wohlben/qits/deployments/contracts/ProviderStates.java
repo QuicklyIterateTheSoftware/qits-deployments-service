@@ -65,6 +65,14 @@ public class ProviderStates {
       "an application whose settings changed since its deployment";
 
   public static final String A_DEPLOYMENT_REQUEST = "a deployment request that deployed";
+
+  /**
+   * One release HELD for a person's approval (qits-2268): its request {@code UNMET}, unsettled,
+   * pointing at no deployment, naming the release request it came from. {@code id} is the request.
+   * Named by qits-platform-access-monorepo's {@code qits deployments requests approve} — the approval
+   * answers 200 — and by a read of the held request.
+   */
+  public static final String A_HELD_DEPLOYMENT_REQUEST = "a deployment request held for approval";
   public static final String AN_APPLICATION_RUNNING = "an application running in an environment";
   public static final String AN_APPLICATION_WITH_A_FAILED_DEPLOYMENT =
       "an application whose only deployment failed";
@@ -110,6 +118,9 @@ public class ProviderStates {
 
   /** A {@code @PactFilter} regex matching every state except the gated ones. */
   public static final String UNGATED_STATES = "^(?!" + THE_MACHINE_GATE_IS_ON + "$).*";
+
+  /** The release request the held state's release came from. */
+  static final String HELD_RELEASE_REQUEST = "contract-app-rr-1";
 
   /** The released version the deployed states ship. */
   static final String VERSION = "2026.101.120000";
@@ -166,6 +177,7 @@ public class ProviderStates {
     states.put(AN_APPLICATION_WITH_SETTINGS, this::anApplicationWithSettings);
     states.put(AN_APPLICATION_WITH_CHANGED_SETTINGS, this::anApplicationWithChangedSettings);
     states.put(A_DEPLOYMENT_REQUEST, this::aDeploymentRequest);
+    states.put(A_HELD_DEPLOYMENT_REQUEST, this::aHeldDeploymentRequest);
     states.put(AN_APPLICATION_RUNNING, this::anApplicationRunning);
     states.put(AN_APPLICATION_WITH_A_FAILED_DEPLOYMENT, this::anApplicationWithAFailedDeployment);
     states.put(A_DECOMMISSIONED_APPLICATION, this::aDecommissionedApplication);
@@ -470,6 +482,53 @@ public class ProviderStates {
             .getList("deploymentRequests.id");
     if (ids.size() != 1) {
       throw new IllegalStateException("expected one deployment request, got " + ids);
+    }
+    Map<String, String> params = new TreeMap<>();
+    params.put("applicationName", application);
+    params.put("environmentId", environmentId);
+    params.put("id", ids.get(0));
+    return new Setup(params, List.of(token));
+  }
+
+  /**
+   * One release announced with {@code deployHold}, so its request waits at the gate and nothing is
+   * deployed; {@code id} is that request. The deployment an approval queues is on the worker before
+   * the door answers, so clean-up's own {@code awaitIdle} waits for it.
+   */
+  private Setup aHeldDeploymentRequest() {
+    driver.reset();
+    String token = token();
+    String environmentId = createEnvironment("contract-" + token, true);
+    String application = "contract-app-" + token;
+    given()
+        .header("Authorization", SuiteBearers.platform())
+        .contentType(ContentType.JSON)
+        .body(
+            Map.of(
+                "runId", "run-contract",
+                "repoId", application,
+                "version", VERSION,
+                "deployHold", true,
+                "releaseRequestQualifiedId", HELD_RELEASE_REQUEST))
+        .when()
+        .post("/deployments/api/events/software-released")
+        .then()
+        .statusCode(202);
+    awaitIdle();
+    List<String> ids =
+        given()
+            .header("Authorization", SuiteBearers.operator())
+            .queryParam("repoId", application)
+            .queryParam("version", VERSION)
+            .when()
+            .get("/deployments/api/deployment-requests")
+            .then()
+            .statusCode(200)
+            .extract()
+            .jsonPath()
+            .getList("deploymentRequests.id");
+    if (ids.size() != 1) {
+      throw new IllegalStateException("expected one held deployment request, got " + ids);
     }
     Map<String, String> params = new TreeMap<>();
     params.put("applicationName", application);

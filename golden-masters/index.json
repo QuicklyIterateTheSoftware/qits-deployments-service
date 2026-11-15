@@ -106,6 +106,67 @@
       ]
     },
     {
+      "name": "a deployment request held for approval",
+      "slug": "a-deployment-request-held-for-approval",
+      "params": {
+        "applicationName": "contract-app-00000001",
+        "environmentId": "00000000-0000-4000-8000-000000000001",
+        "id": "00000000-0000-4000-8000-000000000002"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "approveDeploymentRequest",
+          "method": "POST",
+          "path": "/deployments/api/deployment-requests/{id}/approve",
+          "status": 200,
+          "file": "a-deployment-request-held-for-approval/approveDeploymentRequest.json",
+          "frozen": {
+            "ids": [
+              "$.deploymentRequest.id",
+              "$.deploymentRequest.environmentId",
+              "$.deploymentRequest.deploymentId",
+              "$.deployment.id"
+            ],
+            "instants": [
+              "$.deploymentRequest.createdAt",
+              "$.deploymentRequest.gateSettledAt",
+              "$.deploymentRequest.approvedAt",
+              "$.deployment.createdAt"
+            ],
+            "strings": [
+              "$.deploymentRequest.applicationName",
+              "$.deploymentRequest.repoId",
+              "$.deployment.applicationId",
+              "$.deployment.applicationName"
+            ],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "getDeploymentRequest",
+          "method": "GET",
+          "path": "/deployments/api/deployment-requests/{id}",
+          "status": 200,
+          "file": "a-deployment-request-held-for-approval/getDeploymentRequest.json",
+          "frozen": {
+            "ids": [
+              "$.deploymentRequest.id",
+              "$.deploymentRequest.environmentId"
+            ],
+            "instants": [
+              "$.deploymentRequest.createdAt"
+            ],
+            "strings": [
+              "$.deploymentRequest.applicationName",
+              "$.deploymentRequest.repoId"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "a deployment request that deployed",
       "slug": "a-deployment-request-that-deployed",
       "params": {

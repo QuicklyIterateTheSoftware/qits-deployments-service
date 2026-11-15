@@ -255,6 +255,24 @@ class GoldenMasterRecordingTest {
               200,
               null,
               null),
+          // qits-2268: a request held for manual approval, and the approval the CLI's `qits
+          // deployments requests approve` sends.
+          new Interaction(
+              ProviderStates.A_HELD_DEPLOYMENT_REQUEST,
+              "getDeploymentRequest",
+              "GET",
+              "/deployments/api/deployment-requests/{id}",
+              200,
+              null,
+              null),
+          new Interaction(
+              ProviderStates.A_HELD_DEPLOYMENT_REQUEST,
+              "approveDeploymentRequest",
+              "POST",
+              "/deployments/api/deployment-requests/{id}/approve",
+              200,
+              null,
+              null),
           new Interaction(
               ProviderStates.AN_APPLICATION_RUNNING,
               "listApplications",
