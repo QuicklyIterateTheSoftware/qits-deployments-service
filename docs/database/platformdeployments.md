@@ -78,8 +78,11 @@ erDiagram
   pd_deployment_request {
     string id PK "not null"
     string application_name "not null, length 64"
+    instant approved_at
+    text approved_by
     uuid causation_id
     instant created_at "not null"
+    boolean deploy_hold "not null"
     string deployment_id
     string environment_id
     text gate_detail
@@ -88,6 +91,7 @@ erDiagram
     string priority "length 32"
     string project_id
     enum quality_gate "not null"
+    text release_request_qualified_id
     string repo_id
     long seq
     string variant "length 64"
@@ -110,12 +114,14 @@ erDiagram
     string application_name "not null, length 64"
     int attempts "not null"
     uuid causation_id
+    boolean deploy_hold "not null"
     text detail
     string event_id "not null"
     string outcome "length 32"
     string package_name "length 255"
     string priority "length 32"
     string project_id
+    text release_request_qualified_id
     string repo_id
     string repo_name
     string run_id
