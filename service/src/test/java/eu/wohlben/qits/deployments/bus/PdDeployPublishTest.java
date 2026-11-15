@@ -358,6 +358,64 @@ public class PdDeployPublishTest {
     assertNull(only("DeploymentActive", 0), "a failed convergence leaves the predecessor serving");
   }
 
+  @Test
+  public void aHeldReleaseAnnouncesNothingUntilItsApprovalQueuesIt() {
+    // qits-2268: a hold writes a request and no deployment, so there is nothing to announce; the
+    // approval queues the deployment and announces it exactly as the release path would have.
+    String environmentId = createEnvironment("pub-held");
+    given()
+        .header("Authorization", SuiteBearers.platform())
+        .contentType(ContentType.JSON)
+        .body(
+            Map.of(
+                "runId", "run-pub-held",
+                "repoId", "repo-pub-held",
+                "version", VERSION,
+                "deployHold", true,
+                "releaseRequestQualifiedId", "repo-pub-held-rr-1"))
+        .when()
+        .post("/deployments/api/events/software-released")
+        .then()
+        .statusCode(202);
+    try {
+      deployService.awaitIdle();
+    } catch (Exception e) {
+      throw new IllegalStateException("the deploy worker did not drain", e);
+    }
+    // (The tier's own EnvironmentCreated is in the outbox; nothing about a deployment is.)
+    assertEquals(
+        List.of(),
+        rows().stream().filter(row -> row.name.startsWith("Deployment")).toList(),
+        "a held request announces nothing");
+
+    String requestId =
+        given()
+            .header("Authorization", SuiteBearers.operator())
+            .queryParam("environmentId", environmentId)
+            .when()
+            .get("/deployments/api/deployment-requests")
+            .then()
+            .statusCode(200)
+            .extract()
+            .path("deploymentRequests[0].id");
+    String deploymentId =
+        given()
+            .header("Authorization", SuiteBearers.operator())
+            .when()
+            .post("/deployments/api/deployment-requests/" + requestId + "/approve")
+            .then()
+            .statusCode(200)
+            .extract()
+            .path("deploymentRequest.deploymentId");
+    awaitSettled(environmentId, 1);
+
+    OutboxEvent queued = only("DeploymentQueued");
+    assertEquals(deploymentId, deploymentIdOf(queued));
+    assertTrue(queued.payload.contains("\"version\":\"" + VERSION + "\""), queued.payload);
+    assertEquals(deploymentId, deploymentIdOf(only("DeploymentStarted")));
+    assertEquals(deploymentId, deploymentIdOf(only("DeploymentActive")));
+  }
+
   // --- helpers ----------------------------------------------------------------------------------
 
   private String deploymentIdOf(OutboxEvent event) {

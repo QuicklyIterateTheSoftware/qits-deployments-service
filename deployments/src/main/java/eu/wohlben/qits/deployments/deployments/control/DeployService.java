@@ -5184,10 +5184,14 @@ public class DeployService implements ReleaseAnnouncements {
         approval.target().environmentName(),
         row.deploymentId());
     announceQueued(row, approval.release());
+    // Read back BEFORE the worker has it, so the answer is the state this door wrote — QUEUED —
+    // rather than whatever the worker has reached by the time the response is mapped.
+    RequestWithDeployment approved =
+        QuarkusTransaction.requiringNew()
+            .call(() -> withDeployments(List.of(requests.findById(id))).get(0));
     worker.submit(
         () -> executeQueued(row, approval.release().version(), approval.release().commitSha()));
-    return QuarkusTransaction.requiringNew()
-        .call(() -> withDeployments(List.of(requests.findById(id))).get(0));
+    return approved;
   }
 
   /** The release and the place an approval deploys — see {@link #approve}. */
