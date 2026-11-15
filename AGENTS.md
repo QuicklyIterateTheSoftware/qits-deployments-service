@@ -1141,8 +1141,10 @@ derived or generated here. So the rule that nothing arriving over HTTP contribut
 is its only copy.
 
 **Provisioning speaks SQL.** `CREATE ROLE` / `CREATE DATABASE` / `REVOKE` / `ALTER … OWNER` over
-plain JDBC on the public server; on the private one the same statements go to `psql` in a one-shot
-container (qits-2175, `DatabaseScripts`, identifiers re-validated at the line that assembles them).
+plain JDBC on the public server while the deployer sits on its network; otherwise — the private
+server always, the public one from a private deployer (qits-2275) — the same statements go to `psql`
+in a one-shot container on that server's network (qits-2175, `DatabaseScripts`, identifiers
+re-validated at the line that assembles them).
 `exec` is still not in the docker vocabulary and must not enter it. The postgres superuser password comes from
 `qits.deployments.postgres.admin-password` (deployment config, the domain that already
 holds the socket), has no default, is never stored in a row and never reaches an argv. **Provisioning
@@ -1420,12 +1422,24 @@ each is easy to undo by accident:
   the private server, `public`/`both` → the public one, the one place the rule is spelled — and an
   existing claim changes server only through a move. There is no postgres-host config key and there
   should not be one.
-- **The private server is provisioned by `psql` in a container**, `ContainerResourceProvisioner`
-  over `DatabaseContainers`: this deployer is on qits-net alone and cannot open a socket to a
-  postgres on qits-private alone. Same statements, same four drift arms; the admin password reaches
-  the container as `PGPASSWORD` and the role's through psql's `\getenv`, never in an argv or a
-  script. `@Typed` to its own class, so `ResourceProvisioner` keeps exactly one bean of its type and
-  `FakeResourceProvisioner` still replaces only the public server's. The private server's own
+- **A server the deployer is not on is provisioned by `psql` in a container**,
+  `ContainerResourceProvisioner.ensureOn(server, request)` over `DatabaseContainers`: a one-shot on
+  THAT server's network alone (`PostgresAdmin.network`), in the image its live service runs. No
+  service bridges qits-net and qits-private (owner rule), so the deployer opens a socket only to a
+  server on its own network. **The transport follows where the DEPLOYER sits, not the server**
+  (qits-2275 — qits-deployments went private on 2026-11-15 and every public deploy with a
+  `postgresql` resource then failed at provisioning, JDBC to `<env>-qits-oci-postgresql` being
+  unreachable): `ResourceProvisioning.seamFor` reads `DeploymentDriver.ownExposure()` (`liveExposure`
+  of `ownService`) at most once per `ensureAll`, and only a PUBLIC claim with the deployer answering
+  `public` goes direct over JDBC (`PgResourceProvisioner`); a public claim with a private deployer —
+  or one the read cannot place — goes through a container on the flat network, which works from
+  anywhere. The PRIVATE server always goes through the container, even from a private deployer: the
+  one proven path, not a second per-placement one. Same statements, same four drift arms; the admin
+  password reaches the container as `PGPASSWORD` and the role's through psql's `\getenv`, never in an
+  argv or a script. `@Typed` to its own class, so `ResourceProvisioner` keeps exactly one bean of its
+  type and `FakeResourceProvisioner` still replaces only the JDBC path. `FakeDeploymentDriver`
+  answers `ownExposure` `public` by default (`scriptOwnExposure` to change it), so a suite that does
+  not say otherwise provisions the public server through that fake as it always did. The private server's own
   superuser password is the deployer's admin password, written by the swarm driver as
   `POSTGRES_PASSWORD` for `qits-oci-postgresql-private` alone (`ResourceProvisioning
   .PRIVATE_POSTGRES_APPLICATION`) — a rule in code, not a settings row; its deployment fails naming

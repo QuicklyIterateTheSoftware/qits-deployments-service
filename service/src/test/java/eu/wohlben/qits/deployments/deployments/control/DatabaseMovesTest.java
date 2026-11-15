@@ -784,6 +784,90 @@ class DatabaseMovesTest {
   }
 
   @Test
+  void aPublicClaimFromAPrivateDeployerIsProvisionedByAContainerOnTheFlatNetwork() {
+    // qits-2275: the deployer went private, so JDBC to the public server is unreachable from it.
+    serversRunningIn("mv-pp");
+    driver.scriptOwnExposure(DeploymentDriver.Exposure.PRIVATE);
+
+    List<DeploymentDriver.ResourceBinding> bindings =
+        provisioning.ensureAll(
+            "qits-mvpubpriv", "mv-pp", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_mvpubpriv"), null);
+
+    assertEquals(List.of(), provisioner.requests(), "the JDBC seam was not asked");
+    DatabaseContainers.OneShot provision = containers.shots("provision").get(0);
+    assertEquals("qits-net", provision.network());
+    assertEquals(PUBLIC_IMAGE, provision.image());
+    assertEquals("mv-pp-qits-oci-postgresql", provision.environment().get("PGHOST"));
+    String fresh = provision.secrets().get(DatabaseScripts.ROLE_PASSWORD);
+    assertNotNull(fresh);
+    assertEquals("not-a-real-credential", provision.secrets().get("PGPASSWORD"));
+    assertFalse(provision.script().contains(fresh), "no password in the script");
+    assertEquals("public", claimOf("qits-mvpubpriv", "mv-pp", "db").server);
+    assertEquals(fresh, bindings.get(0).value("PASSWORD"));
+    assertEquals(
+        "jdbc:postgresql://mv-pp-qits-oci-postgresql:5432/qits_mvpubpriv",
+        bindings.get(0).value("URL"));
+  }
+
+  @Test
+  void aPublicClaimFromAPublicDeployerStaysOnJdbc() {
+    serversRunningIn("mv-pq");
+    driver.scriptOwnExposure(DeploymentDriver.Exposure.PUBLIC);
+
+    provisioning.ensureAll(
+        "qits-mvpubpub", "mv-pq", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_mvpubpub"), null);
+
+    assertEquals(1, provisioner.requests().size());
+    assertEquals("mv-pq-qits-oci-postgresql", provisioner.requests().get(0).host());
+    assertEquals(List.of(), containers.shots("provision"), "no container for a reachable server");
+  }
+
+  @Test
+  void aDeployerThatCannotBePlacedProvisionsThePublicServerByContainer() {
+    // The read failed or the driver cannot tell: the container works from any network.
+    serversRunningIn("mv-pu");
+    driver.scriptOwnExposure(null);
+
+    provisioning.ensureAll(
+        "qits-mvpubunk", "mv-pu", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_mvpubunk"), null);
+
+    assertEquals(List.of(), provisioner.requests());
+    DatabaseContainers.OneShot provision = containers.shots("provision").get(0);
+    assertEquals("qits-net", provision.network());
+    assertEquals(PUBLIC_IMAGE, provision.image());
+  }
+
+  @Test
+  void aPublicServerThatIsNotDeployedIsRefusedNamingIt() {
+    driver.scriptOwnExposure(DeploymentDriver.Exposure.PRIVATE);
+
+    ResourceException refused =
+        assertThrows(
+            ResourceException.class,
+            () ->
+                provisioning.ensureAll(
+                    "qits-mvpubnone", "mv-pn", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_mvpubnone"), null));
+
+    assertTrue(refused.getMessage().contains("public postgres is not deployed"), refused.getMessage());
+    assertEquals(List.of(), containers.shots("provision"));
+  }
+
+  @Test
+  void aPrivateClaimFromAPrivateDeployerStillGoesThroughAContainerOnQitsPrivate() {
+    serversRunningIn("mv-pv");
+    driver.scriptOwnExposure(DeploymentDriver.Exposure.PRIVATE);
+
+    provisioning.ensureAll(
+        "qits-mvprivpriv", "mv-pv", null, DeploymentDriver.Exposure.PRIVATE, one("db", "qits_mvprivpriv"), null);
+
+    assertEquals(List.of(), provisioner.requests());
+    DatabaseContainers.OneShot provision = containers.shots("provision").get(0);
+    assertEquals("qits-private", provision.network());
+    assertEquals(PRIVATE_IMAGE, provision.image());
+    assertEquals("mv-pv-qits-oci-postgresql-private", provision.environment().get("PGHOST"));
+  }
+
+  @Test
   void anOperatorsQueuedMoveARestartLostIsRefusedAtBootButNotOnATick() {
     String id = UUID.randomUUID().toString();
     QuarkusTransaction.requiringNew()

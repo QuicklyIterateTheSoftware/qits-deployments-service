@@ -656,6 +656,22 @@ public interface DeploymentDriver {
   }
 
   /**
+   * Which network THIS process sits on, as an {@link Exposure} (qits-2275): {@link #liveExposure} of
+   * {@link #ownService}. It is what decides whether the deployer can open a socket to a postgres
+   * server itself or has to send a one-shot onto that server's network — a service is on one
+   * network, never both, so the answer is a property of where the deployer runs, not of the server.
+   * Empty when it cannot be told (outside a container, an inspect that failed, drift), which the
+   * caller answers with the path that works from anywhere: the container.
+   */
+  default Optional<Exposure> ownExposure() {
+    try {
+      return ownService().flatMap(this::liveExposure);
+    } catch (RuntimeException e) {
+      return Optional.empty();
+    }
+  }
+
+  /**
    * The sentence a self-rename is refused with — one spelling for the deploy service, which refuses
    * before anything is provisioned, and for a driver's own belt in {@link #apply}.
    */
