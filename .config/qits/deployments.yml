@@ -146,7 +146,7 @@ navigation-entries: platform.Deployments:4, project.detail.Deployment Requests:5
 # would hand the old secret out under the new id after a rollback.
 #
 # Ticket qits-879.
-resources: postgresql:db:qits_deployments_selfmove, postgresql:eventstream:qits_deployments_eventstream, idp:client
+resources: postgresql:db, postgresql:eventstream:qits_deployments_eventstream, idp:client
 
 # STOP-FIRST, AND THIS COMPONENT IS THE REASON THE KEY EXISTS. The default is `start-first`: the
 # successor starts beside the predecessor, which is what makes an orchestrator's rollback lossless.
