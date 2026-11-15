@@ -1,0 +1,417 @@
+{
+  "consumer": {
+    "name": "qits-deployments-service"
+  },
+  "interactions": [
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-edge-service",
+            "operationId": "putEdgeRouteTable"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "event": "SoftwareRelease",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "SoftwareRelease: putEdgeRouteTable",
+      "key": "7fbb59fa",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a route table held",
+          "params": {
+            "host": "qits.example.com"
+          }
+        }
+      ],
+      "request": {
+        "body": {
+          "content": {
+            "applications": [
+              {
+                "apiDocsPath": "/ci/q/openapi",
+                "application": "qits-ci",
+                "browserHost": "ci",
+                "endpoints": [
+                  {
+                    "path": "/ci",
+                    "upstreamHost": "prod-qits-ci",
+                    "upstreamPort": 8080
+                  }
+                ],
+                "environment": "prod",
+                "exposure": "public",
+                "navigation": [
+                  {
+                    "label": "CI",
+                    "position": 30,
+                    "slot": "platform",
+                    "subpath": null
+                  }
+                ]
+              }
+            ],
+            "builtAt": "2026-11-13T09:20:00Z",
+            "edge": "public",
+            "version": 1763025600000,
+            "withdrawn": [
+              {
+                "application": "qits-stt",
+                "environment": "prod",
+                "exposure": "private",
+                "host": "stt"
+              }
+            ]
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "method": "PUT",
+        "path": "/edge-route-table"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "held": 1763025600000
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.held": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "number"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-edge-service",
+            "operationId": "putEdgeRouteTable"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "event": "SoftwareRelease",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "SoftwareRelease: putEdgeRouteTable",
+      "key": "4696cf5a",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "no route table held",
+          "params": {
+            "host": "qits.example.com"
+          }
+        }
+      ],
+      "request": {
+        "body": {
+          "content": {
+            "applications": [
+              {
+                "apiDocsPath": "/ci/q/openapi",
+                "application": "qits-ci",
+                "browserHost": "ci",
+                "endpoints": [
+                  {
+                    "path": "/ci",
+                    "upstreamHost": "prod-qits-ci",
+                    "upstreamPort": 8080
+                  }
+                ],
+                "environment": "prod",
+                "exposure": "public",
+                "navigation": [
+                  {
+                    "label": "CI",
+                    "position": 30,
+                    "slot": "platform",
+                    "subpath": null
+                  }
+                ]
+              }
+            ],
+            "builtAt": "2026-11-13T09:20:00Z",
+            "edge": "public",
+            "version": 1763025600000,
+            "withdrawn": [
+              {
+                "application": "qits-stt",
+                "environment": "prod",
+                "exposure": "private",
+                "host": "stt"
+              }
+            ]
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "method": "PUT",
+        "path": "/edge-route-table"
+      },
+      "response": {
+        "status": 204
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-edge-service",
+            "operationId": "putEdgeRouteTable"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "event": "SoftwareRelease",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "SoftwareRelease: putEdgeRouteTable",
+      "key": "998eb12d",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "no route table held and an invalid push",
+          "params": {
+            "host": "qits.example.com"
+          }
+        }
+      ],
+      "request": {
+        "body": {
+          "content": {
+            "applications": [
+              {
+                "apiDocsPath": "/ci/q/openapi",
+                "application": "qits-ci",
+                "browserHost": "ci",
+                "endpoints": [
+                  {
+                    "path": "/ci",
+                    "upstreamHost": "prod-qits-ci",
+                    "upstreamPort": 8080
+                  }
+                ],
+                "environment": "prod",
+                "exposure": "public",
+                "navigation": [
+                  {
+                    "label": "CI",
+                    "position": 30,
+                    "slot": "platform",
+                    "subpath": null
+                  }
+                ]
+              },
+              {
+                "apiDocsPath": "/ci-copy/q/openapi",
+                "application": "qits-ci-copy",
+                "browserHost": "ci",
+                "endpoints": [
+                  {
+                    "path": "/ci-copy",
+                    "upstreamHost": "prod-qits-ci-copy",
+                    "upstreamPort": 8080
+                  }
+                ],
+                "environment": "prod",
+                "exposure": "public",
+                "navigation": [
+                  {
+                    "label": "CI",
+                    "position": 30,
+                    "slot": "platform",
+                    "subpath": null
+                  }
+                ]
+              }
+            ],
+            "builtAt": "2026-11-13T09:20:00Z",
+            "edge": "public",
+            "version": 1763025600001,
+            "withdrawn": [
+              {
+                "application": "qits-stt",
+                "environment": "prod",
+                "exposure": "private",
+                "host": "stt"
+              }
+            ]
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "method": "PUT",
+        "path": "/edge-route-table"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "error": "The prod host `ci` is published by both qits-ci and qits-ci-copy."
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.error": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 422
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-edge-service",
+            "operationId": "getEdgeRouteTable"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "kind": "schedule",
+            "schedule": "the deployment observation pass"
+          }
+        }
+      },
+      "description": "the deployment observation pass: getEdgeRouteTable",
+      "key": "db17c9ac",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a route table held",
+          "params": {
+            "host": "qits.example.com"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/edge-route-table"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "version": 1763025600000
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.version": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "number"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "4.0"
+    },
+    "plugins": []
+  },
+  "provider": {
+    "name": "qits-edge-service"
+  }
+}

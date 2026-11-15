@@ -106,6 +106,7 @@
         <qits.idp-golden-masters.version>2026.1109.13349</qits.idp-golden-masters.version>
         <qits.githost-golden-masters.version>2026.1109.41303</qits.githost-golden-masters.version>
         <qits.artifacts-golden-masters.version>2026.1114.172104</qits.artifacts-golden-masters.version>
+        <qits.edge-golden-masters.version>2026.1115.212737</qits.edge-golden-masters.version>
         <!-- THE CONSUMER PACTS ConsumerPactVerificationTest verifies (qits-1149): one jar per consumer
              that commits `pacts/<consumer>_qits-deployments-service.json`, test scope. Exact pins;
              qits-maintenance bumps each when its consumer releases a changed pact. -->
@@ -343,6 +344,13 @@
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-artifacts-golden-masters</artifactId>
                 <version>${qits.artifacts-golden-masters.version}</version>
+            </dependency>
+            <dependency>
+                <!-- qits-edge's recorded answers (the route-table door the deployer pushes to, epic
+                     qits-2174). Test scope: recordings, never code. -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-edge-golden-masters</artifactId>
+                <version>${qits.edge-golden-masters.version}</version>
             </dependency>
             <dependency>
                 <!-- Test scope at every declaration site: a consumer's pact, verified by

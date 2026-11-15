@@ -10,7 +10,10 @@ import eu.wohlben.qits.deployments.artifactshost.HttpArtifactPurge;
 import eu.wohlben.qits.deployments.deployments.control.ArtifactPurge;
 import eu.wohlben.qits.deployments.deployments.control.IdpClientProvisioner;
 import eu.wohlben.qits.deployments.deployments.control.RepositoryRef;
+import eu.wohlben.qits.deployments.deployments.control.EdgeRouteClient;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource;
+import eu.wohlben.qits.deployments.edgehost.EdgeRouteClients;
+import eu.wohlben.qits.deployments.edgehost.HttpEdgeRouteClient;
 import eu.wohlben.qits.deployments.githost.GitHostSources;
 import eu.wohlben.qits.deployments.githost.GitHostSpecSource;
 import eu.wohlben.qits.deployments.githost.IdpGitHostBearer;
@@ -45,7 +48,9 @@ import java.util.Map;
  *       name-addressed when the release carries the name pair, id-addressed when it does not, with
  *       no fallback between them (qits-883), each presenting this service's own bearer;
  *   <li>{@link #ARTIFACTS} — {@code HttpArtifactPurge}'s purge of a decommissioned application's
- *       published artifacts (qits-1941).
+ *       published artifacts (qits-1941);
+ *   <li>{@link #EDGE} — {@code HttpEdgeRouteClient}'s push of a route table to an edge and its read
+ *       of the version the edge holds (epic qits-2174).
  * </ul>
  *
  * <p>The bus library qits-eventstream owns its catch-up and publish pact, so no events row is here.
@@ -359,8 +364,73 @@ public final class Contracts {
                 }
               }));
 
+  // --- qits-edge -------------------------------------------------------------------------------
+
+  static final GoldenMasters EDGE_MASTERS = GoldenMasters.of("qits-edge-service", "qits-edge");
+
+  static final String NO_ROUTE_TABLE_HELD = "no route table held";
+  static final String A_ROUTE_TABLE_HELD = "a route table held";
+  static final String AN_INVALID_PUSH = "no route table held and an invalid push";
+
+  /** The push follows a deployment, which a release triggers; the pass re-pushes on its tick. */
+  private static GoldenInteraction pushRow(String state) {
+    return GoldenInteraction.of(Trigger.event("SoftwareRelease"), state, "putEdgeRouteTable");
+  }
+
+  /** The table the recording PUT, sent verbatim: the client never reshapes what it is handed. */
+  private static String recordedTable(GoldenMasters.Operation recorded) {
+    return recorded.body().toString();
+  }
+
+  public static final Contract EDGE =
+      Contract.of(
+          EDGE_MASTERS,
+          // A table newer than what the edge holds is stored: 204, no body.
+          Check.of(
+              HttpEdgeRouteClient.class,
+              "push",
+              pushRow(NO_ROUTE_TABLE_HELD),
+              (url, recorded) ->
+                  assertEquals(
+                      new EdgeRouteClient.Stored(),
+                      EdgeRouteClients.at(url).push("public", recordedTable(recorded)))),
+          // One not above it is answered with the version the edge holds.
+          Check.of(
+              HttpEdgeRouteClient.class,
+              "push",
+              pushRow(A_ROUTE_TABLE_HELD).consumes("held"),
+              (url, recorded) ->
+                  assertEquals(
+                      new EdgeRouteClient.Held(
+                          EDGE_MASTERS.json(A_ROUTE_TABLE_HELD, "putEdgeRouteTable").path("held").asLong()),
+                      EdgeRouteClients.at(url).push("public", recordedTable(recorded)))),
+          // An invalid one is refused whole, with the edge's reason.
+          Check.of(
+              HttpEdgeRouteClient.class,
+              "push",
+              pushRow(AN_INVALID_PUSH).consumes("error"),
+              (url, recorded) ->
+                  assertEquals(
+                      new EdgeRouteClient.Refused(
+                          EDGE_MASTERS.json(AN_INVALID_PUSH, "putEdgeRouteTable").path("error").asText()),
+                      EdgeRouteClients.at(url).push("public", recordedTable(recorded)))),
+          // Each observation pass reads the version the edge holds, and pushes when it is older.
+          Check.of(
+              HttpEdgeRouteClient.class,
+              "held",
+              GoldenInteraction.of(
+                      Trigger.schedule("the deployment observation pass"),
+                      A_ROUTE_TABLE_HELD,
+                      "getEdgeRouteTable")
+                  .consumes("version"),
+              (url, recorded) ->
+                  assertEquals(
+                      java.util.OptionalLong.of(
+                          EDGE_MASTERS.json(A_ROUTE_TABLE_HELD, "getEdgeRouteTable").path("version").asLong()),
+                      EdgeRouteClients.at(url).held("public"))));
+
   /** Every contract this repository holds. */
   public static List<Contract> all() {
-    return List.of(IDP, GITHOST, ARTIFACTS);
+    return List.of(IDP, GITHOST, ARTIFACTS, EDGE);
   }
 }

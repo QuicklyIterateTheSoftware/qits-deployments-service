@@ -473,6 +473,44 @@
       ]
     },
     {
+      "entity" : "eu.wohlben.qits.deployments.deployments.entity.PdEdgeRouteTable",
+      "table" : "pd_edge_route_table",
+      "marking" : "domain",
+      "reason" : null,
+      "projectionOf" : null,
+      "knownGap" : null,
+      "dtos" : [
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.EdgeRouteTableDto",
+          "kind" : "factory",
+          "via" : null,
+          "site" : "EdgeRouteTableDto.of(PdEdgeRouteTable, ObjectMapper)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.EdgeRouteTableDto$Application",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.dto.EdgeRouteTableDto",
+          "site" : "EdgeRouteTableDto.applications()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.EdgeRouteTableDto$Withdrawn",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.dto.EdgeRouteTableDto",
+          "site" : "EdgeRouteTableDto.withdrawn()"
+        }
+      ],
+      "operations" : [
+        {
+          "operationId" : "getEdgeRoutes",
+          "method" : "GET",
+          "path" : "/edge-routes/{edge}",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.EdgeRouteTableDto",
+          "kind" : "returns",
+          "cardinality" : "single"
+        }
+      ]
+    },
+    {
       "entity" : "eu.wohlben.qits.deployments.deployments.entity.PdOwedRelease",
       "table" : "pd_owed_release",
       "marking" : "domain",

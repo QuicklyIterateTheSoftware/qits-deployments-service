@@ -86,7 +86,7 @@ public class SuiteBearers implements HttpAuthenticationMechanism {
   /**
    * The caller a request that names none stands for, by the door it knocks on: the topology writes
    * (an environment's create, update and delete, a service's upsert and delete), the release
-   * intake, the pins and the idp-client claims are the platform's ({@code qits:system}); every
+   * intake, the pins, the idp-client claims and the edges' route tables are the platform's ({@code qits:system}); every
    * other door — the reads, the operator levers, the settings — a signed-in operator's ({@code
    * qits:admin}). What a contract interaction that carries no bearer is sent with.
    */
@@ -96,6 +96,7 @@ public class SuiteBearers implements HttpAuthenticationMechanism {
         path.contains("/events/")
             || path.contains("/pins")
             || path.contains("/claims/")
+            || path.contains("/edge-routes/")
             || (path.contains("/environments")
                 && !path.contains("/links")
                 && java.util.Set.of("POST", "PATCH", "DELETE").contains(verb))

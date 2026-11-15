@@ -4888,6 +4888,65 @@ class SwarmDeploymentDriverTest {
   }
 
   @Test
+  void theRouteTablesReadEveryLabelOfEveryDeployedServiceInOneInspect() {
+    // qits-2174: one `service ls` and ONE `service inspect` of all the ids, not one per service.
+    SwarmDeploymentDriver driver = driver();
+    cli.script(
+        "service ls -q --filter label=qits.platform.deployments.app-name",
+        result(0, "id1\nid2\n"));
+    cli.script(
+        "service inspect --format " + SwarmDeploymentDriver.SERVICE_ALL_LABELS_FORMAT + " id1 id2",
+        result(
+            0,
+            "dev-qits-ci\t{\"qits.platform.deployments.app-name\":\"qits-ci\","
+                + "\"qits.platform.deployments.exposure\":\"public\","
+                + "\"qits.platform.deployments.routes\":\"/ci\"}\n"
+                + "dev-qits-oci-postgresql\tnull\n"));
+
+    assertEquals(
+        Optional.of(
+            List.of(
+                new DeploymentDriver.LabelledService(
+                    "dev-qits-ci",
+                    Map.of(
+                        "qits.platform.deployments.app-name", "qits-ci",
+                        "qits.platform.deployments.exposure", "public",
+                        "qits.platform.deployments.routes", "/ci")),
+                new DeploymentDriver.LabelledService("dev-qits-oci-postgresql", Map.of()))),
+        driver.labelledServices());
+    assertEquals(
+        List.of(
+            "docker",
+            "service",
+            "inspect",
+            "--format",
+            SwarmDeploymentDriver.SERVICE_ALL_LABELS_FORMAT,
+            "id1",
+            "id2"),
+        cli.matching("service inspect"));
+    assertEquals(1, cli.count("service inspect"));
+  }
+
+  @Test
+  void aRuntimeThatCannotAnswerBuildsNoRouteTableRatherThanAnEmptyOne() {
+    // An empty list would withdraw every route the edges serve; empty Optional changes nothing.
+    SwarmDeploymentDriver failedList = driver();
+    cli.script(
+        "service ls -q --filter label=qits.platform.deployments.app-name", result(1, "daemon down"));
+    assertEquals(Optional.empty(), failedList.labelledServices());
+
+    SwarmDeploymentDriver failedInspect = driver();
+    cli.script(
+        "service ls -q --filter label=qits.platform.deployments.app-name", result(0, "id1\n"));
+    cli.script("service inspect --format", result(1, "Error: no such service: id1"));
+    assertEquals(Optional.empty(), failedInspect.labelledServices());
+
+    SwarmDeploymentDriver nothing = driver();
+    cli.script("service ls -q --filter label=qits.platform.deployments.app-name", result(0, ""));
+    assertEquals(Optional.of(List.of()), nothing.labelledServices());
+  }
+
+  @Test
   void anEmptyQitsPlatformOverlayIsRemovedAndOneWithAnEndpointIsKept() {
     SwarmDeploymentDriver driver = driver();
     cli.script("network inspect --format {{len .Containers}} qits-platform", result(0, "0\n"));

@@ -6,6 +6,7 @@ import eu.wohlben.qits.deployments.api.SuiteBearers;
 import eu.wohlben.qits.deployments.deployments.control.ArtifactPurge;
 import eu.wohlben.qits.deployments.deployments.control.DeployService;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentDriver;
+import eu.wohlben.qits.deployments.deployments.control.EdgeRouteTables;
 import eu.wohlben.qits.deployments.deployments.control.FakeArtifactPurge;
 import eu.wohlben.qits.deployments.deployments.control.FakeDeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.FakeSpecSource;
@@ -13,6 +14,7 @@ import eu.wohlben.qits.deployments.deployments.control.SpecSource;
 import eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove;
 import eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
+import eu.wohlben.qits.deployments.deployments.entity.PdEdgeRouteTable;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.restassured.http.ContentType;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -106,6 +108,18 @@ public class ProviderStates {
   public static final String A_RUNNING_DATABASE_MOVE = "a database move that is running";
 
   /**
+   * Both edges' route tables built (epic qits-2174) from two labelled services: {@code
+   * contract-routes-public} (public, host {@code contract-pub}) and {@code contract-routes-private}
+   * (private, host {@code contract-priv}) in {@code dev}, at {@link #ROUTE_TABLES_BUILT_AT} — so the
+   * version is that instant's epoch millis, every run. {@code edge} is {@code private}: the private
+   * edge's fetch at its start is the one consumer of {@code getEdgeRoutes}.
+   */
+  public static final String TWO_EDGES_WITH_ROUTES = "two edges with routes";
+
+  /** When the route-table state builds its tables: its version is this instant's epoch millis. */
+  static final Instant ROUTE_TABLES_BUILT_AT = Instant.parse("2025-11-13T09:20:00Z");
+
+  /**
    * The machine gate is on: a bearer no idp issued answers 401. Only {@code
    * MachineGuardEnforcedProfile} runs the service gated, so only {@link
    * GatedGoldenMasterRecordingTest} and {@link GatedConsumerPactVerificationTest} use this state. It
@@ -152,6 +166,7 @@ public class ProviderStates {
   @Inject FakeSpecSource specs;
   @Inject FakeArtifactPurge artifacts;
   @Inject DeployService deployService;
+  @Inject EdgeRouteTables edgeRouteTables;
 
   private final Map<String, Supplier<Setup>> states = new LinkedHashMap<>();
   private final List<String> removable = Collections.synchronizedList(new ArrayList<>());
@@ -186,6 +201,7 @@ public class ProviderStates {
     states.put(AN_APPLICATION_HOLDING_A_DATABASE, this::anApplicationHoldingADatabase);
     states.put(A_FINISHED_DATABASE_MOVE, this::aFinishedDatabaseMove);
     states.put(A_RUNNING_DATABASE_MOVE, this::aRunningDatabaseMove);
+    states.put(TWO_EDGES_WITH_ROUTES, this::twoEdgesWithRoutes);
   }
 
   /** Every state name this provider answers for. */
@@ -258,6 +274,36 @@ public class ProviderStates {
                 }
               });
     }
+  }
+
+  /** See {@link #TWO_EDGES_WITH_ROUTES}: both tables rebuilt from nothing, at a fixed instant. */
+  private Setup twoEdgesWithRoutes() {
+    awaitIdle();
+    driver.reset();
+    driver.scriptLabelledServices(
+        List.of(
+            routed("contract-routes-public", "public", "contract-pub", "platform.Contract:40"),
+            routed("contract-routes-private", "private", "contract-priv", null)));
+    QuarkusTransaction.requiringNew().run(() -> PdEdgeRouteTable.deleteAll());
+    edgeRouteTables.rebuild(ROUTE_TABLES_BUILT_AT);
+    Map<String, String> params = new TreeMap<>();
+    params.put("edge", EdgeRouteTables.PRIVATE);
+    return new Setup(params, List.of());
+  }
+
+  private static DeploymentDriver.LabelledService routed(
+      String application, String exposure, String host, String navigation) {
+    Map<String, String> labels = new LinkedHashMap<>();
+    labels.put(DeploymentDriver.APP_NAME_LABEL, application);
+    labels.put(DeploymentDriver.EXPOSURE_LABEL, exposure);
+    labels.put(DeploymentDriver.HOSTS_LABEL, host);
+    labels.put(DeploymentDriver.ROUTES_LABEL, "/" + application);
+    labels.put(DeploymentDriver.UPSTREAM_PORT_LABEL, "8080");
+    labels.put(DeploymentDriver.API_DOCS_LABEL, "/" + application + "/q/openapi");
+    if (navigation != null) {
+      labels.put(DeploymentDriver.NAVIGATION_LABEL, navigation);
+    }
+    return new DeploymentDriver.LabelledService("dev-" + application, labels);
   }
 
   /** The state's slug: lower-cased, every run of non-alphanumerics replaced by {@code -}. */

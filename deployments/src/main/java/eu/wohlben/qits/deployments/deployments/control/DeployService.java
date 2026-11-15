@@ -210,6 +210,13 @@ public class DeployService implements ReleaseAnnouncements {
    */
   @Inject DatabaseMoves databaseMoves;
 
+  /**
+   * The route tables each edge serves (epic qits-2174): rebuilt from the services' labels after
+   * every apply, retirement and teardown, and on each observation pass, and pushed when they move.
+   * Never fails what calls it.
+   */
+  @Inject EdgeRoutePusher edgeRoutes;
+
   /** The settings store a rename cutover copies onto its successor and retires for its predecessor. */
   @Inject Settings settings;
 
@@ -417,6 +424,9 @@ public class DeployService implements ReleaseAnnouncements {
             LOG.warnf(e, "Could not label the services that carry no placement yet");
           }
           removeLeftoverPlatformNetwork();
+          // The route tables (qits-2174), once the labels are on: the private edge fetches its
+          // table from this process at its own start, and answers nothing until one is built.
+          edgeRoutes.observe();
         });
     startObserving();
   }
@@ -568,6 +578,9 @@ public class DeployService implements ReleaseAnnouncements {
           // The leftover qits-platform overlay (qits-2174): one inspect on a tick, and gone once
           // the last service left it.
           removeLeftoverPlatformNetwork();
+          // Last, the route tables (qits-2174): rebuilt off the labels, pushed when they moved, and
+          // pushed again to an edge that reports an older version than the stored one.
+          edgeRoutes.observe();
         });
   }
 
@@ -3678,6 +3691,9 @@ public class DeployService implements ReleaseAnnouncements {
     // ...and last the settings this image now ships as its own defaults — only here, past the
     // cutover, so a FAILED, ROLLED_BACK or unconverged deployment returned above and retires none.
     retireImageDefaults(plan);
+    // ...and the route tables (qits-2174): this service's labels just changed, and an edge that
+    // just went healthy may hold nothing yet. Never fails the deployment, which is live.
+    edgeRoutes.afterDeploy(plan.applicationName());
   }
 
   /**
@@ -4170,6 +4186,8 @@ public class DeployService implements ReleaseAnnouncements {
     } else {
       owedRetirements.remove(retirement.key());
     }
+    // The retired service is gone from the labels, so from the route tables too (qits-2174).
+    edgeRoutes.refresh();
   }
 
   /**

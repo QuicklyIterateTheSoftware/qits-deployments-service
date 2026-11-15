@@ -125,7 +125,20 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   /** The volumes {@link #volumeExists} answers {@code UNKNOWN} for, with the runtime's words. */
   private final Map<String, String> unknownVolumes = new ConcurrentHashMap<>();
 
+  /**
+   * What {@link #labelledServices} answers (qits-2174) — an empty list by default, and null for
+   * "the runtime could not be asked". Not on the call log: a rebuild of the route tables follows
+   * every deployment, and the suites that assert a deployment's exact call sequence predate it.
+   */
+  private volatile List<LabelledService> labelledServices = List.of();
+
+  /** How many times {@link #labelledServices} was asked. */
+  private final java.util.concurrent.atomic.AtomicInteger labelReads =
+      new java.util.concurrent.atomic.AtomicInteger();
+
   public void reset() {
+    labelledServices = List.of();
+    labelReads.set(0);
     applied.clear();
     awaited.clear();
     awaitedTimeouts.clear();
@@ -158,6 +171,22 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   }
 
   // --- scripting ---------------------------------------------------------------------------------
+
+  /** Script the services and labels the route tables are built from; null is an unreadable runtime. */
+  public void scriptLabelledServices(List<LabelledService> services) {
+    this.labelledServices = services == null ? null : List.copyOf(services);
+  }
+
+  /** How many times the route tables asked for the labels since the last reset. */
+  public int labelReads() {
+    return labelReads.get();
+  }
+
+  @Override
+  public Optional<List<LabelledService>> labelledServices() {
+    labelReads.incrementAndGet();
+    return Optional.ofNullable(labelledServices);
+  }
 
   public void scriptPull(PullResult result) {
     nextPull = result;

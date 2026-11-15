@@ -1,0 +1,23 @@
+{
+  "edge": "private",
+  "version": 1763025600000,
+  "builtAt": "2026-01-01T00:00:00Z",
+  "applications": [
+    {
+      "environment": "dev",
+      "application": "contract-routes-private",
+      "exposure": "private",
+      "browserHost": "contract-priv",
+      "apiDocsPath": "/contract-routes-private/q/openapi",
+      "endpoints": [
+        {
+          "path": "/contract-routes-private",
+          "upstreamHost": "dev-contract-routes-private",
+          "upstreamPort": 8080
+        }
+      ],
+      "navigation": []
+    }
+  ],
+  "withdrawn": []
+}
