@@ -25,9 +25,14 @@ import java.time.Instant;
  * version, which is what makes two of them comparable. {@code environmentId} is where it was asked
  * for — a platform service's request names the main environment like its deployment does.
  *
- * <p>{@code gateSettledAt} is null while nothing has answered. Today's placeholder answers in the
- * same transaction that writes the row, so it is always set; the field exists because the first
- * real gate is the one that will leave it null for a while.
+ * <p>{@code gateSettledAt} is null while nothing has answered: a request HELD for a person's
+ * approval (qits-2268) is {@code UNMET} with no settlement, which is what a client calls a pending
+ * gate. Every other request is answered in the transaction that writes it.
+ *
+ * <p><b>{@code deployHold} says the release request asked to hold the deployment</b>, and {@code
+ * releaseRequestQualifiedId} names that request ({@code qits-ci-service-rr-12}, null when the release
+ * named none). {@code approvedBy} and {@code approvedAt} are the approval {@code POST
+ * /deployment-requests/{id}/approve} recorded, null until somebody gave one.
  *
  * <p><b>{@code priority} is what the release request declared and is display-only.</b> It arrives
  * from qits-projects through qits-ci and this component records it; nothing here orders anything by
@@ -62,4 +67,8 @@ public record PdDeploymentRequestDto(
     String deploymentId,
     Instant createdAt,
     Instant gateSettledAt,
-    PdDeploymentStatus deploymentStatus) {}
+    PdDeploymentStatus deploymentStatus,
+    boolean deployHold,
+    String releaseRequestQualifiedId,
+    String approvedBy,
+    Instant approvedAt) {}

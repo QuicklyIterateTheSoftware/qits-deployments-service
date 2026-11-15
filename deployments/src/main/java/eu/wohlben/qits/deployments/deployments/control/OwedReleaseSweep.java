@@ -229,6 +229,9 @@ public class OwedReleaseSweep {
           // by a process that is gone. A field the ledger did not store is one a re-driven release
           // deploys without, which is why pd_owed_release carries this column at all.
           accepted.priority(),
+          // The same, and it decides more: a re-drive that dropped the hold would deploy a release
+          // a person was asked to approve (qits-2268).
+          accepted.hold(),
           accepted.causationId());
       return true;
     } catch (BadRequestException e) {

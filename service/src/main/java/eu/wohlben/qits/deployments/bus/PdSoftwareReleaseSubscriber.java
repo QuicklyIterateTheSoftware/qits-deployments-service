@@ -3,6 +3,7 @@ package eu.wohlben.qits.deployments.bus;
 import eu.wohlben.qits.eventstream.QitsDurableEventListener;
 import eu.wohlben.qits.eventstream.control.CanonicalJson;
 import eu.wohlben.qits.eventstream.control.EventFrame;
+import eu.wohlben.qits.deployments.deployments.control.DeployHold;
 import eu.wohlben.qits.deployments.deployments.control.PackageNames;
 import eu.wohlben.qits.deployments.deployments.control.ReleaseAnnouncements;
 import eu.wohlben.qits.deployments.deployments.control.ReleaseTips;
@@ -163,6 +164,11 @@ public class PdSoftwareReleaseSubscriber implements QitsDurableEventListener {
    * not merely during a rollout: qits-ci publishes {@code NON_NULL}, so a release whose request
    * declared nothing carries no key at all, and every event in the log from before the field existed
    * is replayed without one. Both bind to null, and null is what an older release genuinely means.
+   *
+   * <p><b>{@code deployHold} and {@code releaseRequestQualifiedId} are the same shape and DO decide
+   * something</b> (qits-2268): a release whose request was flagged "hold deploy" is held at the
+   * quality gate until a person approves it. Absent — every release that was not flagged, and every
+   * event from before the fields — binds to null, which is "not held", forever.
    */
   public record SoftwareReleasePayload(
       String repoId,
@@ -171,7 +177,9 @@ public class PdSoftwareReleaseSubscriber implements QitsDurableEventListener {
       String version,
       String packageType,
       String packageName,
-      String priority) {}
+      String priority,
+      Boolean deployHold,
+      String releaseRequestQualifiedId) {}
 
   @Inject ReleaseAnnouncements announcements;
 
@@ -289,6 +297,12 @@ public class PdSoftwareReleaseSubscriber implements QitsDurableEventListener {
           // whose request declared nothing — NON_NULL means no key rather than a null one. It is
           // recorded and acted on by nobody, so an absence costs a badge and never a deployment.
           release.priority(),
+          // Absent is not held, and that is forever: NON_NULL means an unflagged release — and
+          // every release from before qits-2268 — carries neither key.
+          DeployHold.of(
+              release.deployHold(),
+              release.releaseRequestQualifiedId(),
+              applicationName + "@" + release.version()),
           causeOf(frame));
     } catch (BadRequestException e) {
       // An identifier this component refuses — a version that could escape an argv, an application

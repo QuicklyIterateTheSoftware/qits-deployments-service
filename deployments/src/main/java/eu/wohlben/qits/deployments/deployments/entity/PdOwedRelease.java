@@ -96,6 +96,18 @@ public class PdOwedRelease extends PanacheEntityBase implements CausedRow {
   @Column(length = 32)
   public String priority;
 
+  /**
+   * Whether the release asked to be HELD for a person's approval (qits-2268), carried for {@link
+   * #priority}'s reason: a re-drive that lost it would deploy a held release unapproved. False is
+   * every release that did not say, and every row from before V22.
+   */
+  @Column(name = "deploy_hold", nullable = false)
+  public boolean deployHold;
+
+  /** The release request the release came from ({@code qits-ci-service-rr-12}), or null. */
+  @Column(name = "release_request_qualified_id", columnDefinition = "text")
+  public String releaseRequestQualifiedId;
+
   /** The repository's storage key — the coordinate the spec is read by. */
   @Column(name = "repo_id")
   public String repoId;

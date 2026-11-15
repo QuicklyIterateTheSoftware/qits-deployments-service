@@ -2127,8 +2127,11 @@ public class DatabaseMoves {
    * subscriber keeps every row of a repository on its current name, so the newest is as good as the
    * one that matched. Last, any release of the same package, for a repository whose own rows carry
    * no name. Null when the deployer has never been told a name for it.
+   *
+   * <p>Package-private because the approval of a held request reads its spec by the same name
+   * ({@code DeployService.approve}, qits-2268).
    */
-  private PdOwedRelease named(PdDeploymentRequest request, String version) {
+  PdOwedRelease named(PdDeploymentRequest request, String version) {
     if (request.packageName != null) {
       Optional<PdOwedRelease> exact =
           owed.find(

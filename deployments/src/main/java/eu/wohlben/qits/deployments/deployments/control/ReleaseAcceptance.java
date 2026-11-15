@@ -98,7 +98,7 @@ public class ReleaseAcceptance {
   /**
    * One acceptance, in exactly the arguments {@link ReleaseAnnouncements#announce} takes.
    *
-   * <p><b>Including the priority, and that is not decoration.</b> {@link OwedReleaseSweep} rebuilds
+   * <p><b>Including the priority and the hold, and that is not decoration.</b> {@link OwedReleaseSweep} rebuilds
    * the announcement from the stored row alone — another process, hours later, with the event
    * claimed and nothing left to ask — so a field this record does not carry is a field a re-driven
    * release deploys without.
@@ -111,7 +111,36 @@ public class ReleaseAcceptance {
       String version,
       String packageName,
       String priority,
-      UUID causationId) {}
+      DeployHold hold,
+      UUID causationId) {
+
+    /** Null and {@link DeployHold#NONE} say the same thing: the release asked for no hold. */
+    public Accepted {
+      hold = hold == null ? DeployHold.NONE : hold;
+    }
+
+    /** An acceptance that asked for no hold — every release before qits-2268. */
+    public Accepted(
+        String eventId,
+        String runId,
+        RepositoryRef repository,
+        String applicationName,
+        String version,
+        String packageName,
+        String priority,
+        UUID causationId) {
+      this(
+          eventId,
+          runId,
+          repository,
+          applicationName,
+          version,
+          packageName,
+          priority,
+          DeployHold.NONE,
+          causationId);
+    }
+  }
 
   /** An obligation read back out of the ledger: what it is, and how often it has been tried. */
   public record Owed(String id, Accepted accepted, int attempts) {}
@@ -154,6 +183,8 @@ public class ReleaseAcceptance {
             row.version = acceptance.version();
             row.packageName = acceptance.packageName();
             row.priority = acceptance.priority();
+            row.deployHold = acceptance.hold().requested();
+            row.releaseRequestQualifiedId = acceptance.hold().releaseRequestQualifiedId();
             row.repoId = acceptance.repository().repoId();
             row.projectId = acceptance.repository().projectId();
             row.repoName = acceptance.repository().repoName();
@@ -277,6 +308,9 @@ public class ReleaseAcceptance {
             row.version,
             row.packageName,
             row.priority,
+            row.deployHold || row.releaseRequestQualifiedId != null
+                ? new DeployHold(row.deployHold, row.releaseRequestQualifiedId)
+                : DeployHold.NONE,
             row.causationId),
         row.attempts);
   }

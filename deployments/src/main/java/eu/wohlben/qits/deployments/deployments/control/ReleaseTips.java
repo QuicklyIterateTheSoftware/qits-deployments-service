@@ -115,6 +115,28 @@ public class ReleaseTips {
   }
 
   /**
+   * Whether this version is still the newest this application was asked for — the approval door's
+   * question (qits-2268): approving a held request whose version something newer has overtaken
+   * would be a rollback nobody asked for. Asked of both floors {@link #claim} reads, the in-memory
+   * one and the request rows, and it claims nothing: an approval moves no floor, because the held
+   * request already wrote its version as one.
+   *
+   * <p>Environment-blind for {@link #claim}'s reason: a release enters at one tier, the designated
+   * one, so the newest request of an application is the newest of its entry tier.
+   */
+  public synchronized boolean isTip(String applicationName, String version) {
+    if (version == null) {
+      return false;
+    }
+    String here = announced.get(applicationName);
+    if (here != null && Versions.compare(version, here) < 0) {
+      return false;
+    }
+    String newest = newestRequested(applicationName);
+    return newest == null || Versions.compare(version, newest) >= 0;
+  }
+
+  /**
    * Claim this version back as the tip of its application after a restart interrupted it: true if
    * it is still the newest one seen <em>or is that very version</em>, false if something newer was
    * accepted since.

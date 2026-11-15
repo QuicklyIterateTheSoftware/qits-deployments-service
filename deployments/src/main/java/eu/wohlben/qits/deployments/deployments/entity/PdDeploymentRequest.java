@@ -23,8 +23,7 @@ import java.util.UUID;
  * machine from the moment it is written. This is the decision in front of it: a release announces a
  * version, the platform records that it was asked for, a gate answers, and only a {@link
  * PdQualityGate#MET} answer produces the deployment this row then points at. The gate answers yes
- * immediately today; the row exists now so that the day it does not, the refusal has somewhere to
- * be written down.
+ * immediately unless the release asked to be held for a person's approval (qits-2268).
  *
  * <p><b>It points at the deployment, never the reverse</b> ({@link #deploymentId}, nullable). The
  * request is the cause and is written first, so it cannot hold a key to a row that does not exist
@@ -109,6 +108,31 @@ public class PdDeploymentRequest extends PanacheEntityBase implements CausedRow 
   public String priority;
 
   /**
+   * Whether the release request asked to HOLD this deployment for a person's approval (qits-2268,
+   * V22). A held request is {@code UNMET} with {@link #gateSettledAt} null until {@code POST
+   * /deployment-requests/{id}/approve} answers it. False is every release that did not say — on the
+   * wire the key is absent — and every row from before the column.
+   */
+  @Column(name = "deploy_hold", nullable = false)
+  public boolean deployHold;
+
+  /**
+   * The release request this release came from ({@code qits-ci-service-rr-12}), as qits-ci
+   * forwarded it; null when it named none. Recorded, resolved by nobody — a foreign identity like
+   * {@link #repoId}.
+   */
+  @Column(name = "release_request_qualified_id", columnDefinition = "text")
+  public String releaseRequestQualifiedId;
+
+  /** Who approved a held request — the caller's principal name — or null: nobody did. */
+  @Column(name = "approved_by", columnDefinition = "text")
+  public String approvedBy;
+
+  /** When a held request was approved, or null. Set together with {@link #approvedBy}. */
+  @Column(name = "approved_at")
+  public Instant approvedAt;
+
+  /**
    * The variant this request deploys ({@code private} for {@code qits-edge-private}), or null for
    * the main application of the release (qits-1976). One release of a repository with {@code
    * variants:} writes rows for several applications under one {@code (repoId, version)}; this is
@@ -126,12 +150,15 @@ public class PdDeploymentRequest extends PanacheEntityBase implements CausedRow 
   @Column(name = "project_id")
   public String projectId;
 
-  /** Whether this request may proceed. See {@link PdQualityGate}: today, always {@code MET}. */
+  /**
+   * Whether this request may proceed. See {@link PdQualityGate}: {@code MET}, unless the release was
+   * held ({@link #deployHold}) or declared no spec.
+   */
   @Enumerated(EnumType.STRING)
   @Column(name = "quality_gate", nullable = false, length = 32)
   public PdQualityGate qualityGate;
 
-  /** What the gate said, in words. Null on the placeholder's silent yes. */
+  /** What the gate said, in words. Null on an ordinary release's silent yes. */
   @Column(name = "gate_detail", columnDefinition = "text")
   public String gateDetail;
 
@@ -142,7 +169,7 @@ public class PdDeploymentRequest extends PanacheEntityBase implements CausedRow 
   @Column(name = "created_at", nullable = false)
   public Instant createdAt;
 
-  /** When the gate answered. Null while nothing has asked it — a state today's placeholder skips. */
+  /** When the gate answered. Null while nothing has: a request held for approval (qits-2268). */
   @Column(name = "gate_settled_at")
   public Instant gateSettledAt;
 

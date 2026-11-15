@@ -10,25 +10,28 @@ import eu.wohlben.qits.deployments.environments.error.BadRequestException;
 import eu.wohlben.qits.deployments.environments.error.NotFoundException;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
+import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
+import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.SecurityContext;
 import java.util.List;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 
 /**
  * The deployment REQUEST read surface: what a released version asked this platform for, what the
- * quality gate said about it, and what became of it.
+ * quality gate said about it, and what became of it — and the one write on it, the approval of a
+ * request held for a person ({@code POST /{id}/approve}, qits-2268).
  *
  * <p><b>Why it is not the deployment listing.</b> A request that the gate refused produced no
  * deployment at all — no container, no row, no status word — so it exists nowhere in {@code GET
  * /deployments} and a client reading only that listing would show a release as having simply not
- * happened. This is the listing in which "asked for and declined, because …" is a thing that can be
- * seen. Today the placeholder gate says yes to everything, which is precisely why the surface goes
- * in now: the readers of a refusal have to exist before the first gate has an opinion.
+ * happened. This is the listing in which "asked for and declined, because …" — or "held for
+ * manual approval on …" — is a thing that can be seen.
  *
  * <p><b>Three filters, asked in order, and the order is the API.</b> A request is one row reached by
  * three different questions, and each of them belongs to a different screen:
@@ -70,7 +73,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * screen is. So the deployment travels inside this answer, nullable for the refusal that produced
  * none.
  *
- * <p><b>Read-only, and asked by three kinds of caller: {@code qits:admin}, {@code qits:agent} and
+ * <p><b>The reads are asked by three kinds of caller: {@code qits:admin}, {@code qits:agent} and
  * — since qits-projects drew the pipeline — {@code qits:system}.</b> The first is the role
  * qits-gateway forwards for a person's session, like every other listing the web client polls; the
  * second is an agent's own bearer. The third is a platform PEER: qits-projects draws a release
@@ -180,6 +183,57 @@ public class PdDeploymentRequestController {
     return new DeploymentRequestResponse(
         mapper.toDto(found.request(), found.deployment()),
         found.deployment() == null ? null : mapper.toDto(found.deployment()));
+  }
+
+  /**
+   * <b>Approve a deployment request HELD for a person</b> (qits-2268): a release whose release
+   * request was flagged "hold deploy" queues nothing until somebody says yes here. 200 with the
+   * request — gate {@code MET}, {@code approvedBy}/{@code approvedAt} set — and the {@code QUEUED}
+   * deployment it now points at, which runs on the deploy worker like any other.
+   *
+   * <p>No body: an empty one and {@code {}} are both accepted, because nothing in one is read. The
+   * actor is the caller's principal name, recorded on the row ({@code approved by <actor>}).
+   *
+   * <p><b>Roles: the operator's levers' set and {@code qits:agent}</b> — the database move's
+   * precedent of a write an agent may make here, since an agent shepherds the release request it
+   * belongs to; never {@code qits:system}, so no service token approves a hold as a side effect.
+   * The class-level set stays the read surface's.
+   */
+  @POST
+  @Path("/{id}/approve")
+  @jakarta.annotation.security.RolesAllowed({
+    "qits:admin",
+    "qits:admin-agent",
+    "qits:desk-admin",
+    "qits:desk",
+    "qits:agent"
+  })
+  @Operation(
+      operationId = "approveDeploymentRequest",
+      summary =
+          "Approve a deployment request held for manual approval — its deployment is queued and"
+              + " runs on the worker")
+  @APIResponse(responseCode = "200", description = "Approved; the request and its queued deployment")
+  @APIResponse(responseCode = "404", description = "No such deployment request")
+  @APIResponse(
+      responseCode = "409",
+      description =
+          "The request is not held, its gate already settled, or its version is no longer the"
+              + " application's newest release (approving it would be a rollback)")
+  @APIResponse(responseCode = "502", description = "The released spec could not be read")
+  public DeploymentRequestResponse approve(
+      @PathParam("id") String id, @Context SecurityContext security) {
+    RequestWithDeployment approved = deployService.approve(id, actor(security));
+    return new DeploymentRequestResponse(
+        mapper.toDto(approved.request(), approved.deployment()),
+        approved.deployment() == null ? null : mapper.toDto(approved.deployment()));
+  }
+
+  /** Who asked, as the row records it — the forwarded identity and nothing derived. */
+  private static String actor(SecurityContext security) {
+    return security == null || security.getUserPrincipal() == null
+        ? null
+        : security.getUserPrincipal().getName();
   }
 
   private ListDeploymentRequestsResponse listOf(List<RequestWithDeployment> rows) {

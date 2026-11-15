@@ -2,6 +2,7 @@ package eu.wohlben.qits.deployments.api;
 
 import eu.wohlben.qits.auth.MachineAuth;
 import eu.wohlben.qits.eventstream.CausationScope;
+import eu.wohlben.qits.deployments.deployments.control.DeployHold;
 import eu.wohlben.qits.deployments.deployments.control.ReleaseAnnouncements;
 import eu.wohlben.qits.deployments.deployments.control.RepositoryRef;
 import jakarta.inject.Inject;
@@ -83,6 +84,11 @@ public class PdEventController {
    * that comes later. The deploy worker is FIFO, so naming a priority here reorders nothing and
    * omitting one refuses nothing: null is the honest answer for a replay of a release cut before
    * qits-projects had the field, which is most of what this door is used for.
+   *
+   * <p><b>{@code deployHold} and {@code releaseRequestQualifiedId} are optional too</b>, and the
+   * first one decides (qits-2268): {@code true} holds the deployment request for a person's approval,
+   * exactly as on the bus — qits-projects' DEPLOY rerun POSTs here with the release request's flag.
+   * Absent or {@code false} is not held.
    */
   public record SoftwareReleasedEvent(
       String runId,
@@ -91,7 +97,9 @@ public class PdEventController {
       String repoName,
       String application,
       @NotBlank String version,
-      String priority) {
+      String priority,
+      Boolean deployHold,
+      String releaseRequestQualifiedId) {
 
     /**
      * What this release deploys under: what the caller stated, else the repository's name, else its
@@ -139,7 +147,12 @@ public class PdEventController {
         event.version(),
         null,
         event.priority(),
-        CausationScope.current());
+        DeployHold.of(
+            event.deployHold(),
+            event.releaseRequestQualifiedId(),
+            event.applicationName() + "@" + event.version()),
+        CausationScope.current(),
+        ReleaseAnnouncements.Door.MANUAL);
     return Response.accepted().build();
   }
 }

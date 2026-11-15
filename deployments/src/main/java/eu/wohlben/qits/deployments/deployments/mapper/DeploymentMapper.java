@@ -86,6 +86,10 @@ public class DeploymentMapper {
         request.deploymentId,
         request.createdAt,
         request.gateSettledAt,
-        deployment == null ? null : deployment.status);
+        deployment == null ? null : deployment.status,
+        request.deployHold,
+        request.releaseRequestQualifiedId,
+        request.approvedBy,
+        request.approvedAt);
   }
 }

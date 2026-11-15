@@ -161,4 +161,21 @@ public class PdDeploymentRequestRepository
         .firstResultOptional()
         .map(request -> request.version);
   }
+
+  /**
+   * An APPROVED request for this exact (application, tier, version), if one exists — what the
+   * quality gate asks before holding a release (qits-2268): a version a person already approved in
+   * that place is not held again when it is re-announced. Newest first, so the answer names the
+   * approval a reader would look for.
+   */
+  public Optional<PdDeploymentRequest> findApproved(
+      String applicationName, String environmentId, String version) {
+    return find(
+            "applicationName = ?1 and environmentId = ?2 and version = ?3 and approvedAt is not null"
+                + " order by seq desc",
+            applicationName,
+            environmentId,
+            version)
+        .firstResultOptional();
+  }
 }

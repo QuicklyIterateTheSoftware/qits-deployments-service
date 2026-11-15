@@ -5,6 +5,7 @@ import eu.wohlben.qits.deployments.deployments.control.SpecSource.DeploymentSpec
 import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentRequest;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentStatus;
+import eu.wohlben.qits.deployments.deployments.entity.PdOwedRelease;
 import eu.wohlben.qits.deployments.deployments.entity.PdQualityGate;
 import eu.wohlben.qits.deployments.deployments.persistence.PdDeploymentRepository;
 import eu.wohlben.qits.deployments.deployments.persistence.PdDeploymentRequestRepository;
@@ -15,6 +16,9 @@ import eu.wohlben.qits.deployments.environments.control.PdNetworks;
 import eu.wohlben.qits.deployments.environments.control.ServiceCatalog;
 import eu.wohlben.qits.deployments.environments.control.ServiceCatalog.LinkedService;
 import eu.wohlben.qits.deployments.environments.entity.PdEnvironment;
+import eu.wohlben.qits.deployments.environments.error.BadGatewayException;
+import eu.wohlben.qits.deployments.environments.error.ConflictException;
+import eu.wohlben.qits.deployments.environments.error.NotFoundException;
 import eu.wohlben.qits.deployments.events.DeploymentActive;
 import eu.wohlben.qits.deployments.events.DeploymentEndpoint;
 import eu.wohlben.qits.deployments.events.DeploymentFailed;
@@ -29,6 +33,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import jakarta.persistence.LockModeType;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -213,6 +218,9 @@ public class DeployService implements ReleaseAnnouncements {
    * on the manual path touches it.
    */
   @Inject ReleaseAcceptance acceptance;
+
+  /** The tip check the approval of a held request asks (qits-2268) — see {@link #approve}. */
+  @Inject ReleaseTips tips;
 
   /**
    * Where this component's own events leave it ({@link DeployAnnouncer}). An {@code Instance}
@@ -590,7 +598,9 @@ public class DeployService implements ReleaseAnnouncements {
    * puts it on the worker: it calls {@link #deploy} directly rather than queueing behind itself.
    */
   void redeploy(RepositoryRef repository, String releasedName, String version, String packageName) {
-    deploy(null, repository, releasedName, version, packageName, null, null, Door.MANUAL);
+    deploy(
+        null, repository, releasedName, version, packageName, null, DeployHold.NONE, null,
+        Door.MANUAL);
   }
 
   void enqueueOperation(String description, Runnable action) {
@@ -1354,6 +1364,7 @@ public class DeployService implements ReleaseAnnouncements {
       String version,
       String packageName,
       String priority,
+      DeployHold hold,
       UUID causationId,
       Door door) {
     DeploymentIdentifiers.requireRunId(runId);
@@ -1364,7 +1375,9 @@ public class DeployService implements ReleaseAnnouncements {
     // advisory badge that reaches no argv and no URL, so it is dropped with a WARN when it will not
     // fit rather than refusing a release somebody is waiting for. See ReleasePriorities.
     String recorded = ReleasePriorities.recorded(priority, released + "@" + version);
-    submit(null, runId, repo, released, version, packageName, recorded, causationId, door);
+    submit(
+        null, runId, repo, released, version, packageName, recorded, held(hold), causationId,
+        door);
   }
 
   /**
@@ -1392,6 +1405,7 @@ public class DeployService implements ReleaseAnnouncements {
       String version,
       String packageName,
       String priority,
+      DeployHold hold,
       UUID causationId) {
     DeploymentIdentifiers.requireRunId(runId);
     RepositoryRef repo = repository.validated();
@@ -1403,10 +1417,16 @@ public class DeployService implements ReleaseAnnouncements {
     String owedId =
         acceptance.accept(
             new ReleaseAcceptance.Accepted(
-                eventId, runId, repo, released, version, packageName, recorded, causationId));
+                eventId, runId, repo, released, version, packageName, recorded, held(hold),
+                causationId));
     submit(
-        owedId, runId, repo, released, version, packageName, recorded, causationId,
+        owedId, runId, repo, released, version, packageName, recorded, held(hold), causationId,
         Door.RELEASE_EVENT);
+  }
+
+  /** Null and {@link DeployHold#NONE} say the same thing: the release asked for no hold. */
+  private static DeployHold held(DeployHold hold) {
+    return hold == null ? DeployHold.NONE : hold;
   }
 
   /**
@@ -1430,12 +1450,13 @@ public class DeployService implements ReleaseAnnouncements {
       String version,
       String packageName,
       String priority,
+      DeployHold hold,
       UUID causationId,
       Door door) {
     worker.submit(
         () -> {
           try {
-            deploy(runId, repo, released, version, packageName, priority, causationId, door);
+            deploy(runId, repo, released, version, packageName, priority, hold, causationId, door);
             if (owedId != null && !isHeldOnSpec(released)) {
               acceptance.settle(owedId, ReleaseAcceptance.Outcome.DISCHARGED, null);
             }
@@ -1573,6 +1594,7 @@ public class DeployService implements ReleaseAnnouncements {
       String version,
       String packageName,
       String priority,
+      DeployHold hold,
       UUID causationId,
       Door door) {
     // Whatever this application was waiting to re-read, this release replaces: a newer version is
@@ -1589,7 +1611,8 @@ public class DeployService implements ReleaseAnnouncements {
       read = specs.read(repository, SpecSource.tagRev(version));
     } catch (RuntimeException e) {
       recordUnreadableSpec(
-          runId, repository, releasedName, version, packageName, priority, causationId, door, e);
+          runId, repository, releasedName, version, packageName, priority, hold, causationId, door,
+          e);
       return;
     }
     deployReadSpec(
@@ -1599,6 +1622,7 @@ public class DeployService implements ReleaseAnnouncements {
         version,
         packageName,
         priority,
+        hold,
         causationId,
         door,
         read.spec(),
@@ -1629,6 +1653,7 @@ public class DeployService implements ReleaseAnnouncements {
       String version,
       String packageName,
       String priority,
+      DeployHold hold,
       UUID causationId,
       Door door,
       DeploymentSpec spec,
@@ -1642,6 +1667,7 @@ public class DeployService implements ReleaseAnnouncements {
         version,
         packageName,
         priority,
+        hold,
         causationId,
         door,
         spec,
@@ -1658,6 +1684,7 @@ public class DeployService implements ReleaseAnnouncements {
           version,
           packageName,
           priority,
+          hold,
           causationId,
           door,
           spec,
@@ -1692,6 +1719,7 @@ public class DeployService implements ReleaseAnnouncements {
       String version,
       String packageName,
       String priority,
+      DeployHold hold,
       UUID causationId,
       Door door,
       DeploymentSpec main,
@@ -1719,7 +1747,7 @@ public class DeployService implements ReleaseAnnouncements {
                 ? spec.application()
                 : fallbackName;
         recordVariantFailure(
-            runId, repository, name, variant, version, commitSha, packageName, priority,
+            runId, repository, name, variant, version, commitSha, packageName, priority, hold,
             causationId, e);
         continue;
       }
@@ -1738,6 +1766,7 @@ public class DeployService implements ReleaseAnnouncements {
             version,
             packageName,
             priority,
+            hold,
             causationId,
             door,
             spec,
@@ -1766,6 +1795,7 @@ public class DeployService implements ReleaseAnnouncements {
       String commitSha,
       String packageName,
       String priority,
+      DeployHold hold,
       UUID causationId,
       RuntimeException cause) {
     String failure = "[variant " + variant + " unusable: " + cause.getMessage() + "]";
@@ -1786,6 +1816,7 @@ public class DeployService implements ReleaseAnnouncements {
                 commitSha,
                 packageName,
                 priority,
+                hold,
                 causationId),
             places);
     for (Queued row : queued) {
@@ -1805,6 +1836,7 @@ public class DeployService implements ReleaseAnnouncements {
       String version,
       String packageName,
       String priority,
+      DeployHold hold,
       UUID causationId,
       Door door,
       DeploymentSpec spec,
@@ -1823,6 +1855,7 @@ public class DeployService implements ReleaseAnnouncements {
               commitSha,
               packageName,
               priority,
+              hold,
               causationId),
           heldRows);
       return;
@@ -1853,6 +1886,7 @@ public class DeployService implements ReleaseAnnouncements {
                 commitSha,
                 packageName,
                 priority,
+                hold,
                 causationId),
             targets);
     if (failure != null) {
@@ -1862,15 +1896,24 @@ public class DeployService implements ReleaseAnnouncements {
       return;
     }
     for (Queued row : queued) {
-      try {
-        execute(row.deploymentId(), row.target(), version, commitSha);
-      } catch (RuntimeException e) {
-        LOG.errorf(e, "Deployment %s failed unexpectedly", row.deploymentId());
-        finish(
-            row.deploymentId(), row.target(), PdDeploymentStatus.FAILED, "[unexpected: " + e + "]");
-      } finally {
-        pendingRollbacks.remove(row.deploymentId());
-      }
+      executeQueued(row, version, commitSha);
+    }
+  }
+
+  /**
+   * One queued deployment, run to its end on THIS thread — which is always the worker: the release
+   * path calls it from {@link #deployReadSpec}, and an approval ({@link #approve}) hands it over
+   * with {@code worker.submit}. An unexpected throw is the row's {@code FAILED}, never the worker's.
+   */
+  private void executeQueued(Queued row, String version, String commitSha) {
+    try {
+      execute(row.deploymentId(), row.target(), version, commitSha);
+    } catch (RuntimeException e) {
+      LOG.errorf(e, "Deployment %s failed unexpectedly", row.deploymentId());
+      finish(
+          row.deploymentId(), row.target(), PdDeploymentStatus.FAILED, "[unexpected: " + e + "]");
+    } finally {
+      pendingRollbacks.remove(row.deploymentId());
     }
   }
 
@@ -1964,6 +2007,7 @@ public class DeployService implements ReleaseAnnouncements {
       String version,
       String packageName,
       String priority,
+      DeployHold hold,
       UUID causationId,
       Door door,
       RuntimeException cause) {
@@ -1982,6 +2026,7 @@ public class DeployService implements ReleaseAnnouncements {
                 null,
                 packageName,
                 priority,
+                hold,
                 causationId),
             alreadyRegistered(releasedName));
     List<String> rows = new ArrayList<>();
@@ -2005,6 +2050,7 @@ public class DeployService implements ReleaseAnnouncements {
             version,
             packageName,
             priority,
+            hold,
             causationId,
             door,
             Instant.now(),
@@ -2033,6 +2079,7 @@ public class DeployService implements ReleaseAnnouncements {
       String version,
       String packageName,
       String priority,
+      DeployHold hold,
       UUID causationId,
       Door door,
       Instant since,
@@ -2041,7 +2088,8 @@ public class DeployService implements ReleaseAnnouncements {
 
     SpecRetry next() {
       return new SpecRetry(
-          runId, repository, releasedName, version, packageName, priority, causationId, door, since,
+          runId, repository, releasedName, version, packageName, priority, hold, causationId, door,
+          since,
           attempts + 1, rows);
     }
   }
@@ -2102,6 +2150,7 @@ public class DeployService implements ReleaseAnnouncements {
           held.version(),
           held.packageName(),
           held.priority(),
+          held.hold(),
           held.causationId(),
           held.door(),
           read.spec(),
@@ -2190,7 +2239,14 @@ public class DeployService implements ReleaseAnnouncements {
       String commitSha,
       String packageName,
       String priority,
-      UUID causationId) {}
+      DeployHold hold,
+      UUID causationId) {
+
+    /** Null and {@link DeployHold#NONE} say the same thing: the release asked for no hold. */
+    Release {
+      hold = held(hold);
+    }
+  }
 
   /**
    * The name this release deploys under: the released package's, unless the file the repository
@@ -2335,42 +2391,56 @@ public class DeployService implements ReleaseAnnouncements {
         LOG.infof("Registered %s in environment %s", applicationName, environment.name);
       }
       targets.add(
-          new Target(
-              applicationName,
-              environment.id,
-              environment.name,
-              environment.network,
-              spec.availableOnEnv(),
-              healthPath,
-              spec.healthCmd(),
-              resources,
-              // Declared, not resolved: under a rename the name depends on the docker host, which
-              // is asked at deploy time — see resolveVolumes.
-              spec.volumes(),
-              spec.updateOrder(),
-              spec.publishMode(),
-              spec.routes(),
-              spec.upstreamPort(),
-              browserHost(applicationName, spec),
-              spec.navigationEntries(),
-              spec.apiDocs(),
-              spec.renamedFrom(),
-              spec.stopGracePeriod(),
-              // binds/publishes/aliases as WRITTEN: the driver resolves ${QITS_ENVIRONMENT} in an
-              // alias against the place it deploys into, which is where a refusal can end a row.
-              spec.shape(),
-              spec.exposure(),
-              // The image pulled: the file's `image:`, else — for a variant — the main file's, else
-              // the application's own name, which is every file today.
-              spec.image() != null
-                  ? spec.image()
-                  : defaultImage != null ? defaultImage : applicationName,
-              variant,
-              // The image's own defaults, the variant's file's for a variant — each application
-              // retires its own rows, after its own deployment converged.
-              spec.imageDefaults()));
+          targetIn(environment, applicationName, spec, healthPath, resources, variant, defaultImage));
     }
     return List.copyOf(targets);
+  }
+
+  /**
+   * One place's {@link Target}, off a read spec — what {@link #register} builds per entry tier and
+   * {@link #approve} rebuilds for the one tier a held request names. A pure function of its
+   * arguments: no catalogue write, no driver call.
+   */
+  private Target targetIn(
+      PdEnvironment environment,
+      String applicationName,
+      DeploymentSpec spec,
+      String healthPath,
+      List<ResourceProvisioning.Resolved> resources,
+      String variant,
+      String defaultImage) {
+    return new Target(
+        applicationName,
+        environment.id,
+        environment.name,
+        environment.network,
+        spec.availableOnEnv(),
+        healthPath,
+        spec.healthCmd(),
+        resources,
+        // Declared, not resolved: under a rename the name depends on the docker host, which is
+        // asked at deploy time — see resolveVolumes.
+        spec.volumes(),
+        spec.updateOrder(),
+        spec.publishMode(),
+        spec.routes(),
+        spec.upstreamPort(),
+        browserHost(applicationName, spec),
+        spec.navigationEntries(),
+        spec.apiDocs(),
+        spec.renamedFrom(),
+        spec.stopGracePeriod(),
+        // binds/publishes/aliases as WRITTEN: the driver resolves ${QITS_ENVIRONMENT} in an alias
+        // against the place it deploys into, which is where a refusal can end a row.
+        spec.shape(),
+        spec.exposure(),
+        // The image pulled: the file's `image:`, else — for a variant — the main file's, else the
+        // application's own name, which is every file today.
+        spec.image() != null ? spec.image() : defaultImage != null ? defaultImage : applicationName,
+        variant,
+        // The image's own defaults, the variant's file's for a variant — each application retires
+        // its own rows, after its own deployment converged.
+        spec.imageDefaults());
   }
 
   /**
@@ -2720,11 +2790,14 @@ public class DeployService implements ReleaseAnnouncements {
    * <p><b>The request and the deployment are written in ONE transaction, and the gate is answered
    * between them.</b> That ordering is the model in miniature: the platform records what was asked
    * for, something decides, and only a {@link PdQualityGate#MET} answer produces an execution row —
-   * which the request then points at. Today the decision is {@link #gate}, a placeholder that says
-   * yes to everything, so the two rows always come in pairs; the day a real gate says no, the
-   * request stands with no {@code deployment_id} and this loop simply queues nothing for it. One
-   * transaction rather than two because a request with a settled gate and no deployment must mean
-   * "refused", never "the process died in between".
+   * which the request then points at ({@link #handOff}). One transaction rather than two because a
+   * request with a settled gate and no {@code deployment_id} must mean "refused", never "the process
+   * died in between".
+   *
+   * <p><b>A HELD request is the third answer (qits-2268)</b>: {@code UNMET} with {@code
+   * gate_settled_at} left null — the gate has not answered yet, a person will — and, like a refusal,
+   * no deployment row and no announcement. {@link #approve} is what answers it later, through the
+   * same {@link #handOff}.
    *
    * <p><b>Deliberately not retried</b>, and it is the same answer for {@link #recordRejection}, the
    * {@code STARTING} transition and the platform conversion. They INSERT or move rows, so a commit
@@ -2756,6 +2829,17 @@ public class DeployService implements ReleaseAnnouncements {
                     Gate verdict = gate(release, target);
                     request.qualityGate = verdict.state();
                     request.gateDetail = verdict.detail();
+                    if (verdict.pending()) {
+                      // Unanswered rather than refused: gate_settled_at stays null, which is what
+                      // the read surface and the SPA call a pending gate.
+                      LOG.infof(
+                          "%s@%s for %s is %s; nothing is queued until it is approved",
+                          release.applicationName(),
+                          release.version(),
+                          target.environmentName(),
+                          verdict.detail());
+                      continue;
+                    }
                     request.gateSettledAt = Instant.now();
                     if (verdict.state() != PdQualityGate.MET) {
                       LOG.warnf(
@@ -2766,9 +2850,7 @@ public class DeployService implements ReleaseAnnouncements {
                           verdict.detail());
                       continue;
                     }
-                    Queued row = persistQueued(release, target);
-                    request.deploymentId = row.deploymentId();
-                    queued.add(row);
+                    queued.add(handOff(request, release, target));
                   }
                   return queued;
                 });
@@ -2779,29 +2861,66 @@ public class DeployService implements ReleaseAnnouncements {
   }
 
   /**
-   * What the quality gate said. A record rather than a boolean because the detail is the whole
-   * value of a refusal — a request that says {@code UNMET} and nothing else tells an operator
-   * nothing.
+   * The {@code MET} half of a request: the {@code QUEUED} deployment row written and the request
+   * pointed at it. Inside the caller's transaction, never on its own — {@link #queue} on the
+   * release path, {@link #approve} for a held request a person approved — so the two doors that
+   * produce a deployment from a request cannot write one differently.
    */
-  private record Gate(PdQualityGate state, String detail) {}
+  private Queued handOff(PdDeploymentRequest request, Release release, Target target) {
+    Queued row = persistQueued(release, target);
+    request.deploymentId = row.deploymentId();
+    return row;
+  }
 
   /**
-   * <b>The placeholder quality gate: everything passes, immediately.</b>
+   * What the quality gate said. A record rather than a boolean because the detail is the whole
+   * value of a refusal — a request that says {@code UNMET} and nothing else tells an operator
+   * nothing — and because there are three answers, not two: {@code pending} is a request held for
+   * a person (qits-2268), whose gate has not settled.
+   */
+  private record Gate(PdQualityGate state, String detail, boolean pending) {
+
+    static final Gate MET = new Gate(PdQualityGate.MET, null, false);
+
+    static Gate held(String detail) {
+      return new Gate(PdQualityGate.UNMET, detail, true);
+    }
+  }
+
+  /**
+   * <b>The quality gate: a release that asked to be held waits for a person; everything else
+   * passes, immediately.</b>
    *
-   * <p>It is a method rather than an absence on purpose. A released version has already been
-   * through qits-ci's pipeline and this component has nothing further to ask today, so the honest
-   * implementation is one line — but the SHAPE has to exist before a real gate does, or the first
-   * one arrives as a change to the transaction that queues deployments rather than as a change to
-   * this method. Whatever asks a question later (a userflow suite against the tier, a manual
-   * approval, a soak window on the version already there) answers here, and {@link #queue} already
-   * does the right thing with a no.
+   * <p>A released version has already been through qits-ci's pipeline, so this component's one
+   * question is the release request's own (qits-2268): was it flagged "hold deploy"? Then the
+   * request is held — {@code UNMET}, {@code held for manual approval on <qualified id>}, gate
+   * unsettled — until {@code POST /deployment-requests/{id}/approve} answers it ({@link #approve}).
    *
-   * <p>It takes the release and the target because a real gate is about a (version, place) pair —
-   * the same version may be waved into dev and held out of prod — and a signature that could not
-   * express that would have to change on the day it mattered.
+   * <p><b>An approved hold is not held twice.</b> When a request for the same application, tier and
+   * version already carries an approval, the release passes: a re-announcement of an approved
+   * version — a rerun, a re-drive after a restart cut its deployment off — is the version a person
+   * already said yes to.
+   *
+   * <p>It takes the release and the target because a gate is about a (version, place) pair — the
+   * same version may be waved into dev and held out of prod. It runs inside {@link #queue}'s
+   * transaction, so the approval it reads is the committed one.
    */
   private Gate gate(Release release, Target target) {
-    return new Gate(PdQualityGate.MET, null);
+    if (!release.hold().requested()) {
+      return Gate.MET;
+    }
+    Optional<PdDeploymentRequest> approved =
+        requests.findApproved(target.applicationName(), target.environmentId(), release.version());
+    if (approved.isPresent()) {
+      return new Gate(
+          PdQualityGate.MET,
+          "approved by "
+              + approved.get().approvedBy
+              + " on the earlier request "
+              + approved.get().id,
+          false);
+    }
+    return Gate.held(release.hold().detail());
   }
 
   /** A queued row, and the facts its announcement needs, carried out of the transaction. */
@@ -2831,6 +2950,10 @@ public class DeployService implements ReleaseAnnouncements {
     // Recorded and never read by anything that decides: the worker is FIFO, and this row is where a
     // person (and the queue-ordering feature after it) reads what the release request declared.
     request.priority = release.priority();
+    // Recorded whether or not the release is held: the qualified id says which release request
+    // this came from, and the flag is what the gate asks (qits-2268).
+    request.deployHold = release.hold().requested();
+    request.releaseRequestQualifiedId = release.hold().releaseRequestQualifiedId();
     request.repoId = release.repository() == null ? null : release.repository().repoId();
     request.projectId = release.repository() == null ? null : release.repository().projectId();
     request.qualityGate = PdQualityGate.UNMET;
@@ -4991,6 +5114,173 @@ public class DeployService implements ReleaseAnnouncements {
    */
   public List<RequestWithDeployment> deploymentRequestsByRelease(String repoId, String version) {
     return withDeployments(requests.listMainByRepoAndVersionNewestFirst(repoId, version));
+  }
+
+  /**
+   * <b>Approve a HELD deployment request</b> (qits-2268) — {@code POST
+   * /deployment-requests/{id}/approve}. The release asked to be held ({@link #gate}), so its request
+   * sits {@code UNMET} with no deployment; this is the person's answer.
+   *
+   * <p><b>Refused, before anything is written</b>: an unknown id ({@link NotFoundException}); a
+   * request that is not held — no hold asked, a gate that is {@code MET}, or one that has already
+   * settled — and a version that is no longer the application's newest ({@link ReleaseTips#isTip}),
+   * since approving it would be a rollback ({@link ConflictException}). A spec that cannot be read
+   * is a {@link BadGatewayException}.
+   *
+   * <p><b>Then ONE transaction</b>, re-checking the hold under a row lock so two approvals cannot
+   * both pass: the gate {@code MET} with {@code approved by <actor>}, {@code approved_by} and {@code
+   * approved_at}, and the {@code QUEUED} deployment written and pointed at through {@link #handOff}
+   * — exactly the rows {@link #queue} writes on {@code MET}. After the commit the deployment is
+   * announced {@code DeploymentQueued} and handed to the deploy worker, which runs it like any
+   * other ({@link #executeQueued}).
+   *
+   * <p><b>The {@link Target} is rebuilt here from the spec at the released tag</b>, because the
+   * hold may have outlived the process that wrote it — a held request waits for a person, and this
+   * component replaces itself on every release of its own. The spec read is name-addressed through
+   * the acceptance ledger ({@link DatabaseMoves#named}), the database-move door's arrangement, and
+   * nothing is registered: the release already registered when it was held.
+   *
+   * @param actor the caller's principal name; null reads as {@code an operator}
+   * @return the approved request, with the deployment it now points at
+   */
+  public RequestWithDeployment approve(String id, String actor) {
+    String who = actor == null || actor.isBlank() ? "an operator" : actor;
+    PdDeploymentRequest held =
+        QuarkusTransaction.requiringNew()
+            .call(() -> requests.findByIdOptional(id))
+            .orElseThrow(() -> new NotFoundException("No deployment request " + id));
+    requireHeld(held);
+    if (!tips.isTip(held.applicationName, held.version)) {
+      throw new ConflictException(
+          held.applicationName
+              + "@"
+              + held.version
+              + " is no longer the newest release of "
+              + held.applicationName
+              + ", so approving it would be a rollback");
+    }
+    Approval approval = approvalOf(held);
+    Instant now = Instant.now();
+    Queued row =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  PdDeploymentRequest request =
+                      requests.findById(id, LockModeType.PESSIMISTIC_WRITE);
+                  requireHeld(request);
+                  request.qualityGate = PdQualityGate.MET;
+                  request.gateDetail = "approved by " + who;
+                  request.gateSettledAt = now;
+                  request.approvedBy = who;
+                  request.approvedAt = now;
+                  return handOff(request, approval.release(), approval.target());
+                });
+    LOG.infof(
+        "%s approved the held deployment request %s of %s@%s for %s; deployment %s is queued",
+        who,
+        id,
+        held.applicationName,
+        held.version,
+        approval.target().environmentName(),
+        row.deploymentId());
+    announceQueued(row, approval.release());
+    worker.submit(
+        () -> executeQueued(row, approval.release().version(), approval.release().commitSha()));
+    return QuarkusTransaction.requiringNew()
+        .call(() -> withDeployments(List.of(requests.findById(id))).get(0));
+  }
+
+  /** The release and the place an approval deploys — see {@link #approve}. */
+  private record Approval(Release release, Target target) {}
+
+  /** The 409 of a request that is not waiting for an approval — see {@link #approve}. */
+  private static void requireHeld(PdDeploymentRequest request) {
+    if (!request.deployHold) {
+      throw new ConflictException(
+          "The deployment request " + request.id + " was not held, so there is nothing to approve");
+    }
+    if (request.qualityGate == PdQualityGate.MET || request.gateSettledAt != null) {
+      throw new ConflictException(
+          "The deployment request "
+              + request.id
+              + " is not waiting for an approval: its gate already settled ("
+              + request.qualityGate
+              + (request.gateDetail == null ? "" : ", " + request.gateDetail)
+              + ")");
+    }
+  }
+
+  /**
+   * The release a held request asked for and the one place it deploys, rebuilt from the spec at the
+   * released tag — the request row records the version, the tier, the repository id and the
+   * variant, and the spec says everything else, exactly as it did when the release was held.
+   */
+  private Approval approvalOf(PdDeploymentRequest held) {
+    if (held.repoId == null) {
+      throw new ConflictException(
+          "The deployment request " + held.id + " names no repository to read the spec of");
+    }
+    PdEnvironment environment;
+    try {
+      environment = environments.require(held.environmentId);
+    } catch (NotFoundException gone) {
+      throw new ConflictException(
+          "The deployment request " + held.id + " names a tier that no longer exists");
+    }
+    PdOwedRelease named =
+        QuarkusTransaction.requiringNew().call(() -> databaseMoves.named(held, held.version));
+    RepositoryRef repository =
+        new RepositoryRef(
+            held.repoId,
+            held.projectId != null ? held.projectId : named == null ? null : named.projectId,
+            named == null ? null : named.repoName);
+    String application = held.applicationName;
+    SpecSource.SpecRead read;
+    DeploymentSpec spec;
+    String defaultImage = null;
+    try {
+      read = specs.read(repository, SpecSource.tagRev(held.version));
+      spec = read.spec();
+      if (held.variant != null) {
+        DeploymentSpec main = spec;
+        String released = PackageNames.applicationOf(held.packageName);
+        String mainApplication = applicationName(released != null ? released : application, main);
+        defaultImage = main.image() != null ? main.image() : mainApplication;
+        String path = SpecSource.variantPath(held.variant);
+        spec = specs.read(repository, SpecSource.tagRev(held.version), path).spec();
+      }
+    } catch (RuntimeException unreadable) {
+      throw new BadGatewayException(
+          "could not read the spec of "
+              + application
+              + "@"
+              + held.version
+              + " to deploy it: "
+              + unreadable.getMessage(),
+          unreadable);
+    }
+    String healthPath = resolveHealthPath(application, spec, findService(application));
+    Target target =
+        targetIn(
+            environment,
+            application,
+            spec,
+            healthPath,
+            ResourceProvisioning.resolve(application, spec.resources()),
+            held.variant,
+            defaultImage);
+    Release release =
+        new Release(
+            named != null && held.version.equals(named.version) ? named.runId : null,
+            repository,
+            application,
+            held.version,
+            read.commitSha(),
+            held.packageName,
+            held.priority,
+            new DeployHold(true, held.releaseRequestQualifiedId),
+            held.causationId);
+    return new Approval(release, target);
   }
 
   /** One request by its own id, with the deployment it produced. Empty for an id nothing wrote. */

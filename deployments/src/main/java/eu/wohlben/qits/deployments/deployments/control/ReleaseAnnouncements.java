@@ -104,6 +104,9 @@ public interface ReleaseAnnouncements {
    *     rather than an enum — the vocabulary is qits-projects' — and nullable everywhere, because
    *     null is the honest answer for every release cut before the field existed. It is advisory, so
    *     it is never validated in a way that could refuse a release; see {@link ReleasePriorities}.
+   * @param hold whether the release request asked to HOLD the deployment for a person's approval,
+   *     and which request it was (qits-2268) — {@link DeployHold#NONE} for every release that did
+   *     not say, and the quality gate's question rather than this seam's
    * @param causationId the event this announcement is the effect of, recorded on every row it
    *     produces. Null is a rootless announcement — a bootstrap's hand-made POST — and never a
    *     reason to refuse one: causation is advisory and a deployment must not fail over a column
@@ -120,8 +123,35 @@ public interface ReleaseAnnouncements {
       String version,
       String packageName,
       String priority,
+      DeployHold hold,
       UUID causationId,
       Door door);
+
+  /**
+   * {@link #announce(String, RepositoryRef, String, String, String, String, DeployHold, UUID,
+   * Door)} for a release that asked for no hold ({@link DeployHold#NONE}) — every caller before
+   * qits-2268.
+   */
+  default void announce(
+      String runId,
+      RepositoryRef repository,
+      String applicationName,
+      String version,
+      String packageName,
+      String priority,
+      UUID causationId,
+      Door door) {
+    announce(
+        runId,
+        repository,
+        applicationName,
+        version,
+        packageName,
+        priority,
+        DeployHold.NONE,
+        causationId,
+        door);
+  }
 
   /**
    * The same announcement from the manual door. It is the default because that door is the one
@@ -181,8 +211,8 @@ public interface ReleaseAnnouncements {
    * <p><b>It implies {@link Door#RELEASE_EVENT} rather than taking a door</b>, for the same reason:
    * the obligation and the door are one decision, not two that a caller could combine wrongly.
    *
-   * <p><b>The obligation carries the priority with everything else it carries</b>, and it has to:
-   * {@code OwedReleaseSweep} rebuilds the announcement from the row alone, in another process, with
+   * <p><b>The obligation carries the priority and the hold with everything else it carries</b>, and
+   * it has to: {@code OwedReleaseSweep} rebuilds the announcement from the row alone, in another process, with
    * the event long since claimed and nothing left to ask. A field the ledger did not store is a
    * field a re-driven release loses.
    *
@@ -202,5 +232,28 @@ public interface ReleaseAnnouncements {
       String version,
       String packageName,
       String priority,
+      DeployHold hold,
       UUID causationId);
+
+  /** {@link #announceDurably} for a release that asked for no hold ({@link DeployHold#NONE}). */
+  default void announceDurably(
+      String eventId,
+      String runId,
+      RepositoryRef repository,
+      String applicationName,
+      String version,
+      String packageName,
+      String priority,
+      UUID causationId) {
+    announceDurably(
+        eventId,
+        runId,
+        repository,
+        applicationName,
+        version,
+        packageName,
+        priority,
+        DeployHold.NONE,
+        causationId);
+  }
 }
