@@ -148,6 +148,16 @@ navigation-entries: platform.Deployments:4, project.detail.Deployment Requests:5
 # Ticket qits-879.
 resources: postgresql:db, postgresql:eventstream:qits_deployments_eventstream, idp:client
 
+# PRIVATE (qits-1980, task qits-2134): served by qits-edge-private only, reached through the WireGuard
+# tunnel or the qits-private overlay; the public edge answers 404 for deployments. It moves in the
+# release-path window with maintenance, projects, ci, workspaces and deployments (owner ruling
+# 2026-11-13, qits-2174), because they call each other; the orchestrator calls it.
+# Its databases live on the private Postgres, qits-oci-postgresql-private: a private exposure
+# moves them there (qits-2175). Revert: delete this line, which moves the databases back to the
+# public server with the service.
+# It moves itself through its own self-update (qits-2119) and its own databases (qits-2209).
+exposure: private
+
 # STOP-FIRST, AND THIS COMPONENT IS THE REASON THE KEY EXISTS. The default is `start-first`: the
 # successor starts beside the predecessor, which is what makes an orchestrator's rollback lossless.
 # This deployer cannot be two processes at once — it holds the deployments config volume, it binds
