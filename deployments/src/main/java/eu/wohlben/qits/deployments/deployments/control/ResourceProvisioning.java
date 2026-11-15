@@ -104,14 +104,21 @@ public class ResourceProvisioning {
 
   @Inject PdResourceRepository resources;
 
-  /** The PUBLIC server's provisioner: plain JDBC from this process ({@code PgResourceProvisioner}). */
+  /**
+   * Plain JDBC from this process ({@code PgResourceProvisioner}) — for the PUBLIC server, and only
+   * while this deployer itself sits on the flat network (see {@link #seamFor}).
+   */
   @Inject ResourceProvisioner provisioner;
 
   /**
-   * The PRIVATE server's (qits-2175): the same statements, by {@code psql} in a one-shot container on
-   * qits-private, because this process cannot reach that server itself.
+   * The same statements, by {@code psql} in a one-shot container on the server's own network
+   * (qits-2175, qits-2275): the PRIVATE server always, the PUBLIC one whenever this process is not
+   * on the flat network — it cannot reach a server on the other network itself.
    */
-  @Inject ContainerResourceProvisioner privateProvisioner;
+  @Inject ContainerResourceProvisioner containerProvisioner;
+
+  /** Asked where this deployer sits ({@link DeploymentDriver#ownExposure}), once per provisioning. */
+  @Inject DeploymentDriver driver;
   @Inject IdpClientProvisioner idpClients;
 
   @ConfigProperty(name = "qits.deployments.postgres.admin-username")
@@ -396,6 +403,10 @@ public class ResourceProvisioning {
         accepted.stream().anyMatch(r -> r.type() == ResourceSpec.Type.POSTGRESQL);
     String admin = needsPostgres ? requireAdminPassword() : null;
 
+    // Where the deployer sits, read at most once per provisioning and only when a public claim
+    // asks: a self-move or a redeploy of the deployer replaces this process, so it cannot change
+    // under one call.
+    java.util.function.Supplier<Optional<DeploymentDriver.Exposure>> deployer = memoized(this::deployerExposure);
     List<DeploymentDriver.ResourceBinding> bindings = new ArrayList<>();
     for (Resolved resource : accepted) {
       bindings.add(
@@ -408,6 +419,7 @@ public class ResourceProvisioning {
                     ruleServer,
                     admin,
                     resource,
+                    deployer,
                     alongsideTransfer);
             case IDP_CLIENT -> ensureIdpClient(applicationName, environmentName, resource);
           });
@@ -535,6 +547,7 @@ public class ResourceProvisioning {
       DatabaseServer ruleServer,
       String admin,
       Resolved resource,
+      java.util.function.Supplier<Optional<DeploymentDriver.Exposure>> deployer,
       AtomicReference<Runnable> alongsideTransfer) {
     String database = PdIdentifiers.requireDatabaseName(resource.database());
     String name = PdIdentifiers.requireResourceName(resource.name());
@@ -595,7 +608,7 @@ public class ResourceProvisioning {
 
     // OUTSIDE any transaction, deliberately — see the class javadoc.
     String fresh = freshPassword();
-    ResourceProvisioner seam = server == DatabaseServer.PRIVATE ? privateProvisioner : provisioner;
+    ResourceProvisioner seam = seamFor(server, deployer);
     ResourceProvisioner.Result result =
         seam.ensure(
             new ResourceProvisioner.Request(
@@ -647,6 +660,54 @@ public class ResourceProvisioning {
         name, applicationName, environmentName, database, host);
     return DeploymentDriver.ResourceBinding.postgres(
         name, jdbcUrl(server, environmentName, database), database, inEffect);
+  }
+
+  /**
+   * The transport to {@code server}, chosen by where the DEPLOYER sits, not by the server
+   * (qits-2275). A service is on one network and never both, so a server on the deployer's own
+   * network is a JDBC socket away and one on the other is not:
+   *
+   * <ul>
+   *   <li><b>PUBLIC, deployer on the flat network</b> → JDBC from this process, as it always was;
+   *   <li><b>PUBLIC, deployer private — or it cannot be told</b> → a one-shot on the flat network.
+   *       The container works from any network, so an unanswered read costs a container start,
+   *       never a deployment;
+   *   <li><b>PRIVATE</b> → a one-shot on qits-private, always. A private deployer could open the
+   *       socket itself now, but the container is the path proven on that server and its move
+   *       machinery, and it stays the one path rather than a second, per-placement one.
+   * </ul>
+   */
+  private ResourceProvisioner seamFor(
+      DatabaseServer server, java.util.function.Supplier<Optional<DeploymentDriver.Exposure>> deployer) {
+    if (server == DatabaseServer.PUBLIC
+        && deployer.get().orElse(null) == DeploymentDriver.Exposure.PUBLIC) {
+      return provisioner;
+    }
+    return request -> containerProvisioner.ensureOn(server, request);
+  }
+
+  /** {@link DeploymentDriver#ownExposure}, with a read that fails answered as "cannot tell". */
+  private Optional<DeploymentDriver.Exposure> deployerExposure() {
+    try {
+      Optional<DeploymentDriver.Exposure> answer = driver.ownExposure();
+      return answer == null ? Optional.empty() : answer;
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "Could not tell which network this deployer is on; provisioning by container");
+      return Optional.empty();
+    }
+  }
+
+  /** A supplier asked at most once, on first use. */
+  private static <T> java.util.function.Supplier<T> memoized(java.util.function.Supplier<T> source) {
+    AtomicReference<T> answer = new AtomicReference<>();
+    return () -> {
+      T known = answer.get();
+      if (known == null) {
+        known = source.get();
+        answer.set(known);
+      }
+      return known;
+    };
   }
 
   /** What the registry bracket hands out: the stored password, and the server the claim is on. */

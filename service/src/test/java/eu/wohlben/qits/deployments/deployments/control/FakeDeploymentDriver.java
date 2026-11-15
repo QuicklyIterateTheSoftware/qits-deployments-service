@@ -110,6 +110,13 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   private volatile String ownService;
 
   /**
+   * What {@link #ownExposure} answers — where the deployer itself sits (qits-2275). {@code PUBLIC}
+   * by default, the flat network, so every suite written before the deployer went private keeps
+   * provisioning the public server through {@link FakeResourceProvisioner}; null is "cannot tell".
+   */
+  private volatile Exposure ownExposure = Exposure.PUBLIC;
+
+  /**
    * The volumes {@link #volumeExists} answers {@code PRESENT} for. None by default: this fake runs
    * nothing, so the only volumes there can be are the ones a test said exist.
    */
@@ -132,6 +139,7 @@ public class FakeDeploymentDriver implements DeploymentDriver {
     removedServices.clear();
     removeServiceFailure = null;
     ownService = null;
+    ownExposure = Exposure.PUBLIC;
     existingVolumes.clear();
     unknownVolumes.clear();
     calls.clear();
@@ -232,6 +240,11 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   /** Make {@link #isOwnService} answer true for this name: the deployer's own service. */
   public void scriptOwnService(String name) {
     ownService = name;
+  }
+
+  /** Make {@link #ownExposure} answer this — null for a driver that cannot tell. */
+  public void scriptOwnExposure(Exposure exposure) {
+    ownExposure = exposure;
   }
 
   /** Make {@link #volumeExists} answer {@code PRESENT} for this volume. */
@@ -353,6 +366,11 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   public void reap(List<String> names) {
     reaped.addAll(names);
     calls.add("reap:" + names);
+  }
+
+  @Override
+  public Optional<Exposure> ownExposure() {
+    return Optional.ofNullable(ownExposure);
   }
 
   @Override
