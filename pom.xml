@@ -105,7 +105,7 @@
              read by the consumer pacts. Moves like every internal pin. -->
         <qits.idp-golden-masters.version>2026.1109.13349</qits.idp-golden-masters.version>
         <qits.githost-golden-masters.version>2026.1109.41303</qits.githost-golden-masters.version>
-        <qits.artifacts-golden-masters.version>2026.1114.41515</qits.artifacts-golden-masters.version>
+        <qits.artifacts-golden-masters.version>2026.1114.172104</qits.artifacts-golden-masters.version>
         <!-- THE CONSUMER PACTS ConsumerPactVerificationTest verifies (qits-1149): one jar per consumer
              that commits `pacts/<consumer>_qits-deployments-service.json`, test scope. Exact pins;
              qits-maintenance bumps each when its consumer releases a changed pact. -->
@@ -114,7 +114,7 @@
         <qits.bootstrap-cli-pacts-qits-deployments-service.version>2026.1019.84610</qits.bootstrap-cli-pacts-qits-deployments-service.version>
         <qits.orchestrator-service-pacts-qits-deployments-service.version>2026.1018.172917</qits.orchestrator-service-pacts-qits-deployments-service.version>
         <qits.projects-service-pacts-qits-deployments-service.version>2026.1018.195756</qits.projects-service-pacts-qits-deployments-service.version>
-        <qits.platform-access-monorepo-pacts-qits-deployments-service.version>2026.1113.154308</qits.platform-access-monorepo-pacts-qits-deployments-service.version>
+        <qits.platform-access-monorepo-pacts-qits-deployments-service.version>2026.1114.201702</qits.platform-access-monorepo-pacts-qits-deployments-service.version>
         <!-- The one golden-master reader for Java consumers, from qits-integrations-quarkus. -->
         <qits.pact-consumer.version>2026.1106.507</qits.pact-consumer.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
