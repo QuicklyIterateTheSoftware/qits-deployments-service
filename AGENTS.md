@@ -1804,7 +1804,7 @@ carries a `@RolesAllowed`, and there are exactly four roles:
 | `qits:admin-agent` | wherever `qits:admin` is (qits-628 follow-up) | an ADMIN workspace's coding agent's credential, alongside `qits:agent`; for now it may use everything `qits:admin` may use |
 | `qits:desk-admin` | wherever `qits:admin-agent` is (qits-1621) | the delivery desk's admin grant, alongside `qits:agent` and `qits:desk` |
 | `qits:system` | the pins, the **idp-client claims** (`GET /claims/idp-clients`, qits-idp's read for its service-client garbage collection), the **deployment-request listing** (`GET /deployment-requests`, the read qits-projects draws a release's deploy phase from), every topology **write** (environment create/patch/delete, service upsert/delete) and the release intake | a machine bearer: qits-platform-idp copies `qits.idp.client.<id>.roles` into the token's `groups` claim, which quarkus-oidc reads as roles with no configuration at all. It is the open calling model's role — "a service calling a service" |
-| `qits:agent` | every read — the ones `qits:admin` has, plus the pins and the idp-client claims — and no write | an agent's own bearer: a commissioned client whose kind maps to this role (epic qits-543, dossier page "Plan (as of 2026-09-13)", C7) |
+| `qits:agent` | every read — the ones `qits:admin` has, plus the pins and the idp-client claims — and two writes: the database move and the approval of a held deployment request (qits-2268) | an agent's own bearer: a commissioned client whose kind maps to this role (epic qits-543, dossier page "Plan (as of 2026-09-13)", C7) |
 
 **The two sets — `qits:system` and `qits:admin` — do not overlap and must not.** A machine token
 never carries `qits:admin`, so the read surface is a person's; a browser session never carries
@@ -2163,11 +2163,30 @@ rows written before that.)
 - **Both rows are written in ONE transaction, with the gate answered between them.** A request with
   a settled gate and no `deployment_id` therefore means *refused*, never "the process died in
   between".
-- **`DeployService.gate` is a placeholder that says yes to everything**, and `PdQualityGate.UNMET`
-  is unwritten today. That is the point of both existing now: the shape has to be in the schema and
-  in the queueing transaction before a real gate has an opinion, or the first one arrives as a
-  migration over live history. Whatever asks a question later answers in that one method — it takes
-  the release AND the target, because a real gate is about a (version, place) pair.
+- **`DeployService.gate` asks one question: did the release ask to be HELD (qits-2268)?**
+  qits-projects flags a release request "hold deploy", qits-ci forwards `deployHold` and
+  `releaseRequestQualifiedId` on `SoftwareRelease` (the HTTP intake takes both too), and both ride
+  `DeployHold` through the acceptance ledger (V22 on `pd_owed_release`, the `priority` reason) onto
+  the request (V22: `deploy_hold`, `release_request_qualified_id`, `approved_by`, `approved_at`).
+  A held request is `UNMET`, `held for manual approval on <id>`, **`gate_settled_at` null** — the
+  SPA's pending gate — with no deployment and no event; everything else is `MET` at once. Five
+  things, each easy to undo by accident:
+  - **Absent is not held, forever.** `NON_NULL` means an unflagged release and every one from before
+    the field carries neither key; `DeployHold.of` reads null as false and is lenient on the id.
+  - **An approved version is not held twice**: a request for the same (application, tier, version)
+    with `approved_at` set lets a re-announcement through (`MET`, `approved by … on the earlier
+    request …`) — a rerun, a re-drive.
+  - **`POST /deployment-requests/{id}/approve`** (`DeployService.approve`, no body, method-level
+    roles: the operators' set and `qits:agent`, never `qits:system`) answers 404 unknown, 409 not
+    held / already settled / no longer `ReleaseTips.isTip` (a rollback), 502 an unreadable spec, else
+    200 with the request and its `QUEUED` deployment. One transaction under a row lock writes the
+    approval and the deployment through `handOff` — the same method `queue()` uses on `MET` — then
+    `DeploymentQueued` and the worker's `executeQueued`, the release path's own.
+  - **The `Target` is rebuilt from the spec at the released tag**, on the request thread and
+    name-addressed through `DatabaseMoves.named` (the database-move door's arrangement): a hold
+    waits for a person and outlives the process that wrote it. Nothing is registered again.
+  - **The owed sweep counts a held request as decided** (`countDecidedFor`: no deployment is a
+    decision) — `ALREADY_REQUESTED`, never re-sent. `PdDeployHoldTest` holds all of it.
 - **It is a read surface too** (`PdDeploymentRequestController`, `qits:admin` + `qits:agent` +
   `qits:system` — the last so qits-projects can draw a release's deploy phase without forwarding a
   person's session headers; see *Addressing and auth* — with every read

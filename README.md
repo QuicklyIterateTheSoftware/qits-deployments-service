@@ -277,6 +277,13 @@ replayed event can be *older* than one already deployed, the subscriber deploys 
 still the newest for its `(repoId, branch)` and logs the skip otherwise. The POST is deliberately
 not guarded that way: posting a commit is choosing it.
 
+**A release can wait for a person (qits-2268).** A release request flagged "hold deploy" reaches
+both doors as `deployHold: true` beside `releaseRequestQualifiedId`; its deployment request is then
+held at the quality gate — `UNMET`, `held for manual approval on <id>`, `gateSettledAt` null, no
+deployment — until `POST /deployments/api/deployment-requests/{id}/approve` (the operators' roles and
+`qits:agent`) queues it. An absent key is "not held", forever, and a version already approved in a
+tier is not held there again.
+
 **The application is named after the repository's NAME.** The git host's repository key is an opaque
 storage UUID; the public identity is `(projectId, repoName)`, and the name is what the image tag
 `qits/<name>:<sha>`, the wire alias, the container name, the provisioned database and the rollback
@@ -593,7 +600,8 @@ path. The break-glass above covers this component's HTTP calls, not the docker d
   browser session cannot write the surface and a machine bearer reaches only the two reads granted
   to it by name. Those two are the pins, which qits-platform-artifacts' collector plans a sweep
   from, and `GET /deployment-requests`, which qits-projects draws a release's deploy phase from;
-  everything else a read answers is a person's. The writes and the intake additionally call `MachineAuth.require()`
+  everything else a read answers is a person's. Two writes admit `qits:agent` beside the operators:
+  the database move and the approval of a held deployment request — never `qits:system`. The writes and the intake additionally call `MachineAuth.require()`
   (audience `qits-platform`, the platform's one), behind a gate that ships **on** in prod since
   qits-765 (it used to arrive as `QITS_AUTH_MACHINE_REQUIRED=true` from qits-configuration) and
   **off** in `%dev`/`%test`.
