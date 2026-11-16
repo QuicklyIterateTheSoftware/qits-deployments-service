@@ -30,7 +30,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 
 /**
  * Every application this component deploys, in one flat list — the environments' and the platform's
- * together — and the four levers an operator has over one of them.
+ * together — and the levers an operator has over one of them (the fifth, {@code start}, qits-2249).
  *
  * <p>It is flat because a platform service carries no LINK into an environment: reading through the
  * environments would leave qits-platform-idp and this component out of it, which are the two a
@@ -127,6 +127,18 @@ public class PdApplicationController {
       List<ArtifactPurge.RemovedArtifact> removedArtifacts) {}
 
   /**
+   * What the start door queued (qits-2249) — never an outcome: {@code deploymentId} is the {@code
+   * ACTIVE} deployment whose {@code version} it redeploys on the current claims, and the new
+   * deployment row is read from the listing.
+   */
+  public record StartResponse(
+      String applicationId,
+      String applicationName,
+      String environmentId,
+      String deploymentId,
+      String version) {}
+
+  /**
    * What a decommission may name beside what the release ledger knows: the repositories whose
    * published artifacts are the application's too (qits-1941). Optional — an empty POST is the same
    * request with none.
@@ -212,6 +224,40 @@ public class PdApplicationController {
   public Response restart(
       @PathParam("applicationId") String applicationId, @Context SecurityContext security) {
     return accepted(scaling.restart(applicationId, actor(security)));
+  }
+
+  /**
+   * Start an application on its database claims as they are — the break-glass door (qits-2249).
+   *
+   * <p>The newest {@code ACTIVE} version is redeployed through the ordinary deploy path: provisioning
+   * runs, every binding is rendered from the claim it finds, and <b>no database move is planned</b>,
+   * whatever that version's spec resolves its databases to. For a service a database move — or a
+   * person moving one by hand — left stopped: the one lever that starts it on the data where the
+   * claims say it is. Unlike scale and restart it IS a deployment, so the listing gains a row.
+   *
+   * <p>202 like the other levers: it queues behind whatever the deploy worker is doing. Refused with
+   * a 409 while a deployment of the application is queued or starting, or a database move of it is
+   * not settled — those decide where the data is.
+   */
+  @POST
+  @Path("/{applicationId}/start")
+  @Operation(operationId = "startApplication", summary = "Start an application on its current database claims — its newest ACTIVE version redeployed, no database move planned")
+  @APIResponse(responseCode = "202", description = "Queued on the deploy worker; the ACTIVE deployment and the version it redeploys are named")
+  @APIResponse(responseCode = "400", description = "Not an application id")
+  @APIResponse(responseCode = "404", description = "Nothing has ever been deployed for this application, or its tier is gone")
+  @APIResponse(responseCode = "409", description = "A deployment or a database move of it is in flight, it has no ACTIVE deployment to start, or it is this deployer itself")
+  public Response start(
+      @PathParam("applicationId") String applicationId, @Context SecurityContext security) {
+    ApplicationScaling.StartAccepted queued = scaling.start(applicationId, actor(security));
+    return Response.accepted()
+        .entity(
+            new StartResponse(
+                queued.applicationId(),
+                queued.applicationName(),
+                queued.environmentId(),
+                queued.deploymentId(),
+                queued.version()))
+        .build();
   }
 
   /**

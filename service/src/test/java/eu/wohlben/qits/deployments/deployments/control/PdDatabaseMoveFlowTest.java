@@ -559,9 +559,12 @@ class PdDatabaseMoveFlowTest {
   }
 
   @Test
-  void aMoveARestartInterruptedAfterItsSwitchRedeploysTheStoppedService() throws Exception {
-    // The restart finished the switch, so the claim points at the private server while the
-    // service, stopped for the move, still runs nothing. The boot settle redeploys it.
+  void aSwitchARestartCutShortBeforeV24IsFinishedAndConfirmedByThePlacesLiveDeployment()
+      throws Exception {
+    // A row the release before qits-2249 left SWITCHING names no deployment: the restart finishes
+    // the switch and judges it by the place's newest deployment — ACTIVE here, so the move is
+    // MOVED and nothing is redeployed. (A deployment that did not go live rolls it back:
+    // PdDatabaseMoveRecoveryTest.)
     String token = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
     String environment = "dbmv-s-" + token;
     String environmentId = createDesignatedEnvironment(environment);
@@ -601,10 +604,11 @@ class PdDatabaseMoveFlowTest {
     databaseMoves.settleInterrupted(true);
     deployService.awaitIdle();
 
-    assertEquals("MOVED", move(id).getString("move.state"));
-    assertEquals(appliedBefore + 1, driver.applied().size(), "the stopped service was redeployed");
-    assertEquals("ACTIVE", statuses(environmentId).get(0));
-    assertEquals(2, statuses(environmentId).size());
+    JsonPath settled = move(id);
+    assertEquals("MOVED", settled.getString("move.state"));
+    assertNotNull(settled.getString("move.dropAfter"), "the retention starts when it is confirmed");
+    assertEquals(appliedBefore, driver.applied().size(), "nothing to redeploy: the place is live");
+    assertEquals(List.of("ACTIVE"), statuses(environmentId));
   }
 
   // --- the space check and the abort (qits-2243) ---------------------------------------------------
@@ -779,7 +783,9 @@ class PdDatabaseMoveFlowTest {
             eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState.QUEUED,
             eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState.MOVED,
             eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState.REFUSED,
-            eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState.SWITCHING)) {
+            eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState.SWITCHING,
+            eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState.SWITCHED,
+            eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState.ROLLING_BACK)) {
       String id = staged(state);
       try {
         String answer =
@@ -791,7 +797,8 @@ class PdDatabaseMoveFlowTest {
                 .statusCode(409)
                 .extract()
                 .asString();
-        if (state == eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState.SWITCHING) {
+        if (state.switched()
+            && state != eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState.MOVED) {
           assertTrue(answer.contains("past its switch"), answer);
         }
       } finally {

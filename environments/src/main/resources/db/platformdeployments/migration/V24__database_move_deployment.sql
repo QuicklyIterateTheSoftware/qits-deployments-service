@@ -1,0 +1,22 @@
+-- WHICH DEPLOYMENT A DATABASE MOVE RAN FOR (qits-2249).
+--
+-- A move used to be written MOVED the moment its claim switched, before the deployment that moved it
+-- was live — and MOVED is terminal, so a deployer that restarted between the switch and the cutover
+-- left a stopped service on a moved database that no pass ever looked at again. The owner's ruling of
+-- 2026-11-14: a deployment with a database move ENDS with the service running, live on the target or
+-- rolled back onto the source. So a switched move now waits in `SWITCHED` (and, while it is undone,
+-- `ROLLING_BACK`), and only the cutover — or the startup sweep adopting the deployment as ACTIVE —
+-- writes it MOVED. Everything else rolls it back.
+--
+-- That decision needs the DEPLOYMENT: was it live, is it still running on this worker, did it fail.
+-- The batch alone cannot say, and the place's newest deployment is not the same question (a later
+-- release may have been queued behind it). Hence the column: the `pd_deployment.id` whose run wrote
+-- the row. Null for a row written before this migration, for an operator's move still QUEUED, for a
+-- refusal decided before any deployment ran a step of it, and for the deployer's own move (its
+-- successor writes that row, qits-2209).
+--
+-- No FK, V20's reasoning: the history must neither follow nor vanish with a deployment row an
+-- environment teardown deletes. States stay unchecked, V1's parity rule — the two new words are the
+-- code's (`PdDatabaseMoveState`).
+alter table pd_database_move add column deployment_id varchar(36);
+create index idx_pd_database_move_deployment on pd_database_move (deployment_id);

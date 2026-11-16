@@ -9,6 +9,9 @@ import eu.wohlben.qits.deployments.deployments.control.SpecSource.DeploymentSpec
 import eu.wohlben.qits.deployments.deployments.control.SpecSource.DeploymentSpec.ResourceSpec;
 import eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove;
 import eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState;
+import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
+import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentStatus;
+import eu.wohlben.qits.deployments.deployments.entity.PdResource;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.http.ContentType;
@@ -190,18 +193,40 @@ class PdDatabaseMoveRepositoryNameTest {
   }
 
   @Test
-  void theBootSettleRedeploysAManuallyDeployedVersionByName() throws Exception {
+  void theBootSettleStartsAManuallyDeployedVersionByNameAfterRollingItsMoveBack() throws Exception {
+    // qits-2249: a restart after a deployment applied its spec and before it went live rolls the
+    // move back, then STARTS the service from its last ACTIVE deployment — the manual door's, whose
+    // request names no package — through the deploy path. That start reads the spec by name too.
     Fixture f = fixture("dbmn-d");
     String database = "qits_" + f.application().replace('-', '_');
     releasedByTheBus(f, "2026.101.120000");
     deployedAgainByHand(f, "2026.101.120000");
+    String service = f.environment() + "-" + f.application();
+    String interrupted = UUID.randomUUID().toString();
     String id = UUID.randomUUID().toString();
     QuarkusTransaction.requiringNew()
         .run(
             () -> {
+              PdDeployment deployment = new PdDeployment();
+              deployment.id = interrupted;
+              deployment.applicationName = f.application();
+              deployment.environmentId = f.environmentId();
+              deployment.version = "2026.102.120000";
+              deployment.status = PdDeploymentStatus.STARTING;
+              deployment.containerName = service;
+              deployment.createdAt = Instant.now();
+              deployment.persist();
+              PdResource claim =
+                  PdResource.<PdResource>find(
+                          "applicationName = ?1 and environmentName = ?2 and resourceName = 'db'",
+                          f.application(),
+                          f.environment())
+                      .firstResult();
+              claim.server = "private";
               PdDatabaseMove row = new PdDatabaseMove();
               row.id = id;
               row.batchId = id;
+              row.deploymentId = interrupted;
               row.applicationName = f.application();
               row.environmentName = f.environment();
               row.resourceName = "db";
@@ -211,20 +236,28 @@ class PdDatabaseMoveRepositoryNameTest {
               row.targetDatabase = database;
               row.keptDatabase = database + "_moved_202601010000";
               row.origin = PdDatabaseMove.Origin.DEPLOYMENT;
-              row.state = PdDatabaseMoveState.SWITCHING;
-              row.serviceName = f.environment() + "-" + f.application();
+              row.state = PdDatabaseMoveState.ROLLING_BACK;
+              row.detail = "rolling back after the switch: the new version never got healthy";
+              row.serviceName = service;
               row.serviceReplicas = 1;
               row.createdAt = Instant.now();
               row.persist();
             });
+    driver.scriptDeclaredReplicas(service, 0);
+    driver.scriptRunningImage(service, "registry.example/qits/" + f.application() + ":2026.102.120000");
     int byIdBefore = specs.readsOf(f.repoId());
     int byNameBefore = specs.readsOf(f.application());
 
+    deployService.sweepInFlight();
     databaseMoves.settleInterrupted(true);
     deployService.awaitIdle();
 
     assertEquals(byIdBefore, specs.readsOf(f.repoId()), "nothing was read by repository id");
-    assertTrue(specs.readsOf(f.application()) > byNameBefore, "the redeploy read its spec by name");
+    assertTrue(specs.readsOf(f.application()) > byNameBefore, "the start read its spec by name");
     assertTrue(specs.refOf(f.application()).nameAddressed());
+    assertEquals(
+        "ABORTED",
+        QuarkusTransaction.requiringNew()
+            .call(() -> PdDatabaseMove.<PdDatabaseMove>findById(id).state.name()));
   }
 }

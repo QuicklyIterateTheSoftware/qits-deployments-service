@@ -123,7 +123,9 @@ import org.jboss.logging.Logger;
  * <p><b>It runs on {@code pd-deploy-worker} and nowhere else</b> — inside the deployment, or as the
  * operator's queued redeploy ({@link #request}) — so a move never interleaves with a cutover, an
  * observation, or another move. A restart mid-move is {@link #settleInterrupted}: before the switch it
- * aborts, from the switch on it finishes. Never forgotten.
+ * aborts; from the switch on it waits for its deployment, and is {@code MOVED} only once that is live
+ * ({@link #confirm}) — anything else rolls it back and starts the service on its source (qits-2249).
+ * Never forgotten.
  */
 @ApplicationScoped
 public class DatabaseMoves {
@@ -291,7 +293,7 @@ public class DatabaseMoves {
       String renamedFrom,
       DeploymentDriver.Exposure exposure,
       List<ResourceProvisioning.Resolved> declared) {
-    return run(plan(applicationName, environmentName, renamedFrom, exposure, declared));
+    return run(plan(applicationName, environmentName, renamedFrom, exposure, declared), null);
   }
 
   /**
@@ -348,6 +350,11 @@ public class DatabaseMoves {
     // any service is stopped, exactly as it was refused before anything was provisioned.
     provisioning.refuseAbandonedPredecessorClaims(
         applicationName, environmentName, renamedFrom, declared);
+    // Started on its claims (qits-2249, the start door and a rollback's start): no move at all.
+    boolean staying = stayingPut.contains(applicationName + "|" + environmentName);
+    if (!staying) {
+      refuseUnderWay(applicationName, environmentName);
+    }
     DatabaseServer rule = DatabaseServer.forExposure(exposure);
 
     List<Planned> planned = new ArrayList<>();
@@ -372,6 +379,14 @@ public class DatabaseMoves {
           heldRow != null ? DatabaseServer.parse(heldRow.targetServer) : rule;
       String targetDatabase = heldRow != null ? heldRow.targetDatabase : database;
       Claimed claimed = claim.get();
+      if (staying) {
+        // Provisioning finds the claim where it is, under the name it has — a deferral's shape,
+        // without the WARN: nothing is owed, this start asked for exactly that.
+        effective.set(
+            effective.size() - 1,
+            new ResourceProvisioning.Resolved(name, claimed.database(), resource.type()));
+        continue;
+      }
       if (claimed.server() == targetServer && claimed.database().equals(targetDatabase)) {
         if (heldRow != null) {
           refuse(heldRow, "nothing to move: `" + name + "` already is " + where(targetServer, targetDatabase));
@@ -443,13 +458,40 @@ public class DatabaseMoves {
    * {@link #prepare}'s doing half: measure, then stop, move, verify and switch what {@link #plan}
    * decided. The measurement (qits-2243) still runs before anything stops.
    */
-  Prepared run(Pending pending) {
+  Prepared run(Pending pending, String deploymentId) {
     if (pending.planned().isEmpty()) {
       return new Prepared(pending.resolved(), List.of());
     }
     String batch = UUID.randomUUID().toString();
     List<MoveSpace.Measured> measured = measure(batch, pending.planned());
-    return new Prepared(pending.resolved(), run(batch, pending.planned(), measured));
+    return new Prepared(pending.resolved(), run(batch, pending.planned(), measured, deploymentId));
+  }
+
+  /**
+   * A move of this application still under way — a switch awaiting its deployment, a rollback or a
+   * rename back owed (qits-2249) — refuses the next deployment before anything stops: that one
+   * would plan from a claim a settle pass is about to move, and could have its own move undone by
+   * it. Every observation pass drives such a move on, so the refusal lasts as long as the trouble.
+   */
+  private void refuseUnderWay(String applicationName, String environmentName) {
+    List<PdDatabaseMove> underWay =
+        QuarkusTransaction.requiringNew().call(() -> moves.listUnderWay(applicationName, environmentName));
+    if (underWay.isEmpty()) {
+      return;
+    }
+    PdDatabaseMove row = underWay.get(0);
+    throw new ResourceException(
+        "the database move "
+            + row.id
+            + " of `"
+            + row.resourceName
+            + "` of "
+            + applicationName
+            + " is still "
+            + row.state
+            + (row.detail == null || row.detail.isBlank() ? "" : " (" + firstLine(row.detail) + ")")
+            + ", so this deployment moves nothing and stops nothing until it is settled — every"
+            + " observation pass drives it on");
   }
 
   /** The one sentence a deferred move is told by — the deployment's WARN and the door's 409. */
@@ -851,12 +893,13 @@ public class DatabaseMoves {
    *
    * @return the switched rows, as they ended
    */
-  private List<PdDatabaseMove> run(String batch, List<Planned> planned, List<MoveSpace.Measured> measured) {
+  private List<PdDatabaseMove> run(
+      String batch, List<Planned> planned, List<MoveSpace.Measured> measured, String deploymentId) {
     List<String> ids = new ArrayList<>();
     long reserve = reserveBytes();
     for (int i = 0; i < planned.size(); i++) {
       Planned move = planned.get(i);
-      ids.add(start(batch, move, measured.get(i)));
+      ids.add(start(batch, move, measured.get(i), deploymentId));
       LOG.infof(
           "Database move %s of %s (%s, `%s`) from %s to %s: %s",
           move.id(),
@@ -889,6 +932,15 @@ public class DatabaseMoves {
       } catch (MoveFailure failure) {
         abortBatch(batch, failure.getMessage());
         throw new ResourceException(failure.getMessage());
+      } catch (RuntimeException unexpected) {
+        // Anything else after the first row was written — an admin one-shot whose server image
+        // could not be read, a driver call that threw (qits-2249) — is a failed step like any
+        // other: before the switch the batch aborts and the stopped service is scaled back. Left
+        // to propagate, the deployment failed with the service at zero and nothing undone.
+        String reason = "the move failed unexpectedly: " + unexpected;
+        LOG.warnf(unexpected, "Database move batch %s: %s", batch, reason);
+        abortBatch(batch, reason);
+        throw new ResourceException(reason);
       }
       List<PdDatabaseMove> switched = new ArrayList<>();
       for (int i = 0; i < planned.size(); i++) {
@@ -914,7 +966,7 @@ public class DatabaseMoves {
   }
 
   /** The row in {@code STOPPING}: a new one, or the operator's {@code QUEUED} one taken over. */
-  private String start(String batch, Planned move, MoveSpace.Measured measured) {
+  private String start(String batch, Planned move, MoveSpace.Measured measured, String deploymentId) {
     return QuarkusTransaction.requiringNew()
         .call(
             () -> {
@@ -927,6 +979,7 @@ public class DatabaseMoves {
                 row.createdAt = Instant.now();
               }
               row.batchId = batch;
+              row.deploymentId = deploymentId;
               row.sourceBytes = measured.sourceBytes();
               row.targetFreeBytes = measured.targetFreeBytes();
               row.volumeFreeBytes = measured.volumeFreeBytes();
@@ -1205,6 +1258,9 @@ public class DatabaseMoves {
    * The switch, for one verified move: the claim takes the target in the same transaction the row
    * enters {@code SWITCHING}, then the source is renamed aside and the volume removed. Idempotent
    * from any point on, which is what lets a restart call it for a row it finds half-way.
+   *
+   * <p>It ends {@code SWITCHED}, not {@code MOVED} (qits-2249): the move is done only once the
+   * deployment it ran for is live — {@link #confirm}, from the cutover — and rolled back otherwise.
    */
   private PdDatabaseMove finishSwitch(String id) {
     PdDatabaseMove switched =
@@ -1252,9 +1308,7 @@ public class DatabaseMoves {
             .call(
                 () -> {
                   PdDatabaseMove row = moves.findById(id);
-                  row.state = PdDatabaseMoveState.MOVED;
-                  row.finishedAt = Instant.now();
-                  row.dropAfter = row.finishedAt.plus(retention);
+                  row.state = PdDatabaseMoveState.SWITCHED;
                   if (detail != null) {
                     row.detail = detail;
                   }
@@ -1262,7 +1316,7 @@ public class DatabaseMoves {
                 });
     LOG.infof(
         "Moved the database %s of %s (%s): %s with %d rows → %s with %d rows; the source is kept"
-            + " as %s until %s",
+            + " as %s, and the move is MOVED once deployment %s is live",
         done.resourceName,
         done.applicationName,
         done.environmentName,
@@ -1271,14 +1325,15 @@ public class DatabaseMoves {
         where(DatabaseServer.parse(done.targetServer), done.targetDatabase),
         totalOf(done.targetCounts),
         done.keptDatabase,
-        done.dropAfter);
+        done.deploymentId);
     return done;
   }
 
   /**
    * The rest of a switch renamed in place: nothing to rename aside, no volume, no copy to keep — so
    * no {@code kept_database} and no {@code drop_after}, and the retention sweep never meets it. The
-   * way back is a rename back, which is a move like this one.
+   * way back is a rename back, which is a move like this one. {@code SWITCHED} until its deployment is
+   * live, like a copy.
    */
   private PdDatabaseMove finishRenamed(String id) {
     PdDatabaseMove done =
@@ -1286,8 +1341,7 @@ public class DatabaseMoves {
             .call(
                 () -> {
                   PdDatabaseMove row = moves.findById(id);
-                  row.state = PdDatabaseMoveState.MOVED;
-                  row.finishedAt = Instant.now();
+                  row.state = PdDatabaseMoveState.SWITCHED;
                   row.dropAfter = null;
                   row.detail = RENAMED_IN_PLACE;
                   return row;
@@ -1301,6 +1355,45 @@ public class DatabaseMoves {
         done.sourceDatabase,
         done.targetDatabase);
     return done;
+  }
+
+  /**
+   * The deployment went live on the moved databases (qits-2249): every move it SWITCHED becomes
+   * {@code MOVED} — {@code finished_at} now and, for a kept copy, {@code drop_after} its retention
+   * on from there, so the sweep's clock starts when the data is in use on the target. Called by the
+   * cutover and by the startup sweep's adoption, in the caller's own transaction so the deployment
+   * row and its moves say the same thing or neither changes. A row already rolling back is left to
+   * its rollback: that decision was made first and stands.
+   *
+   * @return how many moves it confirmed
+   */
+  public int confirm(String deploymentId) {
+    if (deploymentId == null) {
+      return 0;
+    }
+    int confirmed = 0;
+    for (PdDatabaseMove row : moves.listByDeployment(deploymentId)) {
+      if (confirm(row)) {
+        confirmed++;
+      }
+    }
+    return confirmed;
+  }
+
+  /**
+   * Whether a move {@code deploymentId} ran is being rolled back (qits-2249) — the startup sweep's
+   * question before it adopts a deployment: one whose rollback a restart cut short failed already,
+   * whatever image its service still names.
+   */
+  public boolean rollingBack(String deploymentId) {
+    if (deploymentId == null) {
+      return false;
+    }
+    return QuarkusTransaction.requiringNew()
+        .call(
+            () ->
+                moves.listByDeployment(deploymentId).stream()
+                    .anyMatch(row -> row.state == PdDatabaseMoveState.ROLLING_BACK));
   }
 
   /** The detail of a move renamed in place. */
@@ -1439,16 +1532,33 @@ public class DatabaseMoves {
 
   /**
    * What {@link #rollBack} did: whether every move of the batch is back on its source, a sentence
-   * for the deployment's row, and the services the moves stopped with the replicas each ran — the
-   * ones the caller now starts again on their original spec. Empty when anything is not back: a
-   * service whose spec names the source must not start while the data is under the target name.
+   * for the deployment's row, the services the moves stopped with the replicas each ran — the ones
+   * the caller now starts again on their original spec — and the rows it acted on, which the caller
+   * settles with {@link #settleRollback} once it knows whether they started. {@code stopped} is
+   * empty when anything is not back: a service whose spec names the source must not start while the
+   * data is under the target name.
    */
-  public record RolledBack(boolean complete, String summary, Map<String, Integer> stopped) {}
+  public record RolledBack(
+      boolean complete, String summary, Map<String, Integer> stopped, List<String> ids) {}
+
+  /** The opening words of a {@code ROLLING_BACK} row's detail; the reason it rolls back follows. */
+  static final String ROLLING_BACK_PREFIX = "rolling back after the switch: ";
+
+  /** The opening words of a move rolled back after its switch, {@code ABORTED}. */
+  static final String ROLLED_BACK_PREFIX = "rolled back after the switch: ";
+
+  /** The mark on a {@code ROLLING_BACK} row whose database could not be put back yet. */
+  static final String ROLLBACK_INCOMPLETE = "the rollback is incomplete";
+
+  /** The mark on a {@code ROLLING_BACK} row whose database is back but whose service did not start. */
+  static final String START_OWED = "the service start is owed";
 
   /**
-   * Undo moves that already SWITCHED, because the deployment they ran for failed after the switch
-   * (qits-2249, the owner's ruling of 2026-11-14: a failed move rolls back and restores the original
-   * service; "FAILED after the switch, application DOWN" is not an end state). Per move, in order:
+   * Undo moves that already SWITCHED, because the deployment they ran for did not go live (qits-2249,
+   * the owner's ruling of 2026-11-14: a failed move rolls back and restores the original service;
+   * "FAILED after the switch, application DOWN" is not an end state). First, durably, every row
+   * becomes {@code ROLLING_BACK} — the intent a restart or a failed step resumes from. Then, for each
+   * move whose claim still names its target:
    *
    * <ol>
    *   <li>the claim holder's service is stopped again when anything is running — a successor that
@@ -1458,88 +1568,160 @@ public class DatabaseMoves {
    *       kept source renamed back and re-opened ({@link DatabaseScripts#restoreKept});
    *   <li>the claim switched back onto the source (server, database, role; password unchanged);
    *   <li>a copy's target dropped — its role too, when no claim on that server uses it — which is
-   *       not the data: the source is;
-   *   <li>the row {@code ABORTED}, {@code drop_after} cleared, the detail saying it was rolled back —
-   *       which is also what makes the target a leftover the next attempt may clear.
+   *       not the data: the source is.
    * </ol>
    *
-   * A move whose source cannot be put back is left {@code MOVED} with the reason in its detail, and
-   * NO service is handed back to start: its claim still names the target, where the data is.
+   * A move whose claim already names its source was put back by an earlier pass and is not touched
+   * again — nor is its service stopped again: what is owed there is only its start. Every row stays
+   * {@code ROLLING_BACK}: {@link #settleRollback} ends it {@code ABORTED} once its service runs. A
+   * move whose source cannot be put back keeps its claim on the target, where the data is, says why
+   * in its detail ({@value #ROLLBACK_INCOMPLETE}), and NO service is handed back to start; the next
+   * settle pass tries again.
    */
   public RolledBack rollBack(List<PdDatabaseMove> switched, String reason) {
     List<String> problems = new ArrayList<>();
     List<String> done = new ArrayList<>();
     Map<String, Integer> stopped = new LinkedHashMap<>();
-    boolean complete = true;
-    for (PdDatabaseMove move : switched) {
-      if (move.serviceName != null && move.serviceReplicas != null && move.serviceReplicas > 0) {
-        stopped.putIfAbsent(move.serviceName, move.serviceReplicas);
-      }
-    }
-    for (String service : stopped.keySet()) {
-      try {
-        OptionalInt desired = driver.desiredReplicas(service);
-        if (desired.isPresent() && desired.getAsInt() > 0) {
-          Optional<Duration> grace = driver.stopGracePeriod(service);
-          DeploymentDriver.ScaleResult scaled = driver.scale(service, 0);
-          if (!scaled.applied()) {
-            throw new MoveFailure("could not stop " + service + " again for the rollback: " + scaled.detail());
-          }
-          // A rollback is never cut short by an operator abort: no row ids to check.
-          awaitDrained(service, drainWait(stopTimeout, grace), List.of());
-        }
-      } catch (MoveFailure failure) {
-        problems.add(failure.getMessage());
-      }
-    }
+    List<PdDatabaseMove> rows = new ArrayList<>();
     for (PdDatabaseMove listed : switched) {
       PdDatabaseMove row = read(listed.id);
-      if (row == null || row.state != PdDatabaseMoveState.MOVED) {
+      if (row == null || !PdDatabaseMoveState.AWAITING_DEPLOYMENT.contains(row.state)) {
         continue;
       }
-      String unresolved = undoSwitch(row, problems);
-      if (unresolved != null) {
-        complete = false;
-        String owed = (row.detail == null ? "" : row.detail + "\n") + "[the rollback is incomplete: " + unresolved + "]";
-        update(row.id, moved -> moved.detail = owed);
-        LOG.errorf(
-            "Could not roll back the database move %s of %s (%s), %s → %s: %s",
+      if (row.state == PdDatabaseMoveState.SWITCHED) {
+        // The intent, written before anything is stopped or renamed: from here on every pass —
+        // and a restart's — resumes the rollback rather than confirming or forgetting the move.
+        String why = ROLLING_BACK_PREFIX + reason;
+        update(
+            row.id,
+            moved -> {
+              moved.state = PdDatabaseMoveState.ROLLING_BACK;
+              moved.detail = why;
+            });
+        row.state = PdDatabaseMoveState.ROLLING_BACK;
+        row.detail = why;
+      }
+      rows.add(row);
+      if (row.serviceName != null && row.serviceReplicas != null && row.serviceReplicas > 0) {
+        stopped.putIfAbsent(row.serviceName, row.serviceReplicas);
+      }
+    }
+    List<PdDatabaseMove> onTarget = rows.stream().filter(this::claimOnTarget).toList();
+    if (!onTarget.isEmpty()) {
+      for (String service : stopped.keySet()) {
+        try {
+          OptionalInt desired = driver.desiredReplicas(service);
+          if (desired.isPresent() && desired.getAsInt() > 0) {
+            Optional<Duration> grace = driver.stopGracePeriod(service);
+            DeploymentDriver.ScaleResult scaled = driver.scale(service, 0);
+            if (!scaled.applied()) {
+              throw new MoveFailure("could not stop " + service + " again for the rollback: " + scaled.detail());
+            }
+            // A rollback is never cut short by an operator abort: no row ids to check.
+            awaitDrained(service, drainWait(stopTimeout, grace), List.of());
+          }
+        } catch (RuntimeException failure) {
+          problems.add(String.valueOf(failure.getMessage()));
+        }
+      }
+    }
+    boolean complete = true;
+    for (PdDatabaseMove row : rows) {
+      String base = firstLine(row.detail);
+      if (onTarget.contains(row)) {
+        String unresolved;
+        try {
+          unresolved = undoSwitch(row, problems);
+        } catch (RuntimeException e) {
+          unresolved = "the way back threw: " + e;
+        }
+        if (unresolved != null) {
+          complete = false;
+          String owed = base + "\n[" + ROLLBACK_INCOMPLETE + ": " + unresolved + "]";
+          update(row.id, moved -> moved.detail = owed);
+          LOG.errorf(
+              "Could not roll back the database move %s of %s (%s), %s → %s; the next pass tries"
+                  + " again: %s",
+              row.id,
+              row.applicationName,
+              row.resourceName,
+              where(DatabaseServer.parse(row.targetServer), row.targetDatabase),
+              where(DatabaseServer.parse(row.sourceServer), row.sourceDatabase),
+              unresolved);
+          problems.add(unresolved);
+          continue;
+        }
+        LOG.warnf(
+            "Rolled back the database move %s of %s (%s): %s is back on %s",
             row.id,
             row.applicationName,
             row.resourceName,
-            where(DatabaseServer.parse(row.targetServer), row.targetDatabase),
-            where(DatabaseServer.parse(row.sourceServer), row.sourceDatabase),
-            unresolved);
-        problems.add(unresolved);
-        continue;
+            row.resourceName,
+            where(DatabaseServer.parse(row.sourceServer), row.sourceDatabase));
       }
-      String detail = "rolled back after the switch: " + reason;
-      update(
-          row.id,
-          moved -> {
-            moved.state = PdDatabaseMoveState.ABORTED;
-            moved.finishedAt = Instant.now();
-            moved.dropAfter = null;
-            moved.detail = detail;
-          });
+      update(row.id, moved -> moved.detail = base);
       done.add(
           "`"
               + row.resourceName
               + "` back on "
               + where(DatabaseServer.parse(row.sourceServer), row.sourceDatabase)
               + (row.keptDatabase == null ? " (renamed back)" : " (the kept source restored, the target dropped)"));
-      LOG.warnf(
-          "Rolled back the database move %s of %s (%s): %s is back on %s",
-          row.id,
-          row.applicationName,
-          row.resourceName,
-          row.resourceName,
-          where(DatabaseServer.parse(row.sourceServer), row.sourceDatabase));
     }
     String summary =
         String.join("; ", done)
             + (problems.isEmpty() ? "" : (done.isEmpty() ? "" : "; ") + "[" + String.join("; ", problems) + "]");
-    return new RolledBack(complete, summary, complete ? Map.copyOf(stopped) : Map.of());
+    return new RolledBack(
+        complete,
+        summary,
+        complete ? Map.copyOf(stopped) : Map.of(),
+        rows.stream().map(row -> row.id).toList());
+  }
+
+  /**
+   * The end of a rollback whose database half is done (qits-2249): with {@code owed} null every
+   * service it stopped runs again, so each row is {@code ABORTED} — {@code drop_after} cleared, the
+   * detail {@code rolled back after the switch: <reason>}, which also makes the target a leftover
+   * the next attempt may clear. Otherwise the rows stay {@code ROLLING_BACK} marked {@value
+   * #START_OWED}, and the next settle pass starts what did not start.
+   */
+  public void settleRollback(List<String> ids, String owed) {
+    for (String id : ids) {
+      update(
+          id,
+          row -> {
+            if (row.state != PdDatabaseMoveState.ROLLING_BACK) {
+              return;
+            }
+            String reason = reasonOf(row.detail);
+            if (owed == null) {
+              row.state = PdDatabaseMoveState.ABORTED;
+              row.finishedAt = Instant.now();
+              row.dropAfter = null;
+              row.detail = ROLLED_BACK_PREFIX + reason;
+            } else {
+              row.detail = ROLLING_BACK_PREFIX + reason + "\n[" + START_OWED + ": " + owed + "]";
+            }
+          });
+    }
+  }
+
+  /** The reason a {@code ROLLING_BACK} row rolls back, off its detail's first line. */
+  private static String reasonOf(String detail) {
+    String line = firstLine(detail);
+    return line.startsWith(ROLLING_BACK_PREFIX) ? line.substring(ROLLING_BACK_PREFIX.length()) : line;
+  }
+
+  private static String firstLine(String text) {
+    if (text == null) {
+      return "";
+    }
+    int newline = text.indexOf('\n');
+    return newline < 0 ? text : text.substring(0, newline);
+  }
+
+  /** Whether the claim a switched move pointed at its target still names that target. */
+  private boolean claimOnTarget(PdDatabaseMove row) {
+    return QuarkusTransaction.requiringNew().call(() -> switchedClaim(row).isPresent());
   }
 
   /**
@@ -1717,11 +1899,13 @@ public class DatabaseMoves {
   // --- a restart, and the retention -------------------------------------------------------------
 
   /**
-   * Settle every move a previous process left in a word it never leaves (boot, and every observation
-   * tick after it for whatever boot could not finish): a batch with a move past the switch FINISHES,
-   * every other batch ABORTS — the service scaled back up on its untouched source. An operator's move
-   * still {@code QUEUED} lost the redeploy it was waiting for with the queue, and is refused. Runs on
-   * the deploy worker, where no move of this process can be in flight.
+   * Settle every move a previous process — or a step of this one that failed — left in a word it
+   * never leaves (boot, and every observation tick after it): a batch with no move past the switch
+   * ABORTS, the service scaled back up on its untouched source; a batch past it is decided by its
+   * DEPLOYMENT ({@link #settleSwitched}, qits-2249): confirmed {@code MOVED} when that deployment went
+   * live, otherwise rolled back and its stopped services started again on their source. An
+   * operator's move still {@code QUEUED} lost the redeploy it was waiting for with the queue, and is
+   * refused. Runs on the deploy worker, where no move of this process can be in flight.
    */
   public void settleInterrupted(boolean atBoot) {
     List<PdDatabaseMove> unfinished =
@@ -1746,21 +1930,18 @@ public class DatabaseMoves {
       boolean switched = rows.stream().anyMatch(row -> row.state.switched());
       try {
         if (switched) {
+          // A switch the restart cut short is finished first — the claims already point at the
+          // targets — and then the whole batch waits on, is confirmed by, or is rolled back with
+          // its deployment.
           for (PdDatabaseMove row : rows) {
             if (row.state == PdDatabaseMoveState.VERIFIED || row.state == PdDatabaseMoveState.SWITCHING) {
               finishSwitch(row.id);
             }
           }
-          // The service the move stopped is still at zero, and its running spec names the OLD
-          // database — so it is not scaled back up, it is REDEPLOYED, here, the way the operator's
-          // door redeploys. Nothing else reliably does it: the startup sweep marks the interrupted
-          // row `interrupted` (sweepInFlight, V16), but only OwedReleaseSweep re-drives such a row,
-          // and only for a release that came through the bus door and left a pd_owed_release
-          // obligation — Door.MANUAL writes none, so an operator's move (whose redeploy is MANUAL)
-          // or a hand-announced version would leave the service down with nobody to start it. A
-          // bus release may therefore be re-driven twice; the second finds its claims already where
-          // the spec says and is an ordinary, idempotent redeploy.
-          redeployAfterSwitch(rows.get(0));
+          settleSwitched(
+              QuarkusTransaction.requiringNew()
+                  .call(() -> moves.list("batchId = ?1 order by createdAt", batch)),
+              atBoot);
         } else {
           abortBatch(batch, "the deployer restarted mid-move, so the move was undone");
         }
@@ -1768,6 +1949,323 @@ public class DatabaseMoves {
         LOG.warnf(e, "Could not settle the interrupted database move %s; the next pass tries again", batch);
       }
     }
+  }
+
+  /** The deployment a switched batch ran for, as plain values — what {@link #settleSwitched} decides by. */
+  private record Judged(
+      String id,
+      String applicationName,
+      String environmentId,
+      PdDeploymentStatus status,
+      String imageTag,
+      String version) {}
+
+  /**
+   * One batch past its switch, decided by its deployment (qits-2249, the owner's ruling of
+   * 2026-11-14: a deployment with a database move ends with the service running — live on the target,
+   * or rolled back onto the source):
+   *
+   * <ul>
+   *   <li><b>still running on this worker</b> — its own {@code finish} decides; nothing here;
+   *   <li><b>{@code ACTIVE}</b> and nothing rolling back — it went live on the targets, and the cutover
+   *       that should have said so did not: the moves are confirmed {@code MOVED};
+   *   <li><b>anything else</b> — {@code FAILED} by the startup sweep (the restart came before the
+   *       service was applied), {@code SUPERSEDED} (named, not yet applied, or reverted by the
+   *       orchestrator), a rollback a restart or a failed step left {@code ROLLING_BACK}: the moves are
+   *       ROLLED BACK ({@link #rollBack}, which resumes from wherever the claims are) and every
+   *       service they stopped is started again on its source ({@link #startStopped}); only then
+   *       are the rows {@code ABORTED}. What did not get that far is said on the rows and the next
+   *       pass drives it on.
+   * </ul>
+   *
+   * The deployment is the rows' own ({@code deployment_id}, V24), or for a row written before it —
+   * a switch a restart cut short in the release before — the place's newest.
+   */
+  private void settleSwitched(List<PdDatabaseMove> rows, boolean atBoot) {
+    List<PdDatabaseMove> awaiting =
+        rows.stream().filter(row -> PdDatabaseMoveState.AWAITING_DEPLOYMENT.contains(row.state)).toList();
+    if (awaiting.isEmpty()) {
+      return;
+    }
+    PdDatabaseMove first = awaiting.get(0);
+    Judged deployment = QuarkusTransaction.requiringNew().call(() -> deploymentOf(awaiting));
+    if (deployment == null) {
+      LOG.warnf(
+          "The database move %s of %s is past its switch and names no deployment on record to settle it"
+              + " by; it is left as it is",
+          first.batchId, first.applicationName);
+      return;
+    }
+    if (worker.runsHere(deployment.id())) {
+      return;
+    }
+    boolean rollingBack = awaiting.stream().anyMatch(row -> row.state == PdDatabaseMoveState.ROLLING_BACK);
+    if (!rollingBack && deployment.status() == PdDeploymentStatus.ACTIVE) {
+      List<String> ids = awaiting.stream().map(row -> row.id).toList();
+      QuarkusTransaction.requiringNew().run(() -> ids.forEach(id -> confirm(moves.findById(id))));
+      LOG.infof(
+          "The database move %s of %s went live with deployment %s; confirmed MOVED",
+          first.batchId, first.applicationName, deployment.id());
+      return;
+    }
+    String reason =
+        deployment.status() == PdDeploymentStatus.QUEUED || deployment.status() == PdDeploymentStatus.STARTING
+            ? "the deployer restarted before deployment " + deployment.id() + " was live"
+            : "deployment " + deployment.id() + " ended " + deployment.status() + " before it was live";
+    RolledBack database = rollBack(awaiting, reason);
+    if (!database.complete()) {
+      return; // said at ERROR on the rows; the next pass tries the way back again
+    }
+    String batch = first.batchId;
+    if (!atBoot && !startDue(batch)) {
+      return;
+    }
+    Started started = startStopped(database.stopped(), deployment);
+    settleRollback(database.ids(), started.owed());
+    if (started.owed() != null) {
+      startAttempts.put(batch, Instant.now());
+      LOG.errorf(
+          "The database move %s of %s is rolled back onto its source, but not every service it stopped"
+              + " runs again; the next pass tries again: %s",
+          batch, first.applicationName, started.owed());
+      return;
+    }
+    startAttempts.remove(batch);
+    String stamp =
+        "[rolled back: deployment "
+            + deployment.id()
+            + " did not go live after its database move switched, so the move was undone ("
+            + database.summary()
+            + ") and "
+            + started.summary()
+            + "]";
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              PdDeployment row = deployments.findById(deployment.id());
+              if (row == null) {
+                return;
+              }
+              if (row.status == PdDeploymentStatus.QUEUED
+                  || row.status == PdDeploymentStatus.STARTING
+                  || row.status == PdDeploymentStatus.ACTIVE) {
+                row.status = PdDeploymentStatus.FAILED;
+                row.finishedAt = Instant.now();
+              }
+              row.detail = row.detail == null || row.detail.isBlank() ? stamp : stamp + "\n" + row.detail;
+            });
+    LOG.warnf(
+        "Rolled back the database move %s of %s after %s: %s; %s",
+        batch, first.applicationName, reason, database.summary(), started.summary());
+  }
+
+  /** {@link #confirm(String)} for one managed row: {@code SWITCHED} → {@code MOVED}. */
+  private boolean confirm(PdDatabaseMove row) {
+    if (row == null || row.state != PdDatabaseMoveState.SWITCHED) {
+      return false;
+    }
+    row.state = PdDatabaseMoveState.MOVED;
+    row.finishedAt = Instant.now();
+    row.dropAfter = row.keptDatabase == null ? null : row.finishedAt.plus(retention);
+    return true;
+  }
+
+  /** The deployment the rows ran for, or for rows written before V24 the place's newest. */
+  private Judged deploymentOf(List<PdDatabaseMove> rows) {
+    PdDatabaseMove first = rows.get(0);
+    String id = rows.stream().map(row -> row.deploymentId).filter(java.util.Objects::nonNull).findFirst().orElse(null);
+    PdDeployment deployment;
+    if (id != null) {
+      deployment = deployments.findById(id);
+    } else {
+      deployment =
+          environments.list().stream()
+              .filter(environment -> first.environmentName.equals(environment.name))
+              .findFirst()
+              .flatMap(tier -> deployments.newestForPlace(first.applicationName, tier.id))
+              .orElse(null);
+    }
+    return deployment == null
+        ? null
+        : new Judged(
+            deployment.id,
+            deployment.applicationName,
+            deployment.environmentId,
+            deployment.status,
+            deployment.imageTag(),
+            deployment.version);
+  }
+
+  /** What {@link #startStopped} did: a sentence for the deployment row, and what is still owed. */
+  private record Started(String summary, String owed) {}
+
+  /**
+   * The services a rolled-back batch stopped, started again on their source (qits-2249). Asked of
+   * the runtime per service, because after a restart nothing in memory says what was applied:
+   *
+   * <ul>
+   *   <li>it runs a spec that is NOT the failed deployment's — untouched, or reverted by the
+   *       orchestrator to the one the move scaled to zero, naming the source — so it is SCALED back
+   *       to the replicas the move recorded;
+   *   <li>it runs the failed deployment's own spec, which names the target, or it is gone (a rename's
+   *       stop-old removed its predecessor) — so it is STARTED from its newest {@code ACTIVE}
+   *       deployment through the ordinary deploy path on the claims as they now are ({@link
+   *       #startOnClaims}, the start door's own path).
+   * </ul>
+   */
+  private Started startStopped(Map<String, Integer> stopped, Judged failed) {
+    List<String> started = new ArrayList<>();
+    List<String> owed = new ArrayList<>();
+    for (Map.Entry<String, Integer> entry : stopped.entrySet()) {
+      String service = entry.getKey();
+      int replicas = entry.getValue();
+      Optional<DeploymentDriver.RunningImage> running;
+      try {
+        running = driver.runningImage(service);
+      } catch (RuntimeException e) {
+        owed.add(service + " could not be inspected: " + e.getMessage());
+        continue;
+      }
+      boolean failedSpec =
+          running.isPresent()
+              && failed.imageTag() != null
+              && ImageRefs.carries(running.get().imageRef(), failed.imageTag());
+      if (running.isPresent() && !failedSpec) {
+        DeploymentDriver.ScaleResult scaled;
+        try {
+          scaled = driver.scale(service, replicas);
+        } catch (RuntimeException e) {
+          scaled = new DeploymentDriver.ScaleResult(DeploymentDriver.ScaleOutcome.REFUSED, e.toString());
+        }
+        if (scaled.applied()) {
+          started.add(service + " scaled back to " + replicas + " on its original spec");
+        } else {
+          owed.add(service + " could NOT be scaled back to " + replicas + ": " + scaled.detail());
+        }
+        continue;
+      }
+      String problem = startFromActive(service, failed);
+      if (problem == null) {
+        started.add(service + " started from its last ACTIVE deployment on its claims");
+      } else {
+        owed.add(problem);
+      }
+    }
+    return new Started(
+        started.isEmpty() ? "nothing was running to start again" : String.join("; ", started),
+        owed.isEmpty() ? null : String.join("; ", owed));
+  }
+
+  /**
+   * Start {@code service} from the newest {@code ACTIVE} deployment that ran under its name, on the
+   * claims as they are now: null when that redeploy went live, otherwise why not.
+   */
+  private String startFromActive(String service, Judged failed) {
+    PdDeployment active =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () ->
+                    deployments
+                        .find(
+                            "containerName = ?1 and status = ?2 and id <> ?3 order by createdAt desc",
+                            service,
+                            PdDeploymentStatus.ACTIVE,
+                            failed.id())
+                        .firstResultOptional()
+                        .orElse(null));
+    if (active == null) {
+      return service + " has no ACTIVE deployment to start it from";
+    }
+    String application = active.applicationName;
+    String environmentId = active.environmentId;
+    try {
+      PdEnvironment tier = environments.require(environmentId);
+      Live live = QuarkusTransaction.requiringNew().call(() -> coordinates(application, active));
+      startOnClaims(application, tier.name, live);
+    } catch (RuntimeException e) {
+      return service + " could not be started from " + active.id + ": " + e.getMessage();
+    }
+    PdDeployment outcome =
+        QuarkusTransaction.requiringNew()
+            .call(() -> deployments.newestForPlace(application, environmentId).orElse(null));
+    if (outcome != null && outcome.status == PdDeploymentStatus.ACTIVE) {
+      return null;
+    }
+    return service
+        + " was not started: the redeploy of "
+        + application
+        + "@"
+        + versionOf(active)
+        + " ended "
+        + (outcome == null ? "nowhere" : outcome.status + (outcome.detail == null ? "" : ": " + firstLine(outcome.detail)));
+  }
+
+  private static String versionOf(PdDeployment row) {
+    return row.version != null ? row.version : row.imageTag();
+  }
+
+  /**
+   * When the start of a rolled-back batch's services last failed, by batch — memory, on purpose: a
+   * start through the deploy path reads a spec and pulls an image, so a pass retries it no sooner
+   * than {@code start-retry} after a failed one, while a cheap scale is retried on every pass. A
+   * restart forgets it and tries at once, which is what a boot should do.
+   */
+  private final Map<String, Instant> startAttempts = new ConcurrentHashMap<>();
+
+  /** How long a failed start of a rolled-back batch's services waits before the next pass retries it. */
+  @ConfigProperty(name = "qits.deployments.database-move.start-retry")
+  Duration startRetry;
+
+  private boolean startDue(String batch) {
+    Instant last = startAttempts.get(batch);
+    return last == null || !Instant.now().isBefore(last.plus(startRetry));
+  }
+
+  // --- starting an application on its claims (qits-2249) --------------------------------------
+
+  /**
+   * The applications being started on their claims right now, by {@code <application>|<tier>} —
+   * what {@link #plan} reads to plan NO move for them. Written and read on the worker alone, like
+   * {@link #held}.
+   */
+  private final Set<String> stayingPut = ConcurrentHashMap.newKeySet();
+
+  /**
+   * Redeploy {@code live} through the ordinary deploy path, on the worker and synchronously, with
+   * every postgres resource provisioned where its claim IS (qits-2249): {@link #plan} plans no move
+   * for it, so the bindings name the claims' current databases whatever this version's spec
+   * resolves. The break-glass start, and the rollback's start of a service whose spec was the
+   * failed deployment's. Must run on the worker.
+   */
+  void startOnClaims(String applicationName, String environmentName, Live live) {
+    String key = applicationName + "|" + environmentName;
+    stayingPut.add(key);
+    try {
+      worker.redeploy(live.repository(), live.releasedName(), live.version(), live.packageName());
+    } finally {
+      stayingPut.remove(key);
+    }
+  }
+
+  /** What the start door queued: the {@code ACTIVE} deployment it redeploys, and its version. */
+  public record StartQueued(String deploymentId, String version) {}
+
+  /**
+   * The start door's half (qits-2249, {@code POST /applications/{id}/start}): the coordinates of the
+   * place's newest {@code ACTIVE} deployment read now, on the request thread — a release no request
+   * is on record for is a 409 here rather than a log line — then {@link #startOnClaims} queued on
+   * the worker. The caller has already refused a place with anything in flight.
+   */
+  public StartQueued queueStart(PdDeployment active, String environmentName, String actor) {
+    String application = active.applicationName;
+    Live live = QuarkusTransaction.joiningExisting().call(() -> coordinates(application, active));
+    worker.enqueueOperation(
+        "Starting " + application + "@" + live.version() + " on its claims",
+        () -> startOnClaims(application, environmentName, live));
+    LOG.infof(
+        "%s asked to start %s in %s: redeploying %s@%s on its current claims",
+        actor == null ? "An operator" : actor, application, environmentName, application, live.version());
+    return new StartQueued(active.id, live.version());
   }
 
   /**
@@ -1986,55 +2484,6 @@ public class DatabaseMoves {
       String releasedName,
       String packageName) {}
 
-  /**
-   * Redeploy, on this worker, the version the interrupted deployment of {@code move}'s application
-   * was putting live — its newest deployment row in that tier, whatever the startup sweep settled it
-   * as. A WARN and nothing else when no release is on record to redeploy.
-   */
-  private void redeployAfterSwitch(PdDatabaseMove move) {
-    Live live;
-    try {
-      PdEnvironment tier =
-          environments.list().stream()
-              .filter(environment -> move.environmentName.equals(environment.name))
-              .findFirst()
-              .orElseThrow(() -> new ConflictException("the tier " + move.environmentName + " is gone"));
-      live =
-          QuarkusTransaction.requiringNew()
-              .call(
-                  () ->
-                      coordinates(
-                          move.applicationName,
-                          deployments
-                              .newestForPlace(move.applicationName, tier.id)
-                              .orElseThrow(
-                                  () ->
-                                      new ConflictException(
-                                          "nothing was ever deployed for "
-                                              + move.applicationName
-                                              + " in "
-                                              + move.environmentName))));
-    } catch (RuntimeException e) {
-      LOG.errorf(
-          "The database move %s of %s switched before a restart, its service is stopped, and it"
-              + " cannot be redeployed: %s",
-          move.batchId, move.applicationName, e.getMessage());
-      return;
-    }
-    if (!live.repository().nameAddressed()) {
-      LOG.warnf(
-          "The name of %s's repository %s is unknown here — no release this deployer accepted names"
-              + " it — so the redeploy after the database move %s reads its spec by id, which the"
-              + " git host serves to qits-projects only",
-          move.applicationName, live.repository().repoId(), move.batchId);
-    }
-    LOG.warnf(
-        "Finished the interrupted database move %s past its switch; redeploying %s@%s so its stopped"
-            + " service starts against the moved database",
-        move.batchId, move.applicationName, live.version());
-    worker.redeploy(live.repository(), live.releasedName(), live.version(), live.packageName());
-  }
-
   /** The words of a deployment that served its place — what the door redeploys. */
   private static final Set<PdDeploymentStatus> SERVED =
       Set.of(PdDeploymentStatus.ACTIVE, PdDeploymentStatus.SCALED_TO_ZERO);
@@ -2231,7 +2680,8 @@ public class DatabaseMoves {
             "the move "
                 + id
                 + " is past its switch: the claim already points at the target, so an abort would"
-                + " strand it — it finishes");
+                + " strand it — it finishes with its deployment, or is rolled back when that does not"
+                + " go live");
       }
       aborts.putIfAbsent(id, who);
       String batchId = row.batchId;

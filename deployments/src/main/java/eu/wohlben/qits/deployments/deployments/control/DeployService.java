@@ -334,8 +334,23 @@ public class DeployService implements ReleaseAnnouncements {
    * switch, application DOWN" is not an end state any more. Written and cleared on the worker around
    * {@link #execute}; a cutover clears its entry, since a deployment that went live rolls nothing
    * back.
+   *
+   * <p><b>The rows are the durable half; this is only what they cannot carry</b> — the spec this
+   * deployment applied and whether it is still on the service, the registry host, the restored
+   * predecessor. The moves themselves are {@code SWITCHED} until the cutover confirms them and
+   * {@code ROLLING_BACK} while they are undone (V24, qits-2249), so a restart — which loses this map
+   * — or a rollback step that failed is resumed by {@link DatabaseMoves#settleInterrupted} from the
+   * rows alone, and an entry here is what tells that pass the deployment is still this worker's.
    */
   private final Map<String, MoveRollback> pendingRollbacks = new ConcurrentHashMap<>();
+
+  /**
+   * Whether {@code deploymentId} is a deployment this worker is running with switched database
+   * moves — its own {@link #finish} decides them, and a settle pass leaves them alone (qits-2249).
+   */
+  boolean runsHere(String deploymentId) {
+    return deploymentId != null && pendingRollbacks.containsKey(deploymentId);
+  }
 
   /**
    * One deployment's switched moves and what it has done to the service since (qits-2249).
@@ -893,6 +908,16 @@ public class DeployService implements ReleaseAnnouncements {
 
   /** The decision table above, asked of the runtime. */
   private Verdict verdictOn(InFlight row) {
+    if (databaseMoves.rollingBack(row.deploymentId())) {
+      // The restart came in the middle of this deployment's rollback (qits-2249): it already
+      // failed, and its service may be the new image scaled to zero for the way back. Never
+      // adopted, and not "interrupted" either — the release was decided; the settle pass resumes
+      // the rollback and starts the service on its source.
+      return new Verdict(
+          PdDeploymentStatus.FAILED,
+          "[the deployer restarted while this deployment's database move was being rolled back; the"
+              + " rollback resumes]");
+    }
     if (row.status() != PdDeploymentStatus.STARTING || row.containerName() == null) {
       return Verdict.interruptedByRestart();
     }
@@ -937,6 +962,8 @@ public class DeployService implements ReleaseAnnouncements {
         previous.status = PdDeploymentStatus.DECOMMISSIONED;
         previous.finishedAt = Instant.now();
       }
+      // An adopted deployment is live on whatever its moves switched (qits-2249): MOVED with it.
+      databaseMoves.confirm(row.deploymentId());
     }
     deployment.status = verdict.status();
     deployment.detail = verdict.detail();
@@ -3418,7 +3445,7 @@ public class DeployService implements ReleaseAnnouncements {
     // put the old service back on its untouched data.
     MoveRollback rollback = null;
     try {
-      DatabaseMoves.Prepared prepared = databaseMoves.run(pending);
+      DatabaseMoves.Prepared prepared = databaseMoves.run(pending, deploymentId);
       if (!prepared.switched().isEmpty()) {
         rollback = new MoveRollback(plan, prepared.switched(), prepared.describeSwitched());
         rollback.registryHost = resolvedRegistryHost;
@@ -3683,6 +3710,9 @@ public class DeployService implements ReleaseAnnouncements {
               PdDeployment deployment = deployments.findById(deploymentId);
               deployment.status = PdDeploymentStatus.ACTIVE;
               deployment.finishedAt = Instant.now();
+              // Live on the moved databases (qits-2249): the moves this deployment SWITCHED are
+              // MOVED in the same commit as the row's ACTIVE, so the two never disagree.
+              databaseMoves.confirm(deploymentId);
               // Flushed here rather than left to the commit, and that is what makes the retry
               // above worth having: an ORM flushes at commit by default, which would put these
               // statements on the far side of the one round trip nothing can place. Flushed, a
@@ -3939,8 +3969,25 @@ public class DeployService implements ReleaseAnnouncements {
     if (rollback != null) {
       // A move switched for this successor (qits-2249): its databases go back FIRST, so the
       // predecessor is restored onto its sources — with the claims as they now are, not the
-      // successor's bindings, which name the targets.
-      undoDatabaseMoves(rollback, failure);
+      // successor's bindings, which name the targets. Only after a COMPLETE undo: a predecessor
+      // re-applied on claims that still name a target would start on the moved data under a spec
+      // that is not the one the data moved for. An incomplete undo leaves the rows ROLLING_BACK, and
+      // every observation pass tries it again and then starts the predecessor.
+      DatabaseMoves.RolledBack database = undoDatabaseMoves(rollback, failure);
+      if (!database.complete()) {
+        LOG.errorf(
+            "Rename cutover %s -> %s failed and its database move could not be rolled back yet, so %s"
+                + " is NOT restored; the next pass tries again: %s",
+            rename.predecessor(), plan.applicationName(), rename.predecessor(), database.summary());
+        return "the successor did not go live after its predecessor "
+            + rename.predecessor()
+            + " was stopped for it, and its database move could not be rolled back yet ("
+            + database.summary()
+            + "), so "
+            + rename.predecessor()
+            + " is not restored until it is — every observation pass tries again\n"
+            + failure;
+      }
       successorBindings =
           resourceProvisioning.recordedBindings(plan.applicationName(), plan.environmentName());
     }
@@ -4708,7 +4755,10 @@ public class DeployService implements ReleaseAnnouncements {
    * </ol>
    *
    * A database that cannot be put back keeps its service stopped — its original spec names a source
-   * that is not there — and that is said at ERROR, naming what failed.
+   * that is not there — and that is said at ERROR, naming what failed. Neither that nor a service
+   * that would not start again is the end of it (qits-2249): the moves stay {@code ROLLING_BACK},
+   * saying what is owed, and every observation pass ({@link DatabaseMoves#settleInterrupted}) tries
+   * again until the service runs on its source; the moves are {@code ABORTED} only then.
    */
   private String rollBack(MoveRollback rollback, String cause) {
     Plan plan = rollback.plan;
@@ -4716,32 +4766,43 @@ public class DeployService implements ReleaseAnnouncements {
     if (!database.complete()) {
       LOG.errorf(
           "Deployment %s of %s failed after its database move switched (%s), and the rollback could"
-              + " NOT put every database back, so the services it stopped stay stopped: %s. Cause: %s",
+              + " NOT put every database back yet, so the services it stopped stay stopped until a"
+              + " later pass does: %s. Cause: %s",
           plan.deploymentId(),
           plan.applicationName(),
           rollback.description,
           database.summary(),
           firstLine(cause));
       return "[the deployment failed after its database move switched, and rolling it back is"
-          + " INCOMPLETE — the services it stopped stay stopped: "
+          + " INCOMPLETE — the services it stopped stay stopped, and every observation pass tries"
+          + " the rollback again: "
           + database.summary()
           + "]\n"
           + cause;
     }
     List<String> services = new ArrayList<>();
+    List<String> owed = new ArrayList<>();
     for (Map.Entry<String, Integer> stopped : database.stopped().entrySet()) {
       String service = stopped.getKey();
       int replicas = stopped.getValue();
+      Start start;
       if (rollback.restored.contains(service)) {
-        services.add(service + " restored from its last ACTIVE deployment");
+        start = new Start(true, service + " restored from its last ACTIVE deployment");
       } else if (rollback.applied && service.equals(plan.wireAlias()) && rollback.spec != null) {
-        services.add(restoreOwnService(rollback, service, replicas));
+        start = restoreOwnService(rollback, service, replicas);
       } else {
-        services.add(scaleBack(service, replicas));
+        start = scaleBack(service, replicas);
+      }
+      services.add(start.sentence());
+      if (!start.ok()) {
+        owed.add(start.sentence());
       }
     }
+    // The rows say what is still owed, so a pass — or a restart's — starts what did not start.
+    databaseMoves.settleRollback(database.ids(), owed.isEmpty() ? null : String.join("; ", owed));
     String started =
-        services.isEmpty() ? "nothing was running to start again" : String.join("; ", services);
+        (services.isEmpty() ? "nothing was running to start again" : String.join("; ", services))
+            + (owed.isEmpty() ? "" : " — what did not start is retried on every observation pass");
     LOG.warnf(
         "Deployment %s of %s failed after its database move switched and is rolled back: %s; %s."
             + " Cause: %s",
@@ -4767,14 +4828,17 @@ public class DeployService implements ReleaseAnnouncements {
       } catch (RuntimeException e) {
         LOG.errorf(e, "The rollback of %s's database moves threw", rollback.plan.applicationName());
         rollback.database =
-            new DatabaseMoves.RolledBack(false, "the rollback threw: " + e, Map.of());
+            new DatabaseMoves.RolledBack(false, "the rollback threw: " + e, Map.of(), List.of());
       }
     }
     return rollback.database;
   }
 
+  /** Whether one stopped service runs again after a rollback, and the sentence that says so. */
+  private record Start(boolean ok, String sentence) {}
+
   /** A service whose spec this deployment never left on it: back to the replicas it ran. */
-  private String scaleBack(String service, int replicas) {
+  private Start scaleBack(String service, int replicas) {
     DeploymentDriver.ScaleResult scaled;
     try {
       scaled = driver.scale(service, replicas);
@@ -4783,9 +4847,9 @@ public class DeployService implements ReleaseAnnouncements {
     }
     if (!scaled.applied()) {
       LOG.errorf("Could not scale %s back to %d after a rollback: %s", service, replicas, scaled.detail());
-      return service + " could NOT be scaled back to " + replicas + ": " + safe(scaled.detail());
+      return new Start(false, service + " could NOT be scaled back to " + replicas + ": " + safe(scaled.detail()));
     }
-    return service + " scaled back to " + replicas + " on its original spec";
+    return new Start(true, service + " scaled back to " + replicas + " on its original spec");
   }
 
   /**
@@ -4795,7 +4859,7 @@ public class DeployService implements ReleaseAnnouncements {
    * order and policy are this deployment's spec, which is the same repository one release later, the
    * rename restore's trade ({@link #predecessorSpec}).
    */
-  private String restoreOwnService(MoveRollback rollback, String service, int replicas) {
+  private Start restoreOwnService(MoveRollback rollback, String service, int replicas) {
     Restored restored =
         restoreLastActive(
             rollback.plan,
@@ -4806,24 +4870,29 @@ public class DeployService implements ReleaseAnnouncements {
     if (restored.previous() == null) {
       LOG.warnf(
           "%s has no ACTIVE deployment to restore after its rollback; it is only scaled back", service);
-      return scaleBack(service, replicas) + " (no ACTIVE deployment to restore its spec from)";
+      Start scaled = scaleBack(service, replicas);
+      return new Start(scaled.ok(), scaled.sentence() + " (no ACTIVE deployment to restore its spec from)");
     }
     if (!restored.applied()) {
       LOG.errorf(
           "%s could NOT be restored from its last ACTIVE deployment %s after a rollback: %s",
           service, restored.row(), restored.detail());
-      return service
-          + " could NOT be restored from its last ACTIVE deployment "
-          + restored.row()
-          + ": "
-          + safe(restored.detail());
+      return new Start(
+          false,
+          service
+              + " could NOT be restored from its last ACTIVE deployment "
+              + restored.row()
+              + ": "
+              + safe(restored.detail()));
     }
-    return service
-        + " restored from its last ACTIVE deployment "
-        + restored.row()
-        + " at "
-        + replicas
-        + (restored.converged() ? "" : ", though it has not converged yet: " + safe(restored.detail()));
+    return new Start(
+        true,
+        service
+            + " restored from its last ACTIVE deployment "
+            + restored.row()
+            + " at "
+            + replicas
+            + (restored.converged() ? "" : ", though it has not converged yet: " + safe(restored.detail())));
   }
 
   /**

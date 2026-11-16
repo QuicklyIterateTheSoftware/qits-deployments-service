@@ -655,6 +655,25 @@
             ],
             "listFilteredTo": null
           }
+        },
+        {
+          "operationId": "startApplication",
+          "method": "POST",
+          "path": "/deployments/api/applications/{applicationId}/start",
+          "status": 202,
+          "file": "an-application-running-in-an-environment/startApplication.json",
+          "frozen": {
+            "ids": [
+              "$.environmentId",
+              "$.deploymentId"
+            ],
+            "instants": [],
+            "strings": [
+              "$.applicationId",
+              "$.applicationName"
+            ],
+            "listFilteredTo": null
+          }
         }
       ]
     },

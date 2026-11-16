@@ -116,7 +116,8 @@ class DatabaseMovesTest {
     assertEquals(PASSWORD, claim.password, "the credential does not change");
 
     PdDatabaseMove move = movesOf("qits-mvpin").get(0);
-    assertEquals(PdDatabaseMoveState.MOVED, move.state);
+    // Switched, not moved (qits-2249): MOVED is the cutover's word, once the deployment is live.
+    assertEquals(PdDatabaseMoveState.SWITCHED, move.state);
     assertEquals(PdDatabaseMove.Origin.DEPLOYMENT, move.origin);
     assertEquals("qits_platform_mvpin", move.sourceDatabase);
     assertEquals("qits_mvpin", move.targetDatabase);
@@ -207,10 +208,18 @@ class DatabaseMovesTest {
     assertEquals("qits_platform_mvrb", claim.databaseName);
     assertEquals("qits_platform_mvrb", claim.roleName);
     PdDatabaseMove move = movesOf("qits-mvrb").get(0);
-    assertEquals(PdDatabaseMoveState.ABORTED, move.state);
-    assertEquals("rolled back after the switch: provisioning failed", move.detail);
+    // Back on its source, and still ROLLING_BACK until the service runs again (qits-2249).
+    assertEquals(PdDatabaseMoveState.ROLLING_BACK, move.state);
+    assertEquals("rolling back after the switch: provisioning failed", move.detail);
     // The service is not the move's to start: the caller restores it on its original spec.
     assertFalse(driver.calls().contains("scale:mv-rb-qits-mvrb=1"), driver.calls().toString());
+
+    // ...and says when it did, which ends the rollback.
+    moves.settleRollback(rolledBack.ids(), null);
+    PdDatabaseMove settled = movesOf("qits-mvrb").get(0);
+    assertEquals(PdDatabaseMoveState.ABORTED, settled.state);
+    assertEquals("rolled back after the switch: provisioning failed", settled.detail);
+    assertNull(settled.dropAfter);
   }
 
   @Test
@@ -229,8 +238,53 @@ class DatabaseMovesTest {
     assertTrue(rolledBack.summary().contains("the rename back of public/qits_mvrc"), rolledBack.summary());
     assertEquals("qits_mvrc", claimOf("qits-mvrc", "mv-rc", "db").databaseName, "the claim stays with the data");
     PdDatabaseMove move = movesOf("qits-mvrc").get(0);
-    assertEquals(PdDatabaseMoveState.MOVED, move.state);
+    // Never terminal on a way back that did not run (qits-2249): every settle pass sees it.
+    assertEquals(PdDatabaseMoveState.ROLLING_BACK, move.state);
+    assertTrue(move.detail.startsWith("rolling back after the switch: never converged\n"), move.detail);
     assertTrue(move.detail.contains("[the rollback is incomplete:"), move.detail);
+
+    // A second attempt that fails again does not grow the detail.
+    moves.rollBack(prepared.switched(), "never converged");
+    PdDatabaseMove again = movesOf("qits-mvrc").get(0);
+    assertEquals(PdDatabaseMoveState.ROLLING_BACK, again.state);
+    assertEquals(1, again.detail.split("\\[the rollback is incomplete").length - 1, again.detail);
+  }
+
+  @Test
+  void anUnexpectedThrowAfterTheStopAbortsTheBatchAndScalesTheServiceBack() {
+    // qits-2249: a RuntimeException that is not a failed step of its own — here the admin one-shot
+    // that fences the source throws — used to skip the abort and leave the service at zero.
+    serversRunningIn("mv-rt");
+    claim("qits-mvthrow", "mv-rt", "db", "qits_mvthrow", "public");
+    driver.scriptDeclaredReplicas("mv-rt-qits-mvthrow", 1);
+    containers.script(
+        "admin",
+        shot -> {
+          if (shot.script().contains("REVOKE CONNECT")) {
+            throw new IllegalStateException("the docker CLI vanished");
+          }
+          return new DatabaseContainers.Outcome(0, "", false);
+        });
+
+    ResourceException failed =
+        assertThrows(
+            ResourceException.class,
+            () ->
+                moves.beforeProvisioning(
+                    "qits-mvthrow", "mv-rt", null, DeploymentDriver.Exposure.PRIVATE, one("db", "qits_mvthrow")));
+
+    assertTrue(failed.getMessage().contains("the docker CLI vanished"), failed.getMessage());
+    assertTrue(driver.calls().contains("scale:mv-rt-qits-mvthrow=0"), driver.calls().toString());
+    assertTrue(driver.calls().contains("scale:mv-rt-qits-mvthrow=1"), "scaled back: " + driver.calls());
+    PdDatabaseMove move = movesOf("qits-mvthrow").get(0);
+    assertEquals(PdDatabaseMoveState.ABORTED, move.state);
+    assertTrue(move.detail.startsWith("the move failed unexpectedly"), move.detail);
+    assertTrue(
+        containers.shots("admin").stream().anyMatch(shot -> shot.script().contains("GRANT CONNECT")),
+        "the source re-opened");
+    PdResource claim = claimOf("qits-mvthrow", "mv-rt", "db");
+    assertEquals("public", claim.server);
+    assertEquals("qits_mvthrow", claim.databaseName);
   }
 
   @Test
@@ -973,7 +1027,7 @@ class DatabaseMovesTest {
         containers.shots().stream().map(DatabaseContainers.OneShot::purpose).toList());
     assertEquals(List.of(), containers.createdVolumes(), "no volume, early or late");
     PdDatabaseMove row = movesOf("qits-sprename").get(0);
-    assertEquals(PdDatabaseMoveState.MOVED, row.state);
+    assertEquals(PdDatabaseMoveState.SWITCHED, row.state);
     assertNull(row.sourceBytes);
     assertNull(row.targetFreeBytes);
     assertNull(row.volumeFreeBytes);
@@ -1004,8 +1058,8 @@ class DatabaseMovesTest {
     List<PdDatabaseMove> rows = movesOf("qits-spmixed");
     PdDatabaseMove copied = rows.stream().filter(r -> r.resourceName.equals("db")).findFirst().orElseThrow();
     PdDatabaseMove renamed = rows.stream().filter(r -> r.resourceName.equals("cache")).findFirst().orElseThrow();
-    assertEquals(PdDatabaseMoveState.MOVED, copied.state);
-    assertEquals(PdDatabaseMoveState.MOVED, renamed.state);
+    assertEquals(PdDatabaseMoveState.SWITCHED, copied.state);
+    assertEquals(PdDatabaseMoveState.SWITCHED, renamed.state);
     assertEquals(FakeDatabaseContainers.DEFAULT_SIZE, copied.sourceBytes);
     assertNull(renamed.sourceBytes);
     assertNull(renamed.targetFreeBytes);
@@ -1025,7 +1079,7 @@ class DatabaseMovesTest {
         "qits-spfits", "sp-b", null, DeploymentDriver.Exposure.PRIVATE, one("db", "qits_spfits"));
 
     PdDatabaseMove row = movesOf("qits-spfits").get(0);
-    assertEquals(PdDatabaseMoveState.MOVED, row.state);
+    assertEquals(PdDatabaseMoveState.SWITCHED, row.state);
     assertEquals(19 * GIB, row.sourceBytes);
     assertEquals(47 * GIB, row.targetFreeBytes);
     assertEquals(47 * GIB, row.volumeFreeBytes);
