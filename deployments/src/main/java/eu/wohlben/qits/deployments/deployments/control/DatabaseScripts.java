@@ -4,6 +4,8 @@ import eu.wohlben.qits.deployments.environments.control.PdIdentifiers;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -156,6 +158,59 @@ final class DatabaseScripts {
       }
     }
     return null;
+  }
+
+  /** The marker {@link #role} prints before whether the role exists (qits-2251). */
+  static final String ROLE_MARKER = "qits-role=";
+
+  /** The marker {@link #role} prints before each database the role owns (qits-2251). */
+  static final String OWNS_MARKER = "qits-role-owns=";
+
+  /**
+   * Whether a role exists there and which databases it owns — a rename in place's second pre-flight
+   * question (qits-2251), since the role IS the target name and {@code ALTER ROLE … RENAME TO}
+   * refuses an existing one. Prints {@value #ROLE_MARKER}{@code true|false}, then one {@value
+   * #OWNS_MARKER}{@code <database>} per database whose {@code datdba} is that role.
+   */
+  static String role(String role) {
+    return psql(ADMIN_DATABASE, roleSql(role));
+  }
+
+  /** {@link #role}'s statements, plain SQL — what the real-postgres test runs over JDBC. */
+  static String roleSql(String role) {
+    String r = id(role);
+    return "SELECT '"
+        + ROLE_MARKER
+        + "' || EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '"
+        + r
+        + "');\n"
+        + "SELECT '"
+        + OWNS_MARKER
+        + "' || d.datname FROM pg_database d JOIN pg_roles o ON o.oid = d.datdba WHERE o.rolname = '"
+        + r
+        + "' ORDER BY d.datname;";
+  }
+
+  /** One role as {@link #role} saw it: whether it exists, and the databases it owns, by name. */
+  record RoleSeen(boolean exists, List<String> owns) {}
+
+  /** What {@link #role} printed, or null when it printed no answer — a script that did not finish. */
+  static RoleSeen roleAnswer(String output) {
+    Boolean exists = null;
+    List<String> owns = new ArrayList<>();
+    for (String line : lines(output)) {
+      if (line.startsWith(ROLE_MARKER)) {
+        String answer = line.substring(ROLE_MARKER.length()).strip();
+        // `text || boolean` prints `true`/`false`; psql's own boolean column prints `t`/`f`.
+        exists = "t".equals(answer) || "true".equals(answer);
+      } else if (line.startsWith(OWNS_MARKER)) {
+        String database = line.substring(OWNS_MARKER.length()).strip();
+        if (!database.isEmpty()) {
+          owns.add(database);
+        }
+      }
+    }
+    return exists == null ? null : new RoleSeen(exists, List.copyOf(owns));
   }
 
   /** The marker {@link #describe} prints before each database's line. */
@@ -551,6 +606,34 @@ final class DatabaseScripts {
    * @param password whether {@value #ROLE_PASSWORD} carries the role's password to set again
    */
   static String renameInPlace(String from, String to, boolean dropLeftover, boolean password) {
+    return renameInPlace(from, to, dropLeftover, password, null);
+  }
+
+  /**
+   * {@link #renameInPlace}, first taking over a LEFTOVER role under the target name (qits-2251): a
+   * copy between the servers keeps its source as {@code <db>_moved_<stamp>}, still owned by the
+   * source's role, so that role lingers under exactly the name a later rename in place onto it
+   * needs — and {@code ALTER ROLE … RENAME TO} refused it ({@code role "x" already exists}) after
+   * the service had already stopped. {@code DatabaseMoves} decides before anything stops that the
+   * role is such a leftover (no claim names it, and every database it owns is a kept copy of a
+   * finished move that nothing has dropped yet) and hands those copies here.
+   *
+   * <p>Per kept copy, {@link #takeOverOpenSql}, a session IN it for {@link #takeOverInKeptSql} — the
+   * copy's own objects belong to the role ({@code pg_restore --role}), and {@code REASSIGN OWNED}
+   * reaches only the database it runs in — then {@link #takeOverCloseSql} back in {@value
+   * #ADMIN_DATABASE}; then {@link #dropRoleSql}. The copies keep their names, their retention and
+   * their sweep: only their owner changes, to the admin. Before the rename's transaction and after
+   * the leftover's {@code DROP DATABASE}, whose {@code DROP ROLE} then has nothing left to drop.
+   *
+   * <p><b>Idempotent, step by step</b>, so a retry after a lost answer succeeds: a role already gone
+   * skips the whole takeover, a kept copy already gone is skipped, and each statement is guarded by
+   * what it changes.
+   *
+   * @param takeOver the kept copies the leftover role owns — empty when it owns none and is only
+   *     dropped; null when there is no leftover role, which is {@link #renameInPlace} exactly
+   */
+  static String renameInPlace(
+      String from, String to, boolean dropLeftover, boolean password, List<String> takeOver) {
     String source = id(from);
     String target = id(to);
     StringBuilder sql = new StringBuilder();
@@ -560,16 +643,21 @@ final class DatabaseScripts {
     sql.append("SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE datname = '")
         .append(source)
         .append("' AND pid <> pg_backend_pid();\n");
+    String sourceThere = "EXISTS (SELECT 1 FROM pg_database WHERE datname = '" + source + "')";
     if (dropLeftover) {
-      String sourceThere = "EXISTS (SELECT 1 FROM pg_database WHERE datname = '" + source + "')";
       sql.append("SELECT 'DROP DATABASE ")
           .append(target)
           .append(" WITH (FORCE)' WHERE ")
           .append(sourceThere)
           .append(" AND EXISTS (SELECT 1 FROM pg_database WHERE datname = '")
           .append(target)
-          .append("')\n\\gexec\n")
-          .append("SELECT 'DROP ROLE ")
+          .append("')\n\\gexec\n");
+    }
+    if (takeOver != null) {
+      sql.append(takeOver(from, to, takeOver));
+    }
+    if (dropLeftover) {
+      sql.append("SELECT 'DROP ROLE ")
           .append(target)
           .append("' WHERE ")
           .append(sourceThere)
@@ -610,6 +698,107 @@ final class DatabaseScripts {
         + target
         + ";\n"
         + "  END IF;\nEND\n$qits$;";
+  }
+
+  /**
+   * The takeover of a leftover role (qits-2251), as psql lines inside {@link #renameInPlace}'s
+   * admin session: everything only while the role exists AND the source is still there — once the
+   * source is gone the rename has happened and the role under the target name is the renamed live
+   * one, never to be touched — and each kept copy only while it exists. The
+   * {@code \c} into a copy has to be a psql meta-command — no SQL statement changes database — so
+   * the guards are psql's {@code \if}; each statement is idempotent besides.
+   */
+  private static String takeOver(String source, String role, List<String> kept) {
+    String r = id(role);
+    StringBuilder sql = new StringBuilder();
+    sql.append("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '")
+        .append(r)
+        .append("') AND EXISTS (SELECT 1 FROM pg_database WHERE datname = '")
+        .append(id(source))
+        .append("') AS qits_takeover \\gset\n")
+        .append("\\if :qits_takeover\n");
+    for (String copy : kept) {
+      String k = id(copy);
+      sql.append("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = '")
+          .append(k)
+          .append("') AS qits_kept_there \\gset\n")
+          .append("\\if :qits_kept_there\n")
+          .append(takeOverOpenSql(copy))
+          .append("\n\\c ")
+          .append(k)
+          .append('\n')
+          .append(takeOverInKeptSql(role))
+          .append("\n\\c ")
+          .append(ADMIN_DATABASE)
+          .append('\n')
+          .append(takeOverCloseSql(copy))
+          .append("\n\\endif\n");
+    }
+    sql.append(dropRoleSql(role)).append("\n\\endif\n");
+    return sql.toString();
+  }
+
+  /**
+   * The takeover's first step on a kept copy, in {@value #ADMIN_DATABASE}: open it again, since
+   * {@code ALLOW_CONNECTIONS false} shuts out the admin too and the next step must run inside it.
+   * Plain SQL, one statement — what the real-postgres test runs over JDBC.
+   */
+  static String takeOverOpenSql(String kept) {
+    String k = id(kept);
+    return "DO $qits$\nBEGIN\n"
+        + "  IF EXISTS (SELECT 1 FROM pg_database WHERE datname = '"
+        + k
+        + "') THEN\n"
+        + "    ALTER DATABASE "
+        + k
+        + " WITH ALLOW_CONNECTIONS true;\n"
+        + "  END IF;\nEND\n$qits$;";
+  }
+
+  /**
+   * The takeover's step INSIDE a kept copy: everything the leftover role owns there — the restored
+   * tables, and the copy itself, a shared object {@code REASSIGN OWNED} reaches from any database —
+   * becomes the admin's ({@code CURRENT_USER}, whoever the one-shot connected as), and {@code DROP
+   * OWNED} revokes what was granted to the role. Only while the role exists. One statement.
+   */
+  static String takeOverInKeptSql(String role) {
+    String r = id(role);
+    return "DO $qits$\nBEGIN\n"
+        + "  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '"
+        + r
+        + "') THEN\n"
+        + "    REASSIGN OWNED BY "
+        + r
+        + " TO CURRENT_USER;\n"
+        + "    DROP OWNED BY "
+        + r
+        + ";\n"
+        + "  END IF;\nEND\n$qits$;";
+  }
+
+  /**
+   * The takeover's last step on a kept copy, back in {@value #ADMIN_DATABASE}: owned by the admin
+   * (already so after {@link #takeOverInKeptSql}; stated so the copy's owner never depends on it)
+   * and closed again, as the switch left it. One statement.
+   */
+  static String takeOverCloseSql(String kept) {
+    String k = id(kept);
+    return "DO $qits$\nBEGIN\n"
+        + "  IF EXISTS (SELECT 1 FROM pg_database WHERE datname = '"
+        + k
+        + "') THEN\n"
+        + "    ALTER DATABASE "
+        + k
+        + " OWNER TO CURRENT_USER;\n"
+        + "    ALTER DATABASE "
+        + k
+        + " WITH ALLOW_CONNECTIONS false;\n"
+        + "  END IF;\nEND\n$qits$;";
+  }
+
+  /** The takeover's end: the leftover role, now owning nothing, dropped. */
+  static String dropRoleSql(String role) {
+    return "DROP ROLE IF EXISTS " + id(role) + ";";
   }
 
   /** Drop a database, connections and all, and optionally the role that owned it. */

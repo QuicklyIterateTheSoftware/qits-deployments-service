@@ -17,7 +17,8 @@ import java.util.function.Function;
  * keeps a clone's suite free of docker. What docker is asked is {@code DockerDatabaseContainersTest}'s,
  * argv by argv.
  *
- * <p><b>The default is a move that works</b>: the target does not exist ({@code check}), the source
+ * <p><b>The default is a move that works</b>: the target does not exist ({@code check}, the database
+ * and — for a rename in place, qits-2251 — the role), the source
  * is small and both filesystems have room ({@code size}, {@code space} — qits-2243's measures: one
  * filesystem, {@link #DEFAULT_SIZE} against {@link #DEFAULT_FREE}), the extract and the ingest both
  * print the same one-table manifest, and every admin statement succeeds. A test scripts a purpose to
@@ -149,12 +150,28 @@ public class FakeDatabaseContainers implements DatabaseContainers {
     return switch (shot.purpose()) {
       case "check" -> shot.script().contains(DatabaseScripts.DESCRIBE_MARKER)
           ? absent(shot.script())
-          : new Outcome(0, DatabaseScripts.EXISTS_MARKER + "f\n", false);
+          : shot.script().contains(DatabaseScripts.ROLE_MARKER)
+              ? noRole()
+              : new Outcome(0, DatabaseScripts.EXISTS_MARKER + "f\n", false);
       case "size" -> sized(DEFAULT_SIZE);
       case "space" -> oneFilesystem(DEFAULT_FREE);
       case "extract", "ingest" -> printing(MANIFEST);
       default -> new Outcome(0, "", false);
     };
+  }
+
+  /** What {@link DatabaseScripts#role} prints when the role does not exist (qits-2251). */
+  public static Outcome noRole() {
+    return new Outcome(0, DatabaseScripts.ROLE_MARKER + "false\n", false);
+  }
+
+  /** What {@link DatabaseScripts#role} prints for a role that exists and owns {@code databases}. */
+  public static Outcome role(String... databases) {
+    StringBuilder out = new StringBuilder(DatabaseScripts.ROLE_MARKER + "true\n");
+    for (String database : databases) {
+      out.append(DatabaseScripts.OWNS_MARKER).append(database).append('\n');
+    }
+    return new Outcome(0, out.toString(), false);
   }
 
   /** What {@link DatabaseScripts#describe} prints when none of the databases it names exists. */

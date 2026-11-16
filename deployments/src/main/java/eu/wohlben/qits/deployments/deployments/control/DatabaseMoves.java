@@ -108,7 +108,9 @@ import org.jboss.logging.Logger;
  *
  * <p><b>Refused before anything stops</b>: a target database another
  * claim already holds, a target database that already exists on the target server and is not an
- * earlier aborted attempt of this same move — and a batch whose copies do not FIT (qits-2243, {@link
+ * earlier aborted attempt of this same move, a rename in place onto a ROLE that already exists and is
+ * not a leftover of an earlier copy's kept source (qits-2251, {@link #targetRole} — such a leftover
+ * is taken over instead) — and a batch whose copies do not FIT (qits-2243, {@link
  * MoveSpace}). Only a move between the servers copies, so only it is measured: the source's {@code
  * pg_database_size}, the free space of the target's data directory (its own {@code df}) and of the
  * move's volume, each copy counting as {@code space-factor × size}, every filesystem keeping {@code
@@ -429,8 +431,17 @@ public class DatabaseMoves {
     }
 
     // Every refusal before anything stops.
-    for (Planned move : planned) {
+    for (int i = 0; i < planned.size(); i++) {
+      Planned move = planned.get(i);
       String refusal = refusal(move);
+      if (refusal == null && move.inPlace()) {
+        // The role a rename in place renames onto (qits-2251): absent, a leftover to take over, or
+        // a refusal — asked now, while the service still runs.
+        TargetRole role = targetRole(move);
+        refusal = role.refusal();
+        move = move.takingOver(role.takeOver());
+        planned.set(i, move);
+      }
       if (refusal != null) {
         recordRefusal(move, refusal, move.id(), null);
         throw new ResourceException(refusal);
@@ -464,6 +475,9 @@ public class DatabaseMoves {
   /**
    * One move this deployment will run, decided and not yet started. {@code id} is its row's: the
    * operator's row, or one chosen now — the move's volume is named by it before the row exists.
+   * {@code takeOver} is a rename in place's leftover role under the target name, decided before
+   * anything stops (qits-2251, {@link #targetRole}): the kept copies it owns, empty when it owns
+   * none, null when there is no such role.
    */
   record Planned(
       String id,
@@ -473,7 +487,25 @@ public class DatabaseMoves {
       Claimed claim,
       DatabaseServer targetServer,
       String targetDatabase,
-      PdDatabaseMove operatorRow) {
+      PdDatabaseMove operatorRow,
+      List<String> takeOver) {
+
+    Planned(
+        String id,
+        String applicationName,
+        String environmentName,
+        String resourceName,
+        Claimed claim,
+        DatabaseServer targetServer,
+        String targetDatabase,
+        PdDatabaseMove operatorRow) {
+      this(id, applicationName, environmentName, resourceName, claim, targetServer, targetDatabase, operatorRow, null);
+    }
+
+    Planned takingOver(List<String> kept) {
+      return new Planned(
+          id, applicationName, environmentName, resourceName, claim, targetServer, targetDatabase, operatorRow, kept);
+    }
 
     DatabaseServer sourceServer() {
       return claim.server();
@@ -707,6 +739,131 @@ public class DatabaseMoves {
           + " or rename it by hand first";
     }
     return null;
+  }
+
+  /**
+   * What {@link #targetRole} found: a refusal, or the kept copies a leftover role owns (null when
+   * there is no role to take over).
+   */
+  private record TargetRole(String refusal, List<String> takeOver) {}
+
+  /**
+   * The ROLE a rename in place renames onto (qits-2251) — the role IS the database name, and {@code
+   * ALTER ROLE … RENAME TO} refuses one that exists. A copy between the servers keeps its source as
+   * {@code <db>_moved_<stamp>} for the retention, still owned by the source's role, so a later rename
+   * in place onto that name failed with {@code role "x" already exists} after its service had
+   * stopped, while {@link #refusal} had asked only about the DATABASE.
+   *
+   * <p>Asked of the target server in an admin one-shot ({@link DatabaseScripts#role}), before
+   * anything stops. No role: nothing to do. A role that no claim on that server names and whose every
+   * database is a kept copy of a {@code MOVED} move off that server nothing has dropped yet — the
+   * target database itself aside when it is this move's own aborted leftover, which the rename drops
+   * as before — is a LEFTOVER: the rename takes it over ({@link DatabaseScripts#renameInPlace} with
+   * the copies), the copies keep their names and their retention. Anything else refuses, naming the
+   * role and what it owns.
+   */
+  private TargetRole targetRole(Planned move) {
+    String role = move.targetDatabase();
+    String onto = where(move.targetServer(), move.targetDatabase());
+    DatabaseScripts.RoleSeen seen;
+    try {
+      DatabaseContainers.Outcome asked =
+          containers.run(
+              admin.shot(
+                  "check",
+                  move.targetServer(),
+                  move.environmentName(),
+                  admin.image(move.targetServer(), move.environmentName()),
+                  null,
+                  Map.of(),
+                  DatabaseScripts.role(role)),
+              ContainerResourceProvisioner.TIMEOUT);
+      seen = asked.ok() ? DatabaseScripts.roleAnswer(asked.output()) : null;
+      if (seen == null) {
+        return new TargetRole(
+            "could not ask the "
+                + move.targetServer().wire()
+                + " postgres whether the role `"
+                + role
+                + "` exists, so nothing was moved: "
+                + tail(asked.output()),
+            null);
+      }
+    } catch (ResourceException unreachable) {
+      return new TargetRole(unreachable.getMessage() + ", so nothing was moved", null);
+    }
+    if (!seen.exists()) {
+      return new TargetRole(null, null);
+    }
+    String owns = seen.owns().isEmpty() ? "no database" : String.join(", ", seen.owns());
+    String server = move.targetServer().wire();
+    String claimant =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () ->
+                    resources.list("roleName = ?1 and server = ?2", role, server).stream()
+                        .filter(row -> move.environmentName().equals(row.environmentName))
+                        .map(row -> row.applicationName + "'s `" + row.resourceName + "`")
+                        .findFirst()
+                        .orElse(null));
+    if (claimant != null) {
+      return new TargetRole(
+          "refusing to move "
+              + where(move.sourceServer(), move.sourceDatabase())
+              + " onto "
+              + onto
+              + ": the role `"
+              + role
+              + "` already exists there and is the role of the claim "
+              + claimant
+              + " (it owns "
+              + owns
+              + ")",
+          null);
+    }
+    Set<String> kept =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () ->
+                    moves
+                        .list(
+                            "state = ?1 and environmentName = ?2 and sourceServer = ?3"
+                                + " and keptDatabase is not null and droppedAt is null",
+                            PdDatabaseMoveState.MOVED,
+                            move.environmentName(),
+                            server)
+                        .stream()
+                        .map(row -> row.keptDatabase)
+                        .collect(Collectors.toSet()));
+    boolean leftoverTarget = seen.owns().contains(role) && leftover(move);
+    List<String> foreign =
+        seen.owns().stream()
+            .filter(database -> !kept.contains(database))
+            .filter(database -> !(leftoverTarget && database.equals(role)))
+            .toList();
+    if (!foreign.isEmpty()) {
+      return new TargetRole(
+          "refusing to move "
+              + where(move.sourceServer(), move.sourceDatabase())
+              + " onto "
+              + onto
+              + ": the role `"
+              + role
+              + "` already exists there and owns "
+              + owns
+              + " — "
+              + String.join(", ", foreign)
+              + (foreign.size() == 1 ? " is" : " are")
+              + " not a copy a finished move kept; drop or rename "
+              + (foreign.size() == 1 ? "it" : "them")
+              + " by hand first",
+          null);
+    }
+    List<String> copies = seen.owns().stream().filter(kept::contains).toList();
+    LOG.infof(
+        "The move of %s onto %s takes over the leftover role %s, which owns %s",
+        where(move.sourceServer(), move.sourceDatabase()), onto, role, owns);
+    return new TargetRole(null, copies);
   }
 
   /**
@@ -1065,7 +1222,8 @@ public class DatabaseMoves {
             move.sourceDatabase(),
             move.targetDatabase(),
             leftover(move),
-            move.claim().password());
+            move.claim().password(),
+            move.takeOver());
     checkAborted(batch);
     if (!renamed.ok()) {
       throw new MoveFailure(
@@ -1090,6 +1248,19 @@ public class DatabaseMoves {
       String to,
       boolean dropLeftover,
       String password) {
+    return renameShot(server, environmentName, image, from, to, dropLeftover, password, null);
+  }
+
+  /** {@link #renameShot}, first taking over a leftover role's kept copies (qits-2251). */
+  private DatabaseContainers.Outcome renameShot(
+      DatabaseServer server,
+      String environmentName,
+      String image,
+      String from,
+      String to,
+      boolean dropLeftover,
+      String password,
+      List<String> takeOver) {
     return containers.run(
         admin.shot(
             "rename",
@@ -1098,7 +1269,7 @@ public class DatabaseMoves {
             image,
             null,
             password == null ? Map.of() : Map.of(DatabaseScripts.ROLE_PASSWORD, password),
-            DatabaseScripts.renameInPlace(from, to, dropLeftover, password != null)),
+            DatabaseScripts.renameInPlace(from, to, dropLeftover, password != null, takeOver)),
         ContainerResourceProvisioner.TIMEOUT);
   }
 
