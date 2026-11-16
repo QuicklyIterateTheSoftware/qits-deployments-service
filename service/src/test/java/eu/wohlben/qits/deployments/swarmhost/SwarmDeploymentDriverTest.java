@@ -36,6 +36,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.eclipse.microprofile.config.Config;
 import org.junit.jupiter.api.Test;
 
@@ -491,6 +492,42 @@ class SwarmDeploymentDriverTest {
         main.takesOverPredecessor(),
         main.exposure(),
         variant);
+  }
+
+  @Test
+  void thePrivateEdgeIsMonitoredForAtLeastItsStartPeriodSoAnUnhealthyReleaseRollsBack() {
+    // qits-2215: the private edge is healthy only once it holds a route table, so a release that
+    // cannot load one must still be inside --update-monitor when its health check gives up, or swarm
+    // calls the update complete and --update-failure-action rollback never fires.
+    SwarmDeploymentDriver driver = driver();
+    driver.healthStartPeriodSeconds = 120;
+    DeploymentDriver.ServiceSpec edge = variantSpec("qits-edge-private", "private");
+
+    List<String> create =
+        driver.buildCreateArgv(edge, "dev-qits-edge-private", List.of("qits-private"));
+    List<String> update = driver.buildUpdateArgv(edge, "dev-qits-edge-private");
+    for (List<String> argv : List.of(create, update)) {
+      assertTrue(argv.containsAll(List.of("--update-failure-action", "rollback")), argv.toString());
+      assertTrue(argv.containsAll(List.of("--update-monitor", "120s")), argv.toString());
+      assertTrue(argv.containsAll(List.of("--health-start-period", "120s")), argv.toString());
+    }
+
+    // Every other application keeps the configured monitor, whatever its start period.
+    List<String> other = driver.buildUpdateArgv(spec(), "dev-qits-gateway");
+    assertTrue(other.containsAll(List.of("--update-monitor", "60s")), other.toString());
+    assertTrue(other.containsAll(List.of("--update-failure-action", "rollback")), other.toString());
+  }
+
+  @Test
+  void aMonitorLongerThanThePrivateEdgesStartPeriodIsKept() {
+    SwarmDeploymentDriver driver = driver();
+    driver.updateMonitorSeconds = 90;
+
+    List<String> update =
+        driver.buildUpdateArgv(variantSpec("qits-edge-private", "private"), "dev-qits-edge-private");
+
+    assertTrue(update.containsAll(List.of("--update-monitor", "90s")), update.toString());
+    assertTrue(update.containsAll(List.of("--health-start-period", "60s")), update.toString());
   }
 
   @Test
@@ -4857,6 +4894,29 @@ class SwarmDeploymentDriverTest {
             "--label-add", "qits.platform.deployments.placement=qits-net",
             "dev-qits-gateway"),
         cli.matching("service update"));
+  }
+
+  @Test
+  void theNetworkCheckReadsEveryAttachedNetworkByName() {
+    // qits-2215: the split check's input — the managed networks resolved by id, ingress left out.
+    SwarmDeploymentDriver driver = driver();
+    scriptLiveNetworks("flatnetid0000000000000001\nprivnetid0000000000000002\n");
+
+    assertEquals(
+        Map.of("dev-qits-gateway", Set.of("qits-net", "qits-private")),
+        driver.attachedNetworks(List.of("dev-qits-gateway")));
+    assertEquals(Map.of(), driver.attachedNetworks(List.of()), "nothing to ask, nothing asked");
+  }
+
+  @Test
+  void aServiceWhoseNetworksCannotBeReadIsLeftOutOfTheNetworkCheck() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script("network inspect --format {{.ID}} qits-net", result(0, "flatnetid0000000000000001\n"));
+    cli.script(
+        "network inspect --format {{.ID}} qits-private", result(0, "privnetid0000000000000002\n"));
+    cli.script(SwarmDeploymentDriver.SPEC_NETWORK_TARGETS_FORMAT, result(1, "no such service"));
+
+    assertEquals(Map.of(), driver.attachedNetworks(List.of("dev-qits-gone")));
   }
 
   @Test

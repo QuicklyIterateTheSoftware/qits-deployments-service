@@ -3,6 +3,52 @@
   "provider": "qits-deployments",
   "states": [
     {
+      "name": "a bridged service",
+      "slug": "a-bridged-service",
+      "params": {},
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getSplitCheck",
+          "method": "GET",
+          "path": "/deployments/api/split-check",
+          "status": 200,
+          "file": "a-bridged-service/getSplitCheck.json",
+          "frozen": {
+            "ids": [],
+            "instants": [
+              "$.checkedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a clean split",
+      "slug": "a-clean-split",
+      "params": {},
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getSplitCheck",
+          "method": "GET",
+          "path": "/deployments/api/split-check",
+          "status": 200,
+          "file": "a-clean-split/getSplitCheck.json",
+          "frozen": {
+            "ids": [],
+            "instants": [
+              "$.checkedAt"
+            ],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "a database move that finished",
       "slug": "a-database-move-that-finished",
       "params": {

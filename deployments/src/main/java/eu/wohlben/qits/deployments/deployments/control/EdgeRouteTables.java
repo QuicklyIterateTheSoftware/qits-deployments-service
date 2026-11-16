@@ -86,6 +86,9 @@ public class EdgeRouteTables {
 
   @Inject EnvironmentService environments;
 
+  /** What the last {@link #rebuild} read off the runtime; null before the first and after a failure. */
+  private volatile List<DeploymentDriver.LabelledService> lastRead;
+
   /** The edge whose table an application's deploy reaching healthy must push, or null. */
   public static String edgeOf(String application) {
     if (PUBLIC_EDGE_APPLICATION.equals(application)) {
@@ -114,6 +117,7 @@ public class EdgeRouteTables {
    */
   public synchronized List<String> rebuild(Instant now) {
     Optional<List<DeploymentDriver.LabelledService>> services = driver.labelledServices();
+    lastRead = services.orElse(null);
     if (services.isEmpty()) {
       LOG.debug("The services' labels could not be read; the route tables stay as they are");
       return List.of();
@@ -131,6 +135,14 @@ public class EdgeRouteTables {
               }
               return List.copyOf(moved);
             });
+  }
+
+  /**
+   * The services and labels the last {@link #rebuild} read, or empty before the first and after a
+   * read that failed — the split check's input (qits-2215), so a check costs no second listing.
+   */
+  public Optional<List<DeploymentDriver.LabelledService>> lastRead() {
+    return Optional.ofNullable(lastRead);
   }
 
   /** The stored row itself — the door's read, so its DTO is built from the entity. */

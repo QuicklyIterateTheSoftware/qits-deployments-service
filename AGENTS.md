@@ -13,8 +13,9 @@ skipped: `FakeDeploymentDriver` behind `DeploymentDriver` (the orchestrator), `F
 platform's postgres), `FakeIdpClientProvisioner` behind `IdpClientProvisioner` (qits-idp's
 service-client API), `FakeArtifactPurge` behind `ArtifactPurge` (qits-artifacts' purge door,
 qits-1941) and `FakeDatabaseContainers` behind `DatabaseContainers` (the database move's and the
-private postgres' one-shot containers, qits-2175) and `FakeEdgeRouteClient` behind `EdgeRouteClient`
-(the two edges' route-table door, qits-2174). **Seven fakes** — the ancestor's stub HTTP server for the topology dissolved
+private postgres' one-shot containers, qits-2175), `FakeEdgeRouteClient` behind `EdgeRouteClient`
+(the two edges' route-table door, qits-2174) and `FakePublicEdgeProbe` behind `PublicEdgeProbe` (the
+split check's TLS probe of the public edge, qits-2215). **Eight fakes** — the ancestor's stub HTTP server for the topology dissolved
 when the topology became a repository query, and `FakeDeclarationSeed` went with qits-configuration
 (qits-1393).
 

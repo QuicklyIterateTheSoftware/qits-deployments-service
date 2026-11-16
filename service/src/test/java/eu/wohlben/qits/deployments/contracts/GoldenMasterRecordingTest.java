@@ -404,6 +404,23 @@ class GoldenMasterRecordingTest {
               200,
               null,
               null),
+          // qits-2215: the last split check, clean and with a bridged service.
+          new Interaction(
+              ProviderStates.A_CLEAN_SPLIT,
+              "getSplitCheck",
+              "GET",
+              "/deployments/api/split-check",
+              200,
+              null,
+              null),
+          new Interaction(
+              ProviderStates.A_BRIDGED_SERVICE,
+              "getSplitCheck",
+              "GET",
+              "/deployments/api/split-check",
+              200,
+              null,
+              null),
           // Recorded by GatedGoldenMasterRecordingTest: only a gated application answers 401.
           write(
               ProviderStates.THE_MACHINE_GATE_IS_ON,

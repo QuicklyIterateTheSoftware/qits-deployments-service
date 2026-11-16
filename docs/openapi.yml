@@ -40,6 +40,15 @@ components:
           pattern: \S
         healthPath:
           type: string
+    Bridged:
+      type: object
+      properties:
+        service:
+          type: string
+        networks:
+          type: array
+          items:
+            type: string
     CreateEnvironmentRequest:
       type: object
       required:
@@ -189,6 +198,17 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PdSettingDto"
+    Misplaced:
+      type: object
+      properties:
+        service:
+          type: string
+        placement:
+          type: string
+        networks:
+          type: array
+          items:
+            type: string
     MoveRequest:
       type: object
       properties:
@@ -559,6 +579,18 @@ components:
           type: string
         secret:
           type: boolean
+    PrivateApp:
+      type: object
+      properties:
+        application:
+          type: string
+        host:
+          type: string
+        status:
+          type: integer
+          format: int32
+        error:
+          type: string
     PurgeOutcome:
       type: string
       enum:
@@ -637,6 +669,25 @@ components:
       required:
       - repoId
       - version
+    SplitCheckDto:
+      type: object
+      properties:
+        checkedAt:
+          type: string
+        ok:
+          type: boolean
+        bridged:
+          type: array
+          items:
+            $ref: "#/components/schemas/Bridged"
+        misplaced:
+          type: array
+          items:
+            $ref: "#/components/schemas/Misplaced"
+        privateApps:
+          type: array
+          items:
+            $ref: "#/components/schemas/PrivateApp"
     UpdateEnvironmentRequest:
       type: object
       properties:
@@ -1720,6 +1771,33 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:system
+  /deployments/api/split-check:
+    get:
+      summary: "The last check that public and private are split: networks and the\
+        \ public edge"
+      operationId: getSplitCheck
+      responses:
+        "200":
+          description: The last result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SplitCheckDto"
+        "503":
+          description: No split check has run since this process started
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Split Check Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:admin-agent
+        - qits:desk-admin
+        - qits:desk
+        - qits:agent
 info:
   title: qits-platform-deployments API
-  version: 2026.1115.230135
+  version: 2026.1116.21919
