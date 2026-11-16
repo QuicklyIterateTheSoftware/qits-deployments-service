@@ -1507,7 +1507,13 @@ block, only while `<src>` exists, so a repeat after a lost answer renames nothin
 password set again from the claim (postgres CLEARS an MD5 password on a role rename; SCRAM survives),
 `GRANT CONNECT` under the new name. Instant, no space, nothing to compare. With an earlier ABORTED
 attempt's leftover under the target name it is dropped first — only while `<src>` still exists, so
-it can never be the data. The switch then keeps no copy: `kept_database`, `drop_after` and the
+it can never be the data. **The target ROLE is asked too, before anything stops** (qits-2251): a copy between the
+servers keeps its source owned by the source's role, so that role lingers under the very name a
+later rename in place needs, and `ALTER ROLE … RENAME` refused it after the service had stopped. A
+role no claim on that server names whose every database is a kept copy of a `MOVED`, undropped move
+off that server is TAKEN OVER in the rename one-shot (each copy opened, `REASSIGN OWNED`/`DROP OWNED`
+inside it, owned by the admin and closed again — names, `drop_after` and the sweep unchanged — then
+`DROP ROLE`); any other existing role refuses the move naming the role and what it owns. The switch then keeps no copy: `kept_database`, `drop_after` and the
 counts stay null, `detail` is `renamed in place`, one INFO `Renamed the database <res> of <app>
 (<env>) in place on <server>: <src> → <dst>`, and the retention sweep never meets the row. The way
 back is a rename back — the same script, names swapped. **The rename runs before the claim

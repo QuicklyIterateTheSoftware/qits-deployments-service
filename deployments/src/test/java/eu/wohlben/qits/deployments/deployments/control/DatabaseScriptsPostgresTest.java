@@ -251,6 +251,139 @@ class DatabaseScriptsPostgresTest {
     }
   }
 
+  /** {@link DatabaseScripts#roleSql}'s answer, read the way the pre-flight reads it. */
+  private static DatabaseScripts.RoleSeen role(Connection admin, String role) throws SQLException {
+    StringBuilder output = new StringBuilder();
+    try (Statement statement = admin.createStatement()) {
+      for (String part : DatabaseScripts.roleSql(role).split(";\n")) {
+        String sql = part.strip();
+        try (ResultSet rows = statement.executeQuery(sql.endsWith(";") ? sql : sql + ";")) {
+          while (rows.next()) {
+            output.append(rows.getString(1)).append('\n');
+          }
+        }
+      }
+    }
+    return DatabaseScripts.roleAnswer(output.toString());
+  }
+
+  /**
+   * {@link DatabaseScripts#renameInPlace}'s takeover over JDBC, which cannot {@code \c}: each step a
+   * session in the database the psql script runs it in, the role's and the source's existence asked
+   * the way its {@code \if} asks.
+   */
+  private static void takeOver(String source, String role, String kept) throws SQLException {
+    try (Connection admin = admin("postgres")) {
+      if (!role(admin, role).exists() || !exists(admin, source)) {
+        return;
+      }
+      if (exists(admin, kept)) {
+        try (Statement statement = admin.createStatement()) {
+          statement.execute(DatabaseScripts.takeOverOpenSql(kept));
+        }
+        try (Connection inKept = admin(kept);
+            Statement statement = inKept.createStatement()) {
+          statement.execute(DatabaseScripts.takeOverInKeptSql(role));
+        }
+        try (Statement statement = admin.createStatement()) {
+          statement.execute(DatabaseScripts.takeOverCloseSql(kept));
+        }
+      }
+      try (Statement statement = admin.createStatement()) {
+        statement.execute(DatabaseScripts.dropRoleSql(role));
+      }
+    }
+  }
+
+  private static String single(Connection connection, String query) throws SQLException {
+    try (Statement asked = connection.createStatement();
+        ResultSet rows = asked.executeQuery(query)) {
+      assertTrue(rows.next(), query);
+      return rows.getString(1);
+    }
+  }
+
+  @Test
+  void aRenameInPlaceOntoAKeptCopysLeftoverRoleTakesTheRoleOverAndKeepsTheCopy() throws SQLException {
+    // qits-2251, the reproduction: `earlier` moved between the servers, so its source is kept as
+    // `<earlier>_moved_<stamp>`, closed, and still owned (objects and all) by the role `earlier`.
+    // A later rename in place of `live` onto the name `earlier` then failed on that role.
+    String live = provisioned();
+    String earlier = provisioned();
+    String kept = earlier + "_moved_202611131726";
+    try (Connection admin = admin("postgres")) {
+      execute(admin, DatabaseScripts.closeSql(earlier, earlier));
+      execute(admin, "ALTER DATABASE " + earlier + " RENAME TO " + kept + ";\n");
+      execute(admin, "ALTER DATABASE " + kept + " WITH ALLOW_CONNECTIONS false;\n");
+
+      DatabaseScripts.RoleSeen seen = role(admin, earlier);
+      assertEquals(new DatabaseScripts.RoleSeen(true, java.util.List.of(kept)), seen, "what the pre-flight sees");
+      assertEquals(new DatabaseScripts.RoleSeen(false, java.util.List.of()), role(admin, earlier + "_none"));
+
+      execute(admin, DatabaseScripts.closeSql(live, live));
+      SQLException refused = assertThrows(SQLException.class, () -> renameInPlace(admin, live, earlier));
+      assertTrue(refused.getMessage().contains("already exists"), refused.getMessage());
+      assertTrue(exists(admin, live), "the transaction left the source as it was");
+    }
+
+    takeOver(live, earlier, kept);
+    try (Connection admin = admin("postgres")) {
+      assertFalse(role(admin, earlier).exists(), "the leftover role is gone");
+    }
+    // A retry after a lost answer: the role already gone, the takeover is a no-op — and each step
+    // is one by itself too, on a copy that is already the admin's and on one that is gone.
+    takeOver(live, earlier, kept);
+    try (Connection admin = admin("postgres");
+        Statement statement = admin.createStatement()) {
+      statement.execute(DatabaseScripts.takeOverOpenSql(kept));
+      try (Connection inKept = admin(kept);
+          Statement again = inKept.createStatement()) {
+        again.execute(DatabaseScripts.takeOverInKeptSql(earlier));
+      }
+      statement.execute(DatabaseScripts.takeOverCloseSql(kept));
+      statement.execute(DatabaseScripts.takeOverOpenSql(kept + "_x"));
+      statement.execute(DatabaseScripts.takeOverCloseSql(kept + "_x"));
+      statement.execute(DatabaseScripts.dropRoleSql(earlier));
+    }
+
+    try (Connection admin = admin("postgres")) {
+      renameInPlace(admin, live, earlier);
+      assertFalse(exists(admin, live));
+      assertTrue(exists(admin, earlier));
+      assertTrue(exists(admin, kept), "the kept copy keeps its name and its retention");
+      String adminRole = single(admin, "SELECT current_user");
+      assertEquals(
+          adminRole,
+          single(admin, "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '" + kept + "'"),
+          "the kept copy is the admin's");
+      assertEquals(
+          "false",
+          single(admin, "SELECT datallowconn::text FROM pg_database WHERE datname = '" + kept + "'"),
+          "and closed again");
+      assertEquals(
+          earlier,
+          single(admin, "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '" + earlier + "'"),
+          "the role `" + earlier + "` is now the renamed live database's owner");
+
+      // Its tables went to the admin too: opened for the look, closed again after.
+      execute(admin, "ALTER DATABASE " + kept + " WITH ALLOW_CONNECTIONS true;\n");
+      try (Connection inKept = admin(kept)) {
+        assertEquals(adminRole, single(inKept, "SELECT tableowner FROM pg_tables WHERE tablename = 'items'"));
+        assertEquals("3", single(inKept, "SELECT count(*)::text FROM items"), "the kept data is untouched");
+      }
+      execute(admin, "ALTER DATABASE " + kept + " WITH ALLOW_CONNECTIONS false;\n");
+    }
+    // The renamed live database is the role's, with its password, and its data.
+    try (Connection owner = asRole(earlier, earlier)) {
+      assertEquals("3", single(owner, "SELECT count(*)::text FROM items"));
+    }
+
+    try (Connection admin = admin("postgres")) {
+      execute(admin, "DROP DATABASE " + kept + " WITH (FORCE);\n");
+      execute(admin, "DROP DATABASE " + earlier + " WITH (FORCE);\nDROP ROLE " + earlier + ";\n");
+    }
+  }
+
   /** {@link DatabaseScripts#describeSql}'s answer, read the way the self-move reads it. */
   private static java.util.Map<String, DatabaseScripts.Described> describe(Connection admin, String... names)
       throws SQLException {

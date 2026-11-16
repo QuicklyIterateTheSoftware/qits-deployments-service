@@ -107,7 +107,7 @@ class DatabaseMovesTest {
     // The service was stopped, the source closed, renamed in place, the claim switched.
     assertTrue(driver.calls().contains("scale:mv-a-qits-mvpin=0"), driver.calls().toString());
     assertEquals(
-        List.of("check", "admin", "rename"),
+        List.of("check", "check", "admin", "rename"),
         containers.shots().stream().map(DatabaseContainers.OneShot::purpose).toList());
     PdResource claim = claimOf("qits-mvpin", "mv-a", "db");
     assertEquals("qits_mvpin", claim.databaseName);
@@ -616,6 +616,177 @@ class DatabaseMovesTest {
     assertEquals("qits_mvexists_old", claimOf("qits-mvexists", "mv-f", "db").databaseName);
   }
 
+  /**
+   * A finished copy between the servers that kept its source on {@code server} as {@code kept} —
+   * still owned there by the source's role, {@code source}, until the retention drops it.
+   */
+  private void keptCopy(String env, String server, String source, String kept, Instant droppedAt) {
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              PdDatabaseMove row = new PdDatabaseMove();
+              row.id = UUID.randomUUID().toString();
+              row.batchId = row.id;
+              row.applicationName = "qits-earlier-" + env;
+              row.environmentName = env;
+              row.resourceName = "db";
+              row.sourceServer = server;
+              row.sourceDatabase = source;
+              row.targetServer = "public".equals(server) ? "private" : "public";
+              row.targetDatabase = source;
+              row.keptDatabase = kept;
+              row.origin = PdDatabaseMove.Origin.DEPLOYMENT;
+              row.state = PdDatabaseMoveState.MOVED;
+              row.createdAt = Instant.now().minus(1, ChronoUnit.DAYS);
+              row.finishedAt = row.createdAt;
+              row.dropAfter = row.createdAt.plus(7, ChronoUnit.DAYS);
+              row.droppedAt = droppedAt;
+              moveRows.persist(row);
+            });
+  }
+
+  /** The target server's answer: no target database, and the role {@link DatabaseScripts#role} asks for. */
+  private void targetRoleOwning(String... databases) {
+    containers.script(
+        "check",
+        shot ->
+            shot.script().contains(DatabaseScripts.ROLE_MARKER)
+                ? FakeDatabaseContainers.role(databases)
+                : new DatabaseContainers.Outcome(0, DatabaseScripts.EXISTS_MARKER + "f\n", false));
+  }
+
+  @Test
+  void aRenameInPlaceOntoTheLeftoverRoleOfAKeptCopyTakesTheRoleOver() {
+    // qits-2251: `qits_mvto` moved to the private server earlier, its source kept on the public one
+    // as qits_mvto_moved_…, still owned by the role qits_mvto. A rename in place onto that name
+    // failed on `role "qits_mvto" already exists` after the service had stopped.
+    serversRunningIn("mv-to");
+    claim("qits-mvto", "mv-to", "db", "qits_platform_mvto", "public");
+    driver.scriptDeclaredReplicas("mv-to-qits-mvto", 1);
+    keptCopy("mv-to", "public", "qits_mvto", "qits_mvto_moved_202611131726", null);
+    targetRoleOwning("qits_mvto_moved_202611131726");
+
+    moves.beforeProvisioning(
+        "qits-mvto", "mv-to", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_mvto"));
+
+    assertEquals(
+        List.of("check", "check", "admin", "rename"),
+        containers.shots().stream().map(DatabaseContainers.OneShot::purpose).toList());
+    String asked = containers.shots().get(1).script();
+    assertTrue(asked.contains("WHERE o.rolname = 'qits_mvto'"), asked);
+    String rename = containers.shots("rename").get(0).script();
+    int open = rename.indexOf("ALTER DATABASE qits_mvto_moved_202611131726 WITH ALLOW_CONNECTIONS true;");
+    int into = rename.indexOf("\\c qits_mvto_moved_202611131726\n");
+    int reassign = rename.indexOf("REASSIGN OWNED BY qits_mvto TO CURRENT_USER;");
+    int dropOwned = rename.indexOf("DROP OWNED BY qits_mvto;");
+    int back = rename.indexOf("\\c postgres\n");
+    int owner = rename.indexOf("ALTER DATABASE qits_mvto_moved_202611131726 OWNER TO CURRENT_USER;");
+    int closed = rename.indexOf("ALTER DATABASE qits_mvto_moved_202611131726 WITH ALLOW_CONNECTIONS false;");
+    int dropRole = rename.indexOf("DROP ROLE IF EXISTS qits_mvto;");
+    int begin = rename.indexOf("BEGIN;");
+    assertTrue(
+        open > 0 && open < into && into < reassign && reassign < dropOwned && dropOwned < back && back < owner
+            && owner < closed && closed < dropRole && dropRole < begin,
+        rename);
+    assertTrue(rename.contains("ALTER ROLE qits_platform_mvto RENAME TO qits_mvto;"), rename);
+    assertFalse(rename.contains("DROP DATABASE"), "the kept copy keeps its name and its retention");
+
+    PdDatabaseMove move = movesOf("qits-mvto").get(0);
+    assertEquals(PdDatabaseMoveState.MOVED, move.state);
+    assertEquals("qits_mvto", claimOf("qits-mvto", "mv-to", "db").roleName);
+  }
+
+  @Test
+  void aRoleThatOwnsNothingAndNobodyClaimsIsDroppedBeforeTheRename() {
+    serversRunningIn("mv-tn");
+    claim("qits-mvtn", "mv-tn", "db", "qits_platform_mvtn", "public");
+    targetRoleOwning();
+
+    moves.beforeProvisioning(
+        "qits-mvtn", "mv-tn", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_mvtn"));
+
+    String rename = containers.shots("rename").get(0).script();
+    assertFalse(rename.contains("\\c "), rename);
+    assertTrue(rename.indexOf("DROP ROLE IF EXISTS qits_mvtn;") < rename.indexOf("BEGIN;"), rename);
+    assertEquals(PdDatabaseMoveState.MOVED, movesOf("qits-mvtn").get(0).state);
+  }
+
+  @Test
+  void aRenameInPlaceOntoAClaimedRoleIsRefusedBeforeAnythingStops() {
+    serversRunningIn("mv-tc");
+    claim("qits-mvtc", "mv-tc", "db", "qits_platform_mvtc", "public");
+    driver.scriptDeclaredReplicas("mv-tc-qits-mvtc", 1);
+    // Another application's claim on that server whose ROLE is the target name.
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              PdResource row = new PdResource();
+              row.id = UUID.randomUUID().toString();
+              row.applicationName = "qits-mvtc-other";
+              row.environmentName = "mv-tc";
+              row.resourceName = "store";
+              row.resourceType = "postgresql";
+              row.databaseName = "qits_mvtc_store";
+              row.roleName = "qits_mvtc";
+              row.password = PASSWORD;
+              row.server = "public";
+              row.createdAt = Instant.now();
+              resources.persist(row);
+            });
+    targetRoleOwning("qits_mvtc_store");
+
+    ResourceException refused =
+        assertThrows(
+            ResourceException.class,
+            () ->
+                moves.beforeProvisioning(
+                    "qits-mvtc", "mv-tc", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_mvtc")));
+
+    assertTrue(refused.getMessage().contains("the role `qits_mvtc` already exists there"), refused.getMessage());
+    assertTrue(refused.getMessage().contains("qits-mvtc-other"), refused.getMessage());
+    assertTrue(refused.getMessage().contains("qits_mvtc_store"), refused.getMessage());
+    assertEquals(List.of("check", "check"), containers.shots().stream().map(DatabaseContainers.OneShot::purpose).toList());
+    assertTrue(driver.calls().stream().noneMatch(call -> call.startsWith("scale:")), driver.calls().toString());
+    PdDatabaseMove row = movesOf("qits-mvtc").get(0);
+    assertEquals(PdDatabaseMoveState.REFUSED, row.state);
+    assertEquals(refused.getMessage(), row.detail);
+    assertEquals("qits_platform_mvtc", claimOf("qits-mvtc", "mv-tc", "db").databaseName);
+  }
+
+  @Test
+  void aRenameInPlaceOntoARoleOwningADatabaseNoMoveKeptIsRefusedNamingIt() {
+    serversRunningIn("mv-tf");
+    claim("qits-mvtf", "mv-tf", "db", "qits_platform_mvtf", "public");
+    driver.scriptDeclaredReplicas("mv-tf-qits-mvtf", 1);
+    keptCopy("mv-tf", "public", "qits_mvtf", "qits_mvtf_moved_202611131726", null);
+    // A copy the sweep already dropped is no kept copy any more, and neither is one kept on the
+    // other server.
+    keptCopy("mv-tf", "public", "qits_mvtf", "qits_mvtf_moved_202611010000", Instant.now());
+    keptCopy("mv-tf", "private", "qits_mvtf", "qits_mvtf_moved_202611020000", null);
+    targetRoleOwning(
+        "qits_mvtf_moved_202611010000",
+        "qits_mvtf_moved_202611020000",
+        "qits_mvtf_moved_202611131726",
+        "qits_mvtf_stranger");
+
+    ResourceException refused =
+        assertThrows(
+            ResourceException.class,
+            () ->
+                moves.beforeProvisioning(
+                    "qits-mvtf", "mv-tf", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_mvtf")));
+
+    String message = refused.getMessage();
+    assertTrue(message.contains("the role `qits_mvtf` already exists there and owns"), message);
+    assertTrue(
+        message.contains(
+            "— qits_mvtf_moved_202611010000, qits_mvtf_moved_202611020000, qits_mvtf_stranger are not a copy"),
+        message);
+    assertTrue(driver.calls().stream().noneMatch(call -> call.startsWith("scale:")), driver.calls().toString());
+    assertEquals(PdDatabaseMoveState.REFUSED, movesOf("qits-mvtf").get(0).state);
+    assertTrue(containers.shots("rename").isEmpty());
+  }
+
   @Test
   void aCountMismatchAbortsRestoresTheSourceAndScalesTheServiceBack() {
     serversRunningIn("mv-g");
@@ -1023,7 +1194,7 @@ class DatabaseMovesTest {
         "qits-sprename", "sp-f", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_sprename"));
 
     assertEquals(
-        List.of("check", "admin", "rename"),
+        List.of("check", "check", "admin", "rename"),
         containers.shots().stream().map(DatabaseContainers.OneShot::purpose).toList());
     assertEquals(List.of(), containers.createdVolumes(), "no volume, early or late");
     PdDatabaseMove row = movesOf("qits-sprename").get(0);

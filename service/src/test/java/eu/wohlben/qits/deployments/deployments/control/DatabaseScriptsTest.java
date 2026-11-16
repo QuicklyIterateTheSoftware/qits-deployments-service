@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -147,6 +148,51 @@ class DatabaseScriptsTest {
 
     assertThrows(RuntimeException.class, () -> DatabaseScripts.renameInPlace("qits_x", "qits_y; drop", false, true));
     assertThrows(RuntimeException.class, () -> DatabaseScripts.renameInPlace("postgres", "qits_y", false, true));
+  }
+
+  @Test
+  void theTargetRoleIsAskedAndALeftoverRoleTakenOverBeforeTheRename() {
+    // qits-2251: the pre-flight's question, and its answer read back.
+    String asked = DatabaseScripts.role("qits_x");
+    assertTrue(asked.contains("'qits-role=' || EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'qits_x')"), asked);
+    assertTrue(asked.contains("JOIN pg_roles o ON o.oid = d.datdba WHERE o.rolname = 'qits_x'"), asked);
+    assertEquals(
+        new DatabaseScripts.RoleSeen(true, List.of("qits_x_moved_202611131726", "qits_y")),
+        DatabaseScripts.roleAnswer("qits-role=true\nqits-role-owns=qits_x_moved_202611131726\nqits-role-owns=qits_y\n"));
+    assertEquals(new DatabaseScripts.RoleSeen(false, List.of()), DatabaseScripts.roleAnswer("qits-role=f\n"));
+    assertNull(DatabaseScripts.roleAnswer("qits-role-owns=qits_y\n"), "no verdict line is no answer");
+    assertThrows(RuntimeException.class, () -> DatabaseScripts.role("qits_x'; drop"));
+
+    // No leftover role: the script it always was.
+    assertEquals(
+        DatabaseScripts.renameInPlace("qits_platform_x", "qits_x", true, true),
+        DatabaseScripts.renameInPlace("qits_platform_x", "qits_x", true, true, null));
+
+    // A leftover: everything under the role's \if, each copy under its own, before the transaction
+    // — and after the leftover database's drop, before the leftover's role drop.
+    String script =
+        DatabaseScripts.renameInPlace("qits_platform_x", "qits_x", true, true, List.of("qits_x_moved_202611131726"));
+    int dropDatabase = script.indexOf("SELECT 'DROP DATABASE qits_x WITH (FORCE)'");
+    int roleIf =
+        script.indexOf(
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'qits_x') AND EXISTS (SELECT 1 FROM pg_database WHERE"
+                + " datname = 'qits_platform_x') AS qits_takeover \\gset\n\\if :qits_takeover\n");
+    int keptIf = script.indexOf(
+        "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'qits_x_moved_202611131726') AS qits_kept_there \\gset\n\\if :qits_kept_there\n");
+    int into = script.indexOf("\\c qits_x_moved_202611131726\n");
+    int reassign = script.indexOf("REASSIGN OWNED BY qits_x TO CURRENT_USER;");
+    int back = script.indexOf("\\c postgres\n");
+    int closed = script.indexOf("ALTER DATABASE qits_x_moved_202611131726 WITH ALLOW_CONNECTIONS false;");
+    int dropRole = script.indexOf("DROP ROLE IF EXISTS qits_x;\n\\endif\n");
+    int leftoverRole = script.indexOf("SELECT 'DROP ROLE qits_x'");
+    int begin = script.indexOf("BEGIN;");
+    assertTrue(
+        dropDatabase > 0 && dropDatabase < roleIf && roleIf < keptIf && keptIf < into && into < reassign
+            && reassign < back && back < closed && closed < dropRole && dropRole < leftoverRole && leftoverRole < begin,
+        script);
+    assertThrows(
+        RuntimeException.class,
+        () -> DatabaseScripts.renameInPlace("qits_platform_x", "qits_x", false, true, List.of("postgres")));
   }
 
   @Test
