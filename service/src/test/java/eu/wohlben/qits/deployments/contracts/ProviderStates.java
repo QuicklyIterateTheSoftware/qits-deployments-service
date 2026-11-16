@@ -9,8 +9,10 @@ import eu.wohlben.qits.deployments.deployments.control.DeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.EdgeRouteTables;
 import eu.wohlben.qits.deployments.deployments.control.FakeArtifactPurge;
 import eu.wohlben.qits.deployments.deployments.control.FakeDeploymentDriver;
+import eu.wohlben.qits.deployments.deployments.control.FakePublicEdgeProbe;
 import eu.wohlben.qits.deployments.deployments.control.FakeSpecSource;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource;
+import eu.wohlben.qits.deployments.deployments.control.SplitCheck;
 import eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove;
 import eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
@@ -116,6 +118,24 @@ public class ProviderStates {
    */
   public static final String TWO_EDGES_WITH_ROUTES = "two edges with routes";
 
+  /**
+   * The last split check (qits-2215) found nothing: {@code contract-split-public} on qits-net and
+   * {@code contract-split-private} (host {@code contract-split}) on qits-private, each as its
+   * placement label says, and the private one answered 404 by the public edge — checked at {@link
+   * #SPLIT_CHECKED_AT}.
+   */
+  public static final String A_CLEAN_SPLIT = "a clean split";
+
+  /**
+   * The last split check (qits-2215) found {@code contract-split-public} on both qits-net and
+   * qits-private — bridged, and misplaced against its {@code qits-net} label — while the private app
+   * was still refused by the public edge.
+   */
+  public static final String A_BRIDGED_SERVICE = "a bridged service";
+
+  /** When the split-check states ran their check. */
+  static final Instant SPLIT_CHECKED_AT = Instant.parse("2025-11-16T09:30:00Z");
+
   /** When the route-table state builds its tables: its version is this instant's epoch millis. */
   static final Instant ROUTE_TABLES_BUILT_AT = Instant.parse("2025-11-13T09:20:00Z");
 
@@ -167,6 +187,8 @@ public class ProviderStates {
   @Inject FakeArtifactPurge artifacts;
   @Inject DeployService deployService;
   @Inject EdgeRouteTables edgeRouteTables;
+  @Inject SplitCheck splitCheck;
+  @Inject FakePublicEdgeProbe publicEdge;
 
   private final Map<String, Supplier<Setup>> states = new LinkedHashMap<>();
   private final List<String> removable = Collections.synchronizedList(new ArrayList<>());
@@ -202,6 +224,8 @@ public class ProviderStates {
     states.put(A_FINISHED_DATABASE_MOVE, this::aFinishedDatabaseMove);
     states.put(A_RUNNING_DATABASE_MOVE, this::aRunningDatabaseMove);
     states.put(TWO_EDGES_WITH_ROUTES, this::twoEdgesWithRoutes);
+    states.put(A_CLEAN_SPLIT, () -> aSplitCheck(false));
+    states.put(A_BRIDGED_SERVICE, () -> aSplitCheck(true));
   }
 
   /** Every state name this provider answers for. */
@@ -289,6 +313,33 @@ public class ProviderStates {
     Map<String, String> params = new TreeMap<>();
     params.put("edge", EdgeRouteTables.PRIVATE);
     return new Setup(params, List.of());
+  }
+
+  /** See {@link #A_CLEAN_SPLIT} and {@link #A_BRIDGED_SERVICE}: one check, at a fixed instant. */
+  private Setup aSplitCheck(boolean bridged) {
+    awaitIdle();
+    driver.reset();
+    publicEdge.reset();
+    splitCheck.forget();
+    DeploymentDriver.LabelledService pub =
+        placed(routed("contract-split-public", "public", "contract-split-pub", null), "qits-net");
+    DeploymentDriver.LabelledService priv =
+        placed(routed("contract-split-private", "private", "contract-split", null), "qits-private");
+    driver.scriptLabelledServices(List.of(pub, priv));
+    driver.scriptAttachedNetworks(
+        pub.service(), bridged ? Set.of("qits-net", "qits-private") : Set.of("qits-net"));
+    driver.scriptAttachedNetworks(priv.service(), Set.of("qits-private"));
+    QuarkusTransaction.requiringNew().run(() -> PdEdgeRouteTable.deleteAll());
+    edgeRouteTables.rebuild(SPLIT_CHECKED_AT);
+    splitCheck.run(SPLIT_CHECKED_AT);
+    return new Setup(new TreeMap<>(), List.of());
+  }
+
+  private static DeploymentDriver.LabelledService placed(
+      DeploymentDriver.LabelledService service, String placement) {
+    Map<String, String> labels = new LinkedHashMap<>(service.labels());
+    labels.put(DeploymentDriver.PLACEMENT_LABEL, placement);
+    return new DeploymentDriver.LabelledService(service.service(), labels);
   }
 
   private static DeploymentDriver.LabelledService routed(

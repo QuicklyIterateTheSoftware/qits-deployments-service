@@ -2849,18 +2849,42 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
               + PdIdentifiers.requireHealthPath(spec.healthPath())
               + " || exit 1";
     }
+    service.health(
+        new Health(
+            command,
+            Duration.ofSeconds(healthIntervalSeconds),
+            healthRetries,
+            startPeriod(spec)));
+  }
+
+  /** The {@code --health-start-period} of a spec's service. */
+  private Duration startPeriod(ServiceSpec spec) {
     Duration startPeriod = Duration.ofSeconds(healthStartPeriodSeconds);
     if (movesBeforeStart(spec)) {
       // The deployer's successor moves its own databases before it listens (qits-2209): its start
       // period covers that move too, or swarm would call it unhealthy half-way through the copy.
       startPeriod = startPeriod.plus(selfMoveTimeout);
     }
-    service.health(
-        new Health(
-            command,
-            Duration.ofSeconds(healthIntervalSeconds),
-            healthRetries,
-            startPeriod));
+    return startPeriod;
+  }
+
+  /**
+   * The {@code --update-monitor} of a spec's service: {@code qits.deployments.swarm.update-monitor-seconds},
+   * and for the private edge ({@link #privateEdgeApplication}) never less than its health start
+   * period (qits-2215). The private edge is healthy only once it holds a route table, so a release
+   * that cannot load one must still be inside the monitor when its health check gives up — or
+   * swarm calls the update complete before the task is ever judged, and {@code
+   * --update-failure-action rollback} never fires.
+   */
+  Duration updateMonitor(ServiceSpec spec) {
+    Duration monitor = Duration.ofSeconds(updateMonitorSeconds);
+    if (privateEdgeApplication != null && privateEdgeApplication.equals(spec.applicationName())) {
+      Duration startPeriod = startPeriod(spec);
+      if (startPeriod.compareTo(monitor) > 0) {
+        return startPeriod;
+      }
+    }
+    return monitor;
   }
 
   /** Whether the spec hands a database move to the process it starts (qits-2209). */
@@ -2905,7 +2929,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
         new UpdatePolicy(
             spec.updateOrder().spelling(),
             spec.updateOrder().spelling(),
-            Duration.ofSeconds(updateMonitorSeconds),
+            updateMonitor(spec),
             "rollback",
             spec.stopGracePeriod()));
   }
@@ -3894,6 +3918,24 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       services.add(new LabelledService(name, labels));
     }
     return Optional.of(List.copyOf(services));
+  }
+
+  /**
+   * The network check's input (qits-2215): {@link #liveNetworks} of each named service, the managed
+   * networks' ids resolved once for all of them. A service whose networks cannot be read is left
+   * out.
+   */
+  @Override
+  public Map<String, Set<String>> attachedNetworks(List<String> services) {
+    if (services.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, String> ids = managedNetworkIds();
+    Map<String, Set<String>> attached = new LinkedHashMap<>();
+    for (String service : services) {
+      liveNetworks(service, ids).ifPresent(networks -> attached.put(service, Set.copyOf(networks)));
+    }
+    return attached;
   }
 
   /**

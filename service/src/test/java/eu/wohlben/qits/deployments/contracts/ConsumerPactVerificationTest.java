@@ -218,6 +218,16 @@ class ConsumerPactVerificationTest {
     return states.params(ProviderStates.A_RUNNING_DATABASE_MOVE);
   }
 
+  @State(ProviderStates.A_CLEAN_SPLIT)
+  Map<String, String> aCleanSplit() {
+    return states.params(ProviderStates.A_CLEAN_SPLIT);
+  }
+
+  @State(ProviderStates.A_BRIDGED_SERVICE)
+  Map<String, String> aBridgedService() {
+    return states.params(ProviderStates.A_BRIDGED_SERVICE);
+  }
+
   @State(ProviderStates.TWO_EDGES_WITH_ROUTES)
   Map<String, String> twoEdgesWithRoutes() {
     return states.params(ProviderStates.TWO_EDGES_WITH_ROUTES);

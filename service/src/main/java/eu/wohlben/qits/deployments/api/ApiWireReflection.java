@@ -3,6 +3,7 @@ package eu.wohlben.qits.deployments.api;
 import eu.wohlben.qits.deployments.deployments.control.ArtifactPurge;
 import eu.wohlben.qits.deployments.deployments.control.EdgeRouteTables;
 import eu.wohlben.qits.deployments.deployments.dto.EdgeRouteTableDto;
+import eu.wohlben.qits.deployments.deployments.dto.SplitCheckDto;
 import eu.wohlben.qits.deployments.deployments.dto.PdDatabaseMoveDto;
 import eu.wohlben.qits.deployments.deployments.dto.PdDecommissionDto;
 import eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto;
@@ -74,7 +75,11 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       EdgeRouteTableDto.Endpoint.class,
       EdgeRouteTableDto.Navigation.class,
       EdgeRouteTableDto.Withdrawn.class,
-      EdgeRouteTables.Content.class
+      EdgeRouteTables.Content.class,
+      SplitCheckDto.class,
+      SplitCheckDto.Bridged.class,
+      SplitCheckDto.Misplaced.class,
+      SplitCheckDto.PrivateApp.class
     })
 final class ApiWireReflection {
 

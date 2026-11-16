@@ -368,6 +368,16 @@ public interface DeploymentDriver {
   }
 
   /**
+   * Every network each named service is attached to, by name, except swarm's {@code ingress}
+   * (qits-2215) — the network check's input ({@code NetworkCheck}). A service whose networks cannot
+   * be read is absent from the answer, so the check says nothing about it rather than guessing.
+   * Empty for a driver that cannot tell.
+   */
+  default Map<String, Set<String>> attachedNetworks(List<String> services) {
+    return Map.of();
+  }
+
+  /**
    * Remove the leftover {@code qits-platform} overlay once nothing is attached to it (qits-2174) —
    * asked at startup and on every observation pass. Never any other network. Nothing for a driver
    * that has no such network.

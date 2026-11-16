@@ -1,0 +1,31 @@
+{
+  "checkedAt": "2026-01-01T00:00:00Z",
+  "ok": false,
+  "bridged": [
+    {
+      "service": "dev-contract-split-public",
+      "networks": [
+        "qits-net",
+        "qits-private"
+      ]
+    }
+  ],
+  "misplaced": [
+    {
+      "service": "dev-contract-split-public",
+      "placement": "qits-net",
+      "networks": [
+        "qits-net",
+        "qits-private"
+      ]
+    }
+  ],
+  "privateApps": [
+    {
+      "application": "contract-split-private",
+      "host": "contract-split",
+      "status": 404,
+      "error": null
+    }
+  ]
+}

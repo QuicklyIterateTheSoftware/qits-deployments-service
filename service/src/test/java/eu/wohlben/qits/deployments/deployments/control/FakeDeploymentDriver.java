@@ -136,7 +136,16 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   private final java.util.concurrent.atomic.AtomicInteger labelReads =
       new java.util.concurrent.atomic.AtomicInteger();
 
+  /** What {@link #attachedNetworks} answers, by service (qits-2215); a service absent is unreadable. */
+  private final Map<String, Set<String>> attachedNetworks = new ConcurrentHashMap<>();
+
+  /** Verdicts {@link #awaitConverged} answers before {@link #nextConvergence}, one per call. */
+  private final java.util.Deque<Convergence> queuedConvergences =
+      new java.util.concurrent.ConcurrentLinkedDeque<>();
+
   public void reset() {
+    attachedNetworks.clear();
+    queuedConvergences.clear();
     labelledServices = List.of();
     labelReads.set(0);
     applied.clear();
@@ -186,6 +195,31 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   public Optional<List<LabelledService>> labelledServices() {
     labelReads.incrementAndGet();
     return Optional.ofNullable(labelledServices);
+  }
+
+  /** Script the networks {@code service} is attached to, for the network check (qits-2215). */
+  public void scriptAttachedNetworks(String service, Set<String> networks) {
+    attachedNetworks.put(service, Set.copyOf(networks));
+  }
+
+  @Override
+  public Map<String, Set<String>> attachedNetworks(List<String> services) {
+    Map<String, Set<String>> answer = new java.util.LinkedHashMap<>();
+    for (String service : services) {
+      Set<String> networks = attachedNetworks.get(service);
+      if (networks != null) {
+        answer.put(service, networks);
+      }
+    }
+    return answer;
+  }
+
+  /**
+   * Verdicts the next {@link #awaitConverged} calls answer, in order, before falling back to
+   * {@link #scriptConvergence}'s — a deployment that fails and a restore after it that converges.
+   */
+  public void scriptConvergences(Convergence... verdicts) {
+    queuedConvergences.addAll(List.of(verdicts));
   }
 
   public void scriptPull(PullResult result) {
@@ -388,7 +422,8 @@ public class FakeDeploymentDriver implements DeploymentDriver {
         Thread.currentThread().interrupt();
       }
     }
-    return nextConvergence;
+    Convergence queued = queuedConvergences.poll();
+    return queued != null ? queued : nextConvergence;
   }
 
   @Override

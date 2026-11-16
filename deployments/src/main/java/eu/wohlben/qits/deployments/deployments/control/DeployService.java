@@ -217,6 +217,17 @@ public class DeployService implements ReleaseAnnouncements {
    */
   @Inject EdgeRoutePusher edgeRoutes;
 
+  /**
+   * The split check (qits-2215): on the observation pass at most every {@code
+   * qits.deployments.split-check.every}, and after each deploy of either edge. Never fails what
+   * calls it.
+   */
+  @Inject SplitCheck splitCheck;
+
+  /** The private edge's application: the one the recreate rollback covers (qits-2215). */
+  @ConfigProperty(name = "qits.deployments.swarm.private-edge.application")
+  String privateEdgeApplication;
+
   /** The settings store a rename cutover copies onto its successor and retires for its predecessor. */
   @Inject Settings settings;
 
@@ -581,6 +592,8 @@ public class DeployService implements ReleaseAnnouncements {
           // Last, the route tables (qits-2174): rebuilt off the labels, pushed when they moved, and
           // pushed again to an edge that reports an older version than the stored one.
           edgeRoutes.observe();
+          // ...and the split check off the same label read, on its own slower cadence (qits-2215).
+          splitCheck.observe();
         });
   }
 
@@ -3614,6 +3627,18 @@ public class DeployService implements ReleaseAnnouncements {
             restorePredecessor(plan, rename, bindings, name, safe(converged.detail()), rollback));
         return;
       }
+      if (rollback == null
+          && converged.outcome() == DeploymentDriver.ConvergenceOutcome.FAILED
+          && isPrivateEdge(plan)) {
+        // Nothing serves the private edge's place and swarm has nothing to revert to — a recreate
+        // (qits-2215): the deployer puts the last ACTIVE version back itself.
+        finish(
+            deploymentId,
+            target,
+            PdDeploymentStatus.FAILED,
+            rollBackPrivateEdge(plan, spec, resolvedRegistryHost, name, safe(converged.detail())));
+        return;
+      }
       finish(
           deploymentId,
           target,
@@ -3694,6 +3719,8 @@ public class DeployService implements ReleaseAnnouncements {
     // ...and the route tables (qits-2174): this service's labels just changed, and an edge that
     // just went healthy may hold nothing yet. Never fails the deployment, which is live.
     edgeRoutes.afterDeploy(plan.applicationName());
+    // ...and, for either edge, the split check at once rather than on its cadence (qits-2215).
+    splitCheck.afterDeploy(plan.applicationName());
   }
 
   /**
@@ -4769,7 +4796,70 @@ public class DeployService implements ReleaseAnnouncements {
    * rename restore's trade ({@link #predecessorSpec}).
    */
   private String restoreOwnService(MoveRollback rollback, String service, int replicas) {
-    Plan plan = rollback.plan;
+    Restored restored =
+        restoreLastActive(
+            rollback.plan,
+            rollback.spec,
+            rollback.registryHost,
+            service,
+            java.util.OptionalInt.of(replicas));
+    if (restored.previous() == null) {
+      LOG.warnf(
+          "%s has no ACTIVE deployment to restore after its rollback; it is only scaled back", service);
+      return scaleBack(service, replicas) + " (no ACTIVE deployment to restore its spec from)";
+    }
+    if (!restored.applied()) {
+      LOG.errorf(
+          "%s could NOT be restored from its last ACTIVE deployment %s after a rollback: %s",
+          service, restored.row(), restored.detail());
+      return service
+          + " could NOT be restored from its last ACTIVE deployment "
+          + restored.row()
+          + ": "
+          + safe(restored.detail());
+    }
+    return service
+        + " restored from its last ACTIVE deployment "
+        + restored.row()
+        + " at "
+        + replicas
+        + (restored.converged() ? "" : ", though it has not converged yet: " + safe(restored.detail()));
+  }
+
+  /**
+   * What {@link #restoreLastActive} did.
+   *
+   * @param previous the place's last {@code ACTIVE} deployment it restored from, or null when there
+   *     is none (and nothing was applied)
+   * @param applied whether the runtime took the restored spec
+   * @param converged whether it then converged
+   * @param detail the runtime's words when it refused or did not converge, else null
+   */
+  private record Restored(
+      PdDeployment previous, boolean applied, boolean converged, String detail) {
+
+    String version() {
+      return previous == null ? null : previous.imageTag();
+    }
+
+    String row() {
+      return previous == null ? null : previous.id + " (" + previous.imageTag() + ")";
+    }
+  }
+
+  /**
+   * Re-apply the place's last {@code ACTIVE} deployment over a failed one's service (qits-2249,
+   * reused for the private edge by qits-2215): that row's image with the bindings the claims render
+   * now, under the failed spec's shape, order and policy — the same repository one release later,
+   * the rename restore's trade ({@link #predecessorSpec}). Then waits for convergence, and when
+   * {@code replicas} is given holds the service at it. Never throws.
+   */
+  private Restored restoreLastActive(
+      Plan plan,
+      DeploymentDriver.ServiceSpec failed,
+      String registryHost,
+      String service,
+      java.util.OptionalInt replicas) {
     PdDeployment previous =
         QuarkusTransaction.requiringNew()
             .call(
@@ -4782,15 +4872,11 @@ public class DeployService implements ReleaseAnnouncements {
                         .findFirst()
                         .orElse(null));
     if (previous == null || previous.imageTag() == null) {
-      LOG.warnf(
-          "%s has no ACTIVE deployment to restore after its rollback; it is only scaled back", service);
-      return scaleBack(service, replicas) + " (no ACTIVE deployment to restore its spec from)";
+      return new Restored(null, false, false, null);
     }
     String version = previous.imageTag();
-    String row = previous.id + " (" + version + ")";
     DeploymentDriver.ApplyResult restored;
     try {
-      DeploymentDriver.ServiceSpec failed = rollback.spec;
       DeploymentDriver.ServiceSpec spec =
           new DeploymentDriver.ServiceSpec(
               failed.environmentId(),
@@ -4803,7 +4889,7 @@ public class DeployService implements ReleaseAnnouncements {
               ContainerNames.of(plan.environmentName(), plan.applicationName(), previous.id),
               failed.wireAlias(),
               failed.networks(),
-              ImageRefs.imageRef(rollback.registryHost, imageRepository, plan.image(), version),
+              ImageRefs.imageRef(registryHost, imageRepository, plan.image(), version),
               failed.healthPath(),
               failed.healthCmd(),
               failed.availableOnEnv(),
@@ -4826,30 +4912,82 @@ public class DeployService implements ReleaseAnnouncements {
       restored = new DeploymentDriver.ApplyResult(DeploymentDriver.ApplyOutcome.REFUSED, e.toString());
     }
     if (restored.outcome() == DeploymentDriver.ApplyOutcome.REFUSED) {
-      LOG.errorf(
-          "%s could NOT be restored from its last ACTIVE deployment %s after a rollback: %s",
-          service, row, restored.detail());
-      return service
-          + " could NOT be restored from its last ACTIVE deployment "
-          + row
-          + ": "
-          + safe(restored.detail());
+      return new Restored(previous, false, false, restored.detail());
     }
     DeploymentDriver.Convergence converged = driver.awaitConverged(service, convergenceTimeout(plan));
-    // An update restates one replica; anything else the service ran is put back by a scale.
-    java.util.OptionalInt desired = driver.desiredReplicas(service);
-    if (desired.isEmpty() || desired.getAsInt() != replicas) {
-      DeploymentDriver.ScaleResult scaled = driver.scale(service, replicas);
-      if (!scaled.applied()) {
-        LOG.warnf("Could not hold %s at %d after its restore: %s", service, replicas, scaled.detail());
+    if (replicas.isPresent()) {
+      // An update restates one replica; anything else the service ran is put back by a scale.
+      java.util.OptionalInt desired = driver.desiredReplicas(service);
+      if (desired.isEmpty() || desired.getAsInt() != replicas.getAsInt()) {
+        DeploymentDriver.ScaleResult scaled = driver.scale(service, replicas.getAsInt());
+        if (!scaled.applied()) {
+          LOG.warnf(
+              "Could not hold %s at %d after its restore: %s",
+              service, replicas.getAsInt(), scaled.detail());
+        }
       }
     }
-    return service
-        + " restored from its last ACTIVE deployment "
-        + row
-        + " at "
-        + replicas
-        + (converged.converged() ? "" : ", though it has not converged yet: " + safe(converged.detail()));
+    return new Restored(
+        previous, true, converged.converged(), converged.converged() ? null : converged.detail());
+  }
+
+  /** Whether {@code plan} deploys the private edge — the one application the recreate rollback covers. */
+  private boolean isPrivateEdge(Plan plan) {
+    return privateEdgeApplication != null && privateEdgeApplication.equals(plan.applicationName());
+  }
+
+  /**
+   * <b>The private edge's recreate rollback</b> (epic qits-2174, task qits-2215). A recreate — the
+   * driver's {@code service rm} and create, for drift in networks, resolvers or exposure — leaves
+   * swarm nothing to roll back to, so a {@code qits-edge-private} that does not converge healthy
+   * within {@link #convergenceTimeout} would leave every private application without its edge. The
+   * deployer puts the place's last {@code ACTIVE} version back instead ({@link
+   * #restoreLastActive}, the qits-2249 machinery) and the new deployment is recorded {@code FAILED},
+   * saying so. Returns the sentence the row is failed with.
+   *
+   * <p>Only the private edge ({@code qits.deployments.swarm.private-edge.application}); widening it
+   * to every stop-first service is a follow-up. An update that swarm itself rolled back never gets
+   * here: it converges {@code ROLLED_BACK}, and the update path's {@code --update-failure-action
+   * rollback} with a monitor of at least the start period is what reverted it.
+   */
+  private String rollBackPrivateEdge(
+      Plan plan, DeploymentDriver.ServiceSpec failed, String registryHost, String service, String cause) {
+    Restored restored =
+        restoreLastActive(plan, failed, registryHost, service, java.util.OptionalInt.empty());
+    if (restored.previous() == null) {
+      LOG.errorf(
+          "%s %s failed its health check and there is no ACTIVE version to roll back to: %s",
+          plan.applicationName(), plan.version(), firstLine(cause));
+      return "[the private edge failed its health check and there is no ACTIVE version to roll back"
+          + " to]\n"
+          + cause;
+    }
+    if (!restored.applied()) {
+      LOG.errorf(
+          "%s %s failed its health check, and rolling back to %s was refused: %s",
+          plan.applicationName(), plan.version(), restored.version(), safe(restored.detail()));
+      return "[the private edge failed its health check, and rolling back to "
+          + restored.row()
+          + " was refused: "
+          + safe(restored.detail())
+          + "]\n"
+          + cause;
+    }
+    LOG.errorf(
+        "%s %s failed its health check; rolled back to %s",
+        plan.applicationName(), plan.version(), restored.version());
+    // The restored version's labels are on the service again: the route tables follow them.
+    edgeRoutes.afterDeploy(plan.applicationName());
+    return "[rolled back: "
+        + plan.applicationName()
+        + " "
+        + plan.version()
+        + " failed its health check, so its last ACTIVE deployment "
+        + restored.row()
+        + " was recreated"
+        + (restored.converged() ? "" : ", though it has not converged yet: " + safe(restored.detail()))
+        + "]\n"
+        + cause;
   }
 
   /** What the outcome bracket carries out — the row's own values, for the announcement. */

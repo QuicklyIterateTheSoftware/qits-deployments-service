@@ -365,7 +365,7 @@ would be a bridge between them, so:
   at once; a service is public or private (qits-2174) ``;
 - the driver refuses, before any create or update, an argv that would attach both networks — the
   deployment is `REFUSED` with `<svc> would sit on qits-net and qits-private at once; refused
-  (qits-2174)`. There is no break-glass;
+  (qits-2174)`;
 - drift reads **every** network a live service is attached to except swarm's `ingress`. A missing
   placement network is the remove-and-create it always was; the placement network present with
   others besides is a rolling `service update --network-rm <extra>` under the service's own
@@ -399,6 +399,56 @@ placement=<net>`; a service with no such row (postgres, an adopted one) gets exp
 only, and one on both networks is left for its next deployment. The deployer labels itself in its
 self-update the same way, and keeps qits-2119's network move: one update carrying `--network-add
 qits-private` and `--network-rm qits-net`, never two with a bridged state between them.
+
+## Split check
+
+**The split is checked continuously, as the runtime and the public edge show it** (qits-2174, task
+qits-2215; `deployments/control/SplitCheck`). On the observation pass at most every
+`qits.deployments.split-check.every` (`10m`), and once after each deploy of `qits-edge` or
+`qits-edge-private` reaches healthy:
+
+- **Networks** (`NetworkCheck`): every labelled service's attached networks (all but `ingress`,
+  read like the drift check), off the same `service ls` the route tables were just built from.
+  `bridged` is a service on both `qits-net` and `qits-private`; `misplaced` is one whose attached
+  networks are not exactly its `qits.platform.deployments.placement` label. Nothing is exempt. One
+  ERROR per finding: `network bridge: <svc> on [<nets>]`, `network misplaced: <svc> labelled <net>
+  but on [<nets>]`.
+- **The public edge** (`PublicEdgeProbe`, `edgehost/TlsPublicEdgeProbe`): every application in the
+  private route table with a browser host must NOT be served there. The deployer is private and its
+  resolvers ask the private edge first, so a plain request would reach the private edge; the probe
+  resolves the apex `qits.<domain>` (only the public edge serves it), opens TLS to that address on
+  443 with SNI and `Host` `<host>.qits.<domain>` and HTTPS hostname verification, and sends `GET
+  <primary path>/q/health/ready` with the deployer's own `qits:system` bearer and `Connection:
+  close`. `404` and `421` (the public edge's answer for a private deployment's name, qits-2223) pass;
+  anything else — 2xx, 3xx, a 401/403 from a gate it was routed to, 5xx — is an ERROR `private app
+  <app> answers <status> on the public edge`. No answer at all fails the check too, with its reason.
+  `qits.deployments.split-check.timeout-seconds` (5) bounds each probe.
+
+**`GET /deployments/api/split-check`** answers the last result and never runs a check — `503` before
+the first one; roles `qits:admin`, `qits:admin-agent`, `qits:desk-admin`, `qits:desk`, `qits:agent`:
+
+```json
+{"checkedAt":"…","ok":true,"bridged":[],"misplaced":[],
+ "privateApps":[{"application":"qits-stt","host":"stt","status":404,"error":null}]}
+```
+
+`ok` is true when nothing is bridged or misplaced and every private app answered 404 or 421. A pass
+whose label read failed checks nothing and keeps the last result.
+
+**A failing private-edge release is rolled back.** The private edge is healthy only once it holds a
+route table, so a release that cannot load one must not stay:
+
+- **Update path** — swarm reverts it (`--update-failure-action rollback`, as for every service); for
+  `qits-edge-private` (`qits.deployments.swarm.private-edge.application`) `--update-monitor` is never
+  below its `--health-start-period`, so the verdict lands inside the monitor. The row is
+  `ROLLED_BACK`.
+- **Recreate path** — drift in networks, resolvers or exposure removes the service and creates it,
+  leaving swarm nothing to revert to. When that recreate does not converge healthy within the
+  convergence timeout, the deployer re-applies the place's last `ACTIVE` deployment over it — the
+  qits-2249 restore (`restoreLastActive`): that row's image under the failed spec's shape — marks the
+  new deployment `FAILED` and logs ERROR `qits-edge-private <new> failed its health check; rolled
+  back to <prev>`. The previous row stays `ACTIVE`. Only the private edge; every other application
+  keeps the plain `FAILED`.
 
 ## Self-update takes an orchestrator
 
@@ -452,6 +502,7 @@ Two more things such a move does once, neither of them an error:
 | `GET /deployments?environmentId=` | the client — one tier's history, newest first |
 | `GET /pins` | qits-platform-artifacts' OCI garbage collector, fail-closed |
 | `POST /events/build-succeeded` | qits-ci, fire-and-forget; the manual and bootstrap door |
+| `GET /split-check` | a person or an agent: the last split check (see *Split check*) |
 
 All under `/deployments/api`. The client is served at `/` — this service has a host of its own,
 `deployments.<env>.<domain>`, and the segment is the wire surface alone. Health is at
@@ -481,7 +532,7 @@ when no pin names it, and deletes nothing when it cannot get an answer, so the k
 depend on anything the topology says today. Per application name, across every tier: the sha it is
 serving, and the sha a rollback would put back.
 
-## Addressing: every peer through the edge, one exception, one break-glass
+## Addressing: every peer through the edge, one exception
 
 **A peer is `https://<label>.qits.<domain>`** (epic qits-428), where `<label>` is the peer's
 published host (its `host:` in `.config/qits/deployments.yml`, else its application name without
@@ -512,29 +563,13 @@ is what every public address goes through, so its own idp dials stay on qits-net
 variable for its own oidc client. A deployment that would need the public address on a platform with
 no dotted domain is refused, naming `QITS_DOMAIN`.
 
-**The break-glass (`edge/EdgeBreakGlass`).** This component is what redeploys the edge, the idp and
-qits-events, so it cannot depend on the edge being up to do it. qits-http-core already rides out an
+**No call can fall back to an internal address.** The deployer is `private` (qits-1980, qits-2119:
+it moves itself between the two networks on its own self-update, logged `qits-deployments moves
+itself from [...] to [...]`), and the internal `http://<env>-qits-<app>:8080` addresses resolve on
+`qits-net` only, so every peer is reached through the edge or not at all. qits-http-core rides out an
 edge switchover (up to 30 s of retries on a connection that never opened, or — for an idempotent
-call — a 502/503/504 with `Retry-After`); a call that STILL fails after that window — a connection-class failure, or a 502/503/504
-from the edge — gets exactly **one** more try on the peer's internal address,
-`http://<env>-qits-<app>:8080` plus the same path, and a WARN:
-
-    edge unavailable; using internal address for qits-githost (…)
-
-It is one component the clients share, not a per-call fallback, and exactly three calls carry it:
-the git host spec read, the idp provisioning, and the bearer's token mint (which falls back on a
-transport failure only — see `IdpGitHostBearer` for why an edge's 503 on the token endpoint is not
-recognisable). A call already aimed at an internal address is never tried twice.
-
-**Once qits-deployments is `private`, that one try cannot reach githost or the idp** (epic
-qits-1980). The internal addresses `http://<env>-qits-githost:8080` and `http://<env>-qits-idp:8080`
-resolve on `qits-net` only, and a `private` deployer is on `qits-private` alone, so the extra try
-fails fast — a name that does not resolve — and harmlessly: the call fails exactly as it would have
-without it. The way out is then the host
-break-glass on the edge, the dossier page *Edge break-glass* of qits-1980. The deployer moves
-itself between the two networks on its own self-update (qits-2119: `--network-add`/`--network-rm`,
-logged `qits-deployments moves itself from [...] to [...]`), so this applies from the release that
-declares `exposure: private` onward.
+call — a 502/503/504 with `Retry-After`); a private edge that does not come back is rolled back (see
+*Split check*).
 
 **Image pulls with no edge.** Since qits-757 every deployment pulls
 `registry.qits.<domain>/qits/<app>:<version>` — through the edge. Redeploying the edge itself works
@@ -542,8 +577,7 @@ because qits-edge updates `start-first` (the deployer's default; its `deployment
 `publish_mode: ingress` precisely so the overlap is possible): the old edge keeps serving while the
 node pulls the new edge's image through it. When **no** edge serves at all — a cold boot, or an edge
 whose image is gone — nothing can be pulled through it, so the image must already be on the host:
-the bootstrap seeds it, and `qits-registry-break-glass.sh` in the wrapper repository is the manual
-path. The break-glass above covers this component's HTTP calls, not the docker daemon's pulls.
+the bootstrap seeds it, or a person loads it onto the node by hand.
 
 ## Trust boundaries
 
