@@ -692,7 +692,7 @@ class DatabaseMovesTest {
     assertFalse(rename.contains("DROP DATABASE"), "the kept copy keeps its name and its retention");
 
     PdDatabaseMove move = movesOf("qits-mvto").get(0);
-    assertEquals(PdDatabaseMoveState.MOVED, move.state);
+    assertEquals(PdDatabaseMoveState.SWITCHED, move.state);
     assertEquals("qits_mvto", claimOf("qits-mvto", "mv-to", "db").roleName);
   }
 
@@ -708,7 +708,7 @@ class DatabaseMovesTest {
     String rename = containers.shots("rename").get(0).script();
     assertFalse(rename.contains("\\c "), rename);
     assertTrue(rename.indexOf("DROP ROLE IF EXISTS qits_mvtn;") < rename.indexOf("BEGIN;"), rename);
-    assertEquals(PdDatabaseMoveState.MOVED, movesOf("qits-mvtn").get(0).state);
+    assertEquals(PdDatabaseMoveState.SWITCHED, movesOf("qits-mvtn").get(0).state);
   }
 
   @Test
