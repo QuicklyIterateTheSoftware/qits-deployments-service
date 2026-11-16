@@ -982,11 +982,115 @@ class SwarmDeploymentDriverTest {
 
     assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, applied.outcome());
     assertTrue(cli.matching("service rm").isEmpty(), "nothing is ever recreated to REMOVE a mount");
-    assertFalse(cli.matching("service update").isEmpty(), "the ordinary update path, untouched");
+    List<String> update = cli.matching("service update");
+    assertFalse(update.isEmpty(), "the ordinary update path, untouched");
+    // One read, and it is the update's own retired-mount question (qits-2266), not the volume
+    // question: an application that declares no volume is still not asked about THAT. Neither
+    // live mount is retired, so neither is removed.
     assertEquals(
-        0,
+        1,
         cli.count("ContainerSpec.Mounts"),
-        "an application that declares no volume is not even asked about them");
+        "only the retired-mount read: the declared-volume question is never asked");
+    assertFalse(update.contains("--mount-rm"), update.toString());
+  }
+
+  @Test
+  void aLiveRetiredConfigMountIsRemovedByTheUpdate() {
+    // qits-2266: the bootstrap seed stack's docker-config volume at /work/config, which nothing
+    // declares any more and an in-place update would otherwise carry forever.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    cli.script(
+        "ContainerSpec.Mounts",
+        result(0, "qits-deployments-config|/work/config\nqits-gateway-data|/data\n"));
+
+    DeploymentDriver.ApplyResult applied = driver.apply(spec());
+
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, applied.outcome());
+    assertTrue(cli.matching("service rm").isEmpty(), "an update, not a recreate");
+    List<String> update = cli.matching("service update");
+    assertEquals(List.of("docker", "service", "update", "--detach"), update.subList(0, 4));
+    assertTrue(update.containsAll(List.of("--mount-rm", "/work/config")), update.toString());
+    assertEquals(
+        1, update.stream().filter("--mount-rm"::equals).count(), "/data is kept: " + update);
+    assertEquals("dev-qits-gateway", update.get(update.size() - 1), "the service is the last token");
+  }
+
+  @Test
+  void theDeployersOwnSelfUpdateAlsoDropsTheRetiredConfigMount() {
+    // The seed-era volume sits on the deployer too, and the self-update is the only update it gets.
+    SwarmDeploymentDriver driver = driver();
+    driver.hostnameFile = hostnameFile("this-task-container");
+    cli.script("--format {{.ID}}", result(0, "svc123"));
+    cli.script("Config.Labels", result(0, "qits_dev-qits-gateway"));
+    cli.script("ContainerSpec.Mounts", result(0, "qits-deployments-config|/work/config\n"));
+
+    DeploymentDriver.ApplyResult applied = driver.apply(spec());
+
+    assertEquals(DeploymentDriver.ApplyOutcome.HANDED_OFF, applied.outcome());
+    List<String> update = cli.matching("service update");
+    assertTrue(update.containsAll(List.of("--mount-rm", "/work/config")), update.toString());
+    assertEquals("qits_dev-qits-gateway", update.get(update.size() - 1));
+  }
+
+  @Test
+  void aRetiredTargetSomethingStillMountsIsKept() {
+    // A declared volume at the target...
+    SwarmDeploymentDriver driver = driver();
+    cli.script("ContainerSpec.Mounts", result(0, "qits-gateway-config|/work/config\n"));
+    List<String> declared =
+        driver.buildUpdateArgv(
+            spec(
+                List.of(
+                    new DeploymentDriver.VolumeMount("qits-gateway-config", "/work/config", false))),
+            "dev-qits-gateway");
+    assertFalse(declared.contains("--mount-rm"), declared.toString());
+
+    // ...or a mount deployment config still states there.
+    SwarmDeploymentDriver configured =
+        driver(
+            Map.of(
+                DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.mounts[0]",
+                "bind:/srv/gateway-config:/work/config"));
+    cli.script("ContainerSpec.Mounts", result(0, "/srv/gateway-config|/work/config\n"));
+    List<String> argv = configured.buildUpdateArgv(spec(), "dev-qits-gateway");
+    assertFalse(argv.contains("--mount-rm"), argv.toString());
+  }
+
+  @Test
+  void anUndeclaredLiveMountElsewhereIsNeverRemoved() {
+    // The rule names targets; it is not the symmetric diff that would be an estate-wide outage.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("ContainerSpec.Mounts", result(0, "qits-projects-data|/data\n"));
+
+    List<String> argv = driver.buildUpdateArgv(spec(), "dev-qits-gateway");
+
+    assertFalse(argv.contains("--mount-rm"), argv.toString());
+    assertEquals(
+        List.of(), SwarmDeploymentDriver.retiredMountRemovals(List.of("qits-projects-data|/data"), Set.of()));
+  }
+
+  @Test
+  void aMountReadThatCannotAnswerRemovesNothing() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script("ContainerSpec.Mounts", result(1, "Error: No such service"));
+    List<String> failed = driver.buildUpdateArgv(spec(), "dev-qits-gateway");
+    assertFalse(failed.contains("--mount-rm"), failed.toString());
+
+    cli.script("ContainerSpec.Mounts", result(0, ""));
+    List<String> empty = driver.buildUpdateArgv(spec(), "dev-qits-gateway");
+    assertFalse(empty.contains("--mount-rm"), empty.toString());
+  }
+
+  @Test
+  void retiredMountRemovalsIsTheRetiredSetMinusWhatIsStated() {
+    List<String> live =
+        List.of("qits-deployments-config|/work/config", "qits-gateway-data|/data", "");
+    assertEquals(
+        List.of("/work/config"), SwarmDeploymentDriver.retiredMountRemovals(live, Set.of("/data")));
+    assertEquals(
+        List.of(), SwarmDeploymentDriver.retiredMountRemovals(live, Set.of("/work/config")));
   }
 
   @Test

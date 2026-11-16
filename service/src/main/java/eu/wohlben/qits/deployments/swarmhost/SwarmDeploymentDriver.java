@@ -86,7 +86,8 @@ import org.jboss.logging.Logger;
  *
  * <p><b>What a service keeps across an update</b> is its mounts, its networks and its published
  * ports: {@link #buildUpdateArgv} changes the image, the identity labels, the environment and the
- * update policy, and nothing else. Changing the SHAPE of a service — another port, a new alias —
+ * update policy, and nothing else — bar a mount in {@link #RETIRED_MOUNT_TARGETS} nothing states
+ * any more, which it removes (qits-2266). Changing the SHAPE of a service — another port, a new alias —
  * is therefore a {@code service rm} and a redeploy, which is the honest reading of it: a change of
  * shape is not a deployment.
  *
@@ -236,6 +237,21 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   static final String SPEC_MOUNTS_FORMAT =
       "{{range .Spec.TaskTemplate.ContainerSpec.Mounts}}{{.Source}}|{{.Target}}{{println}}{{end}}";
+
+  /**
+   * Mount targets a live service sheds on its next UPDATE when nothing it is deployed with still
+   * mounts them (qits-2266) — the one exception to an update stating no mounts. See {@link
+   * #retiredMountRemovals}.
+   *
+   * <p>{@code /work/config} is the bootstrap seed stack's {@code qits-<x>-config} volume, the
+   * docker config the deployer, qits-containers and qits-system were seeded with. Nothing declares
+   * it any more and its contents are dead — every puller now writes its own credential under
+   * {@code /tmp/qits-docker} at boot — but an in-place update keeps every mount, so it rode along
+   * forever, and Quarkus, whose working directory is {@code /work}, still loaded its stale {@code
+   * application.properties}. A list of named targets and never a diff: see {@link
+   * #missingDeclaredVolume} for why "remove what nothing declares" would be an estate-wide outage.
+   */
+  static final Set<String> RETIRED_MOUNT_TARGETS = Set.of("/work/config");
 
   /**
    * Every network alias the live service carries, one per line, across all of its attachments —
@@ -2578,11 +2594,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       LOG.warnf("%s gets no private-edge resolver: %s", name, resolvers.why());
     }
     RouteLabels routing = spec.routing();
-    return withServiceLabels(
-        SwarmArgv.serviceUpdate(runtime, service, delta.build()),
-        serviceLabels(spec, networks),
-        "--label-add",
-        routing.absent());
+    return withMountRemovals(
+        withServiceLabels(
+            SwarmArgv.serviceUpdate(runtime, service, delta.build()),
+            serviceLabels(spec, networks),
+            "--label-add",
+            routing.absent()),
+        retiredMountRemovals(spec, name));
   }
 
   /**
@@ -2656,6 +2674,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * identity this deployment stamps on the service, the replica count, and the policy the update
    * itself runs under.
    *
+   * <p><b>The one exception is a RETIRED mount</b> (qits-2266): a target in {@link
+   * #RETIRED_MOUNT_TARGETS} the live service carries and nothing it is deployed with states any
+   * more is {@code --mount-rm}'d — {@link #retiredMountRemovals}. A named list, never a diff.
+   *
    * <p><b>A declared volume that is missing does not change that — it means this argv is never
    * built.</b> {@link #apply} asks the question before it chooses, and a volume the live service
    * lacks makes the deployment a {@code service rm} and a {@link #buildCreateArgv}. Nothing was
@@ -2711,11 +2733,83 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     ServiceUpdate.Builder delta = ServiceUpdate.builder();
     eu.wohlben.qits.containers.driver.swarm.ServiceSpec service = updateSpec(spec, name, delta);
     extraNetworks.forEach(delta::networkRemoval);
-    return withServiceLabels(
-        SwarmArgv.serviceUpdate(runtime, service, delta.build()),
-        serviceLabels(spec, collapse(spec)),
-        "--label-add",
-        spec.routing().absent());
+    return withMountRemovals(
+        withServiceLabels(
+            SwarmArgv.serviceUpdate(runtime, service, delta.build()),
+            serviceLabels(spec, collapse(spec)),
+            "--label-add",
+            spec.routing().absent()),
+        retiredMountRemovals(spec, name));
+  }
+
+  /**
+   * The {@link #RETIRED_MOUNT_TARGETS} the live service still carries, for {@code --mount-rm} —
+   * asked by both update argvs, the deployer's own included, since the seed-era volume sits on the
+   * deployer too. One inspect per update; an inspect that cannot answer removes nothing, with a
+   * WARN, and the next deployment asks again. The extras snapshot is read only when there is a
+   * candidate, so a service without the retired mount costs exactly that inspect.
+   */
+  private List<String> retiredMountRemovals(ServiceSpec spec, String name) {
+    ContainerProcess.Result inspected =
+        run(SwarmArgv.serviceInspect(runtime, name, SPEC_MOUNTS_FORMAT), INSPECT_TIMEOUT);
+    if (inspected.exitCode() != 0 || inspected.timedOut()) {
+      LOG.warnf(
+          "Could not read the mounts of %s, so a retired mount it may still carry stays one more"
+              + " deployment: %s",
+          name, inspected.output());
+      return List.of();
+    }
+    List<String> live = lines(inspected.output());
+    if (retiredMountRemovals(live, Set.of()).isEmpty()) {
+      return List.of();
+    }
+    Set<String> desired = new HashSet<>();
+    spec.volumes().forEach(volume -> desired.add(volume.target()));
+    spec.shape().binds().forEach(bind -> desired.add(bind.target()));
+    extrasOf(spec).mounts().forEach(mount -> desired.add(mount.target()));
+    List<String> removals = retiredMountRemovals(live, desired);
+    for (String target : removals) {
+      LOG.infof("%s drops the retired mount at %s (qits-2266)", name, target);
+    }
+    return removals;
+  }
+
+  /**
+   * The targets among {@code liveMounts} ({@link #SPEC_MOUNTS_FORMAT} lines) that are in {@link
+   * #RETIRED_MOUNT_TARGETS} and that no mount in {@code desiredTargets} holds — everything a
+   * create would render: declared {@code volumes:}, declared binds and deployment config's mounts.
+   * A retired target something still states is kept. Every other live mount is never even
+   * considered: the rule names targets, and is not the symmetric diff {@link
+   * #missingDeclaredVolume} forbids. Package-private for the argv test.
+   */
+  static List<String> retiredMountRemovals(List<String> liveMounts, Set<String> desiredTargets) {
+    Set<String> removals = new LinkedHashSet<>();
+    for (String line : liveMounts) {
+      int bar = line.lastIndexOf('|');
+      String target = bar < 0 ? line.strip() : line.substring(bar + 1).strip();
+      if (RETIRED_MOUNT_TARGETS.contains(target) && !desiredTargets.contains(target)) {
+        removals.add(target);
+      }
+    }
+    return List.copyOf(removals);
+  }
+
+  /** {@code argv} with {@code --mount-rm <target>} per removal, right after {@code --detach}. */
+  static List<String> withMountRemovals(List<String> argv, List<String> removals) {
+    if (removals.isEmpty()) {
+      return argv;
+    }
+    List<String> flags = new ArrayList<>();
+    for (String target : removals) {
+      flags.add("--mount-rm");
+      flags.add(target);
+    }
+    int at = argv.indexOf("--detach");
+    int insert = at < 0 ? Math.min(3, argv.size()) : at + 1;
+    List<String> spliced = new ArrayList<>(argv.subList(0, insert));
+    spliced.addAll(flags);
+    spliced.addAll(argv.subList(insert, argv.size()));
+    return List.copyOf(spliced);
   }
 
   /**
