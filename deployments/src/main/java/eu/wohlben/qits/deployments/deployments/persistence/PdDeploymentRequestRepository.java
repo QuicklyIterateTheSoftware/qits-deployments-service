@@ -4,6 +4,7 @@ import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentRequest;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentStatus;
 import io.quarkus.hibernate.orm.panache.PanacheRepositoryBase;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.persistence.LockModeType;
 import java.util.List;
 import java.util.Optional;
 
@@ -177,5 +178,17 @@ public class PdDeploymentRequestRepository
             environmentId,
             version)
         .firstResultOptional();
+  }
+
+  /**
+   * Every request of one release request ({@code qits-ci-service-rr-12}), locked {@code
+   * PESSIMISTIC_WRITE} in {@code seq} order — what a decline (qits-2271) settles together and checks
+   * for an approval. Inside the caller's transaction; the fixed order is what keeps two declines of
+   * the same release from locking each other's rows the other way round.
+   */
+  public List<PdDeploymentRequest> listByReleaseRequestLocked(String releaseRequestQualifiedId) {
+    return find("releaseRequestQualifiedId = ?1 order by seq", releaseRequestQualifiedId)
+        .withLock(LockModeType.PESSIMISTIC_WRITE)
+        .list();
   }
 }

@@ -23,6 +23,7 @@ import eu.wohlben.qits.deployments.events.DeploymentActive;
 import eu.wohlben.qits.deployments.events.DeploymentEndpoint;
 import eu.wohlben.qits.deployments.events.DeploymentFailed;
 import eu.wohlben.qits.deployments.events.DeploymentQueued;
+import eu.wohlben.qits.deployments.events.DeploymentRequestDeclined;
 import eu.wohlben.qits.deployments.events.DeploymentStarted;
 import eu.wohlben.qits.deployments.events.NavigationEntry;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -5531,7 +5532,7 @@ public class DeployService implements ReleaseAnnouncements {
         QuarkusTransaction.requiringNew()
             .call(() -> requests.findByIdOptional(id))
             .orElseThrow(() -> new NotFoundException("No deployment request " + id));
-    requireHeld(held);
+    requireHeld(held, "approve");
     if (!tips.isTip(held.applicationName, held.version)) {
       throw new ConflictException(
           held.applicationName
@@ -5549,7 +5550,7 @@ public class DeployService implements ReleaseAnnouncements {
                 () -> {
                   PdDeploymentRequest request =
                       requests.findById(id, LockModeType.PESSIMISTIC_WRITE);
-                  requireHeld(request);
+                  requireHeld(request, "approve");
                   request.qualityGate = PdQualityGate.MET;
                   request.gateDetail = "approved by " + who;
                   request.gateSettledAt = now;
@@ -5579,17 +5580,150 @@ public class DeployService implements ReleaseAnnouncements {
   /** The release and the place an approval deploys — see {@link #approve}. */
   private record Approval(Release release, Target target) {}
 
-  /** The 409 of a request that is not waiting for an approval — see {@link #approve}. */
-  private static void requireHeld(PdDeploymentRequest request) {
+  /**
+   * <b>Decline a HELD deployment request</b> (qits-2271) — {@code POST
+   * /deployment-requests/{id}/decline}. The other answer to a hold: the release must not ship.
+   *
+   * <p><b>Refused, before anything is written</b>: an unknown id ({@link NotFoundException}); a
+   * request that is not held or has already settled ({@link ConflictException}, the same {@link
+   * #requireHeld} as {@link #approve}); and a release request any of whose deployment requests a
+   * person already APPROVED — part of the release has shipped, so it can no longer end as not
+   * shipped ({@link ConflictException}). <b>There is no tip check</b>: declining a held request a
+   * newer release overtook is exactly how such a request gets cleared.
+   *
+   * <p><b>Then ONE transaction under row locks</b>: this request and every other still-held one of
+   * the same {@code release_request_qualified_id} — the release's other applications and tiers —
+   * settle {@code UNMET} with {@code gate_settled_at}, {@code declined_by}, {@code declined_at} and
+   * {@code declined by <actor>[: <note>]}. Nothing is queued and nothing deploys. {@code
+   * approved_*} is never written: {@code findApproved} reads it as a yes, and a re-announced
+   * declined version must stay held. After the commit, one {@code DeploymentRequestDeclined} is
+   * announced per settled row.
+   *
+   * @param actor the caller's principal name; null reads as {@code an operator}
+   * @param note the decliner's free text; blank reads as none
+   * @return the declined request, which has no deployment
+   */
+  public RequestWithDeployment decline(String id, String actor, String note) {
+    String who = actor == null || actor.isBlank() ? "an operator" : actor;
+    String said = note == null || note.isBlank() ? null : note.strip();
+    PdDeploymentRequest held =
+        QuarkusTransaction.requiringNew()
+            .call(() -> requests.findByIdOptional(id))
+            .orElseThrow(() -> new NotFoundException("No deployment request " + id));
+    requireHeld(held, "decline");
+    Instant now = Instant.now();
+    String detail = "declined by " + who + (said == null ? "" : ": " + said);
+    List<Declined> declined =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  PdDeploymentRequest request =
+                      requests.findById(id, LockModeType.PESSIMISTIC_WRITE);
+                  requireHeld(request, "decline");
+                  List<PdDeploymentRequest> settle = new ArrayList<>();
+                  settle.add(request);
+                  if (request.releaseRequestQualifiedId != null) {
+                    for (PdDeploymentRequest sibling :
+                        requests.listByReleaseRequestLocked(request.releaseRequestQualifiedId)) {
+                      if (sibling.approvedAt != null) {
+                        throw new ConflictException(
+                            "The release request "
+                                + request.releaseRequestQualifiedId
+                                + " cannot be declined: its deployment request "
+                                + sibling.id
+                                + " ("
+                                + sibling.applicationName
+                                + "@"
+                                + sibling.version
+                                + ") was already approved by "
+                                + sibling.approvedBy);
+                      }
+                      if (!sibling.id.equals(request.id)
+                          && sibling.deployHold
+                          && sibling.gateSettledAt == null
+                          && sibling.qualityGate != PdQualityGate.MET) {
+                        settle.add(sibling);
+                      }
+                    }
+                  }
+                  List<Declined> events = new ArrayList<>();
+                  for (PdDeploymentRequest row : settle) {
+                    row.qualityGate = PdQualityGate.UNMET;
+                    row.gateDetail = detail;
+                    row.gateSettledAt = now;
+                    row.declinedBy = who;
+                    row.declinedAt = now;
+                    events.add(
+                        new Declined(
+                            new DeploymentRequestDeclined(
+                                row.id,
+                                row.releaseRequestQualifiedId,
+                                row.applicationName,
+                                environmentNameOf(row.environmentId),
+                                row.version,
+                                who,
+                                said,
+                                now),
+                            row.causationId));
+                  }
+                  return events;
+                });
+    LOG.infof(
+        "%s declined the held deployment request %s of %s@%s%s; %d request(s) settled, nothing"
+            + " queued",
+        who,
+        id,
+        held.applicationName,
+        held.version,
+        held.releaseRequestQualifiedId == null ? "" : " (" + held.releaseRequestQualifiedId + ")",
+        declined.size());
+    for (Declined row : declined) {
+      announce(
+          row.event().deploymentRequestId(),
+          announcer -> announcer.onDeclined(row.event(), row.cause()));
+    }
+    return QuarkusTransaction.requiringNew()
+        .call(() -> withDeployments(List.of(requests.findById(id))).get(0));
+  }
+
+  /**
+   * One settled row's announcement, carried out of the transaction. The cause is the row's own
+   * {@code causation_id} — the {@code SoftwareRelease} that wrote the held request — so the decline
+   * hangs off the release it answers in the event log.
+   */
+  private record Declined(DeploymentRequestDeclined event, UUID cause) {}
+
+  /**
+   * The tier's name as the event carries it, or its id when the tier is gone — a held request can
+   * outlive the tier it was written for, and a decline must still be able to clear it. Read off
+   * the listing rather than {@code require}, whose 404 would mark the decline's transaction
+   * rollback-only on its way past.
+   */
+  private String environmentNameOf(String environmentId) {
+    if (environmentId == null) {
+      return null;
+    }
+    return environments.list().stream()
+        .filter(environment -> environmentId.equals(environment.id))
+        .map(environment -> environment.name)
+        .findFirst()
+        .orElse(environmentId);
+  }
+
+  /** The 409 of a request that is not waiting for a person's answer — see {@link #approve}. */
+  private static void requireHeld(PdDeploymentRequest request, String verb) {
     if (!request.deployHold) {
       throw new ConflictException(
-          "The deployment request " + request.id + " was not held, so there is nothing to approve");
+          "The deployment request "
+              + request.id
+              + " was not held, so there is nothing to "
+              + verb);
     }
     if (request.qualityGate == PdQualityGate.MET || request.gateSettledAt != null) {
       throw new ConflictException(
           "The deployment request "
               + request.id
-              + " is not waiting for an approval: its gate already settled ("
+              + " is not waiting for a person's answer: its gate already settled ("
               + request.qualityGate
               + (request.gateDetail == null ? "" : ", " + request.gateDetail)
               + ")");

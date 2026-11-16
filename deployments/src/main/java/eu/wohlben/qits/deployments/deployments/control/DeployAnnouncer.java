@@ -3,6 +3,7 @@ package eu.wohlben.qits.deployments.deployments.control;
 import eu.wohlben.qits.deployments.events.DeploymentActive;
 import eu.wohlben.qits.deployments.events.DeploymentFailed;
 import eu.wohlben.qits.deployments.events.DeploymentQueued;
+import eu.wohlben.qits.deployments.events.DeploymentRequestDeclined;
 import eu.wohlben.qits.deployments.events.DeploymentStarted;
 import java.util.UUID;
 
@@ -71,4 +72,11 @@ public interface DeployAnnouncer {
    * serving still.
    */
   void onFailed(DeploymentFailed event, UUID cause);
+
+  /**
+   * A person declined a held deployment REQUEST (qits-2271): its gate settled {@code UNMET} and
+   * nothing was queued. The one method here whose subject is a request rather than a deployment —
+   * a held request never had one. Called once per row the decline settled, after the commit.
+   */
+  void onDeclined(DeploymentRequestDeclined event, UUID cause);
 }

@@ -90,6 +90,8 @@ public class DeploymentMapper {
         request.deployHold,
         request.releaseRequestQualifiedId,
         request.approvedBy,
-        request.approvedAt);
+        request.approvedAt,
+        request.declinedBy,
+        request.declinedAt);
   }
 }

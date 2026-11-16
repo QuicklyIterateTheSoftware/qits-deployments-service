@@ -6,6 +6,7 @@ import eu.wohlben.qits.deployments.events.DeploymentActive;
 import eu.wohlben.qits.deployments.events.DeploymentEndpoint;
 import eu.wohlben.qits.deployments.events.DeploymentFailed;
 import eu.wohlben.qits.deployments.events.DeploymentQueued;
+import eu.wohlben.qits.deployments.events.DeploymentRequestDeclined;
 import eu.wohlben.qits.deployments.events.DeploymentStarted;
 import eu.wohlben.qits.deployments.events.EnvironmentChanged;
 import eu.wohlben.qits.deployments.events.EnvironmentCreated;
@@ -50,6 +51,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  *   <li>{@link DeploymentQueued}, {@link DeploymentStarted}, {@link DeploymentActive}, {@link
  *       DeploymentEndpoint}, {@link NavigationEntry} and {@link DeploymentFailed} — what {@code
  *       DeployEventAnnouncer} serializes. Unregistered, the binary publishes an empty payload rather than failing.
+ *   <li>{@link DeploymentRequestDeclined} — a held deployment REQUEST a person declined
+ *       (qits-2271), also serialized by {@code DeployEventAnnouncer}.
  *   <li>{@link EnvironmentCreated}, {@link EnvironmentChanged} and {@link EnvironmentDeleted} — a
  *       TIER's lifecycle rather than a deployment's, what {@code EnvironmentEventAnnouncer}
  *       serializes. They fail the way the four above would, and quieter: an environment is created
@@ -76,6 +79,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       DeploymentEndpoint.class,
       NavigationEntry.class,
       DeploymentFailed.class,
+      DeploymentRequestDeclined.class,
       EnvironmentCreated.class,
       EnvironmentChanged.class,
       EnvironmentDeleted.class

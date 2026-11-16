@@ -6,6 +6,7 @@ import eu.wohlben.qits.deployments.deployments.control.DeployAnnouncer;
 import eu.wohlben.qits.deployments.events.DeploymentActive;
 import eu.wohlben.qits.deployments.events.DeploymentFailed;
 import eu.wohlben.qits.deployments.events.DeploymentQueued;
+import eu.wohlben.qits.deployments.events.DeploymentRequestDeclined;
 import eu.wohlben.qits.deployments.events.DeploymentStarted;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.context.control.ActivateRequestContext;
@@ -66,6 +67,12 @@ public class DeployEventAnnouncer implements DeployAnnouncer {
   @Override
   @ActivateRequestContext
   public void onFailed(DeploymentFailed event, UUID cause) {
+    publish(event, cause);
+  }
+
+  @Override
+  @ActivateRequestContext
+  public void onDeclined(DeploymentRequestDeclined event, UUID cause) {
     publish(event, cause);
   }
 

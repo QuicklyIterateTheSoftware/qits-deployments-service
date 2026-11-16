@@ -1,5 +1,7 @@
 package eu.wohlben.qits.deployments.api;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.deployments.deployments.control.DeployService;
 import eu.wohlben.qits.deployments.deployments.control.DeployService.RequestWithDeployment;
 import eu.wohlben.qits.deployments.deployments.control.EnvironmentOperations;
@@ -20,12 +22,16 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.SecurityContext;
 import java.util.List;
 import org.eclipse.microprofile.openapi.annotations.Operation;
+import org.eclipse.microprofile.openapi.annotations.media.Content;
+import org.eclipse.microprofile.openapi.annotations.media.Schema;
+import org.eclipse.microprofile.openapi.annotations.parameters.RequestBody;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 
 /**
  * The deployment REQUEST read surface: what a released version asked this platform for, what the
- * quality gate said about it, and what became of it — and the one write on it, the approval of a
- * request held for a person ({@code POST /{id}/approve}, qits-2268).
+ * quality gate said about it, and what became of it — and the two writes on it, the answers to a
+ * request held for a person: {@code POST /{id}/approve} (qits-2268) and {@code POST /{id}/decline}
+ * (qits-2271).
  *
  * <p><b>Why it is not the deployment listing.</b> A request that the gate refused produced no
  * deployment at all — no container, no row, no status word — so it exists nowhere in {@code GET
@@ -109,6 +115,7 @@ public class PdDeploymentRequestController {
   @Inject EnvironmentOperations environments;
   @Inject DeploymentMapper mapper;
   @Inject PdReadPatience reads;
+  @Inject ObjectMapper json;
 
   public record ListDeploymentRequestsResponse(List<PdDeploymentRequestDto> deploymentRequests) {}
 
@@ -227,6 +234,85 @@ public class PdDeploymentRequestController {
     return new DeploymentRequestResponse(
         mapper.toDto(approved.request(), approved.deployment()),
         approved.deployment() == null ? null : mapper.toDto(approved.deployment()));
+  }
+
+  /**
+   * What a decline may say: a note for the person reading the request, optional (qits-2271). An
+   * empty POST and {@code {}} are the same decline with none.
+   */
+  public record DeclineRequest(String note) {}
+
+  /**
+   * <b>Decline a deployment request HELD for a person</b> (qits-2271): the other answer to a hold.
+   * The request — and every other still-held request of the same release request — settles {@code
+   * UNMET} with {@code declinedBy}/{@code declinedAt}; nothing is queued and nothing deploys. 200
+   * with the declined request, which has no deployment.
+   *
+   * <p><b>A decline is final.</b> Nothing un-declines it; to ship the work again, push a branch
+   * made from the release's tag and open a new release request.
+   *
+   * <p>The body is optional and read by hand from a {@code String}, the decommission door's
+   * arrangement: a bound entity would 415 the empty POST. No tip check — declining a held request a
+   * newer release overtook is how it gets cleared. Roles: exactly {@link #approve}'s.
+   */
+  @POST
+  @Path("/{id}/decline")
+  @jakarta.annotation.security.RolesAllowed({
+    "qits:admin",
+    "qits:admin-agent",
+    "qits:desk-admin",
+    "qits:desk",
+    "qits:agent"
+  })
+  @Operation(
+      operationId = "declineDeploymentRequest",
+      summary = "Decline a deployment request held for manual approval — nothing deploys",
+      description =
+          "Settles the held request UNMET with declinedBy/declinedAt, together with every other"
+              + " still-held deployment request of the same release request; nothing is queued."
+              + " A decline is final: to ship the work again, push a branch made from the"
+              + " release's tag and open a new release request.")
+  @APIResponse(
+      responseCode = "200",
+      description = "Declined; the settled request, which has no deployment")
+  @APIResponse(responseCode = "400", description = "The body is not {\"note\": string} or absent")
+  @APIResponse(responseCode = "404", description = "No such deployment request")
+  @APIResponse(
+      responseCode = "409",
+      description =
+          "The request is not held, its gate already settled, or a deployment request of the same"
+              + " release request was already approved")
+  public DeploymentRequestResponse decline(
+      @PathParam("id") String id,
+      @RequestBody(
+              required = false,
+              description = "An optional note recorded with the decline; may be omitted",
+              content =
+                  @Content(
+                      mediaType = MediaType.APPLICATION_JSON,
+                      schema = @Schema(implementation = DeclineRequest.class)))
+          String body,
+      @Context SecurityContext security) {
+    RequestWithDeployment declined = deployService.decline(id, actor(security), noteIn(body));
+    return new DeploymentRequestResponse(
+        mapper.toDto(declined.request(), declined.deployment()),
+        declined.deployment() == null ? null : mapper.toDto(declined.deployment()));
+  }
+
+  /** The optional body's note, or null for none — see {@link #decline}. */
+  private String noteIn(String body) {
+    if (body == null || body.isBlank()) {
+      return null;
+    }
+    DeclineRequest request;
+    try {
+      request = json.readValue(body, DeclineRequest.class);
+    } catch (JsonProcessingException wrong) {
+      throw new BadRequestException(
+          "the decline body must be {\"note\":\"<text>\"} or absent: "
+              + wrong.getOriginalMessage());
+    }
+    return request == null ? null : request.note();
   }
 
   /** Who asked, as the row records it — the forwarded identity and nothing derived. */
