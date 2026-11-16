@@ -106,8 +106,8 @@ import org.jboss.logging.Logger;
  * itself, so {@link #plan} decides the move and its successor runs it before it starts — see {@link
  * SelfMove}.
  *
- * <p><b>Refused before anything stops</b>: a target database another
- * claim already holds, a target database that already exists on the target server and is not an
+ * <p><b>Refused before anything stops</b>: a target database another claim on the target server
+ * already holds, a target database that already exists on the target server and is not an
  * earlier aborted attempt of this same move, a rename in place onto a ROLE that already exists and is
  * not a leftover of an earlier copy's kept source (qits-2251, {@link #targetRole} — such a leftover
  * is taken over instead) — and a batch whose copies do not FIT (qits-2243, {@link
@@ -735,6 +735,9 @@ public class DatabaseMoves {
                 () ->
                     resources.listByDatabase(move.targetDatabase()).stream()
                         .filter(row -> !row.id.equals(move.claim().id()))
+                        // Only a claim on the target server itself: each tier has its own servers.
+                        .filter(row -> move.environmentName().equals(row.environmentName))
+                        .filter(row -> DatabaseServer.parse(row.server) == move.targetServer())
                         .map(row -> row.applicationName)
                         .findFirst()
                         .orElse(null));

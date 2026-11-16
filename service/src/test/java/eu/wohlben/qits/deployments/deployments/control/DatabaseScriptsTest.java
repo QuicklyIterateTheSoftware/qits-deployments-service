@@ -196,6 +196,21 @@ class DatabaseScriptsTest {
   }
 
   @Test
+  void theExistsAnswerReadsBothSpellingsPostgresPrints() {
+    // qits-2261: `text || boolean` prints `true`/`false`; psql's own boolean column prints `t`/`f`.
+    String asked = DatabaseScripts.exists("qits_x");
+    assertTrue(
+        asked.contains("'qits-exists=' || EXISTS (SELECT 1 FROM pg_database WHERE datname = 'qits_x')"),
+        asked);
+    assertEquals(Boolean.TRUE, DatabaseScripts.existsAnswer("qits-exists=true\n"));
+    assertEquals(Boolean.TRUE, DatabaseScripts.existsAnswer("qits-exists=t\n"));
+    assertEquals(Boolean.FALSE, DatabaseScripts.existsAnswer("qits-exists=false\n"));
+    assertEquals(Boolean.FALSE, DatabaseScripts.existsAnswer("qits-exists=f\n"));
+    assertNull(DatabaseScripts.existsAnswer("qits-nothing-here\n"), "no marker line is no answer");
+    assertThrows(RuntimeException.class, () -> DatabaseScripts.exists("qits_x'; drop"));
+  }
+
+  @Test
   void theServerRuleIsOneMethod() {
     assertEquals(DatabaseServer.PRIVATE, DatabaseServer.forExposure(DeploymentDriver.Exposure.PRIVATE));
     assertEquals(DatabaseServer.PUBLIC, DatabaseServer.forExposure(DeploymentDriver.Exposure.PUBLIC));

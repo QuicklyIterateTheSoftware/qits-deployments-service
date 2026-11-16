@@ -29,6 +29,10 @@ import org.junit.jupiter.api.Test;
  * as written, and {@link DatabaseScripts#spaceSql} with the {@code df} command spelled out as the
  * literal psql's {@code \set} assembles — the server's own superuser running {@code df} through
  * {@code COPY FROM PROGRAM}, read back through the parser the move uses.
+ *
+ * <p>{@link DatabaseScripts#existsSql} runs here too (qits-2261): the server's own {@code
+ * true}/{@code false} spelling of {@code text || boolean}, for one database that exists and one
+ * that never was, read back through {@link DatabaseScripts#existsAnswer}.
  */
 class DatabaseScriptsPostgresTest {
 
@@ -132,6 +136,32 @@ class DatabaseScriptsPostgresTest {
     }
     Long size = DatabaseScripts.sizeAnswer(printed.toString());
     assertTrue(size != null && size > 0, printed.toString());
+  }
+
+  @Test
+  void theExistsAnswerIsTheServersOwnAnswer() throws SQLException {
+    String there = provisioned();
+    String missing = "qits_fence_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+
+    StringBuilder thereOutput = new StringBuilder();
+    try (Connection admin = admin("postgres");
+        Statement asked = admin.createStatement();
+        ResultSet rows = asked.executeQuery(DatabaseScripts.existsSql(there))) {
+      while (rows.next()) {
+        thereOutput.append(rows.getString(1)).append('\n');
+      }
+    }
+    assertEquals(Boolean.TRUE, DatabaseScripts.existsAnswer(thereOutput.toString()));
+
+    StringBuilder missingOutput = new StringBuilder();
+    try (Connection admin = admin("postgres");
+        Statement asked = admin.createStatement();
+        ResultSet rows = asked.executeQuery(DatabaseScripts.existsSql(missing))) {
+      while (rows.next()) {
+        missingOutput.append(rows.getString(1)).append('\n');
+      }
+    }
+    assertEquals(Boolean.FALSE, DatabaseScripts.existsAnswer(missingOutput.toString()));
   }
 
   @Test

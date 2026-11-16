@@ -139,22 +139,27 @@ final class DatabaseScripts {
     return "GRANT USAGE ON SCHEMA pg_toast TO " + id(role) + ";";
   }
 
-  /** Prints {@value #EXISTS_MARKER}{@code t} or {@code f}: whether the database exists there. */
+  /** Prints {@value #EXISTS_MARKER}{@code true|false}: whether the database exists there. */
   static String exists(String database) {
-    return psql(
-        ADMIN_DATABASE,
-        "SELECT '"
-            + EXISTS_MARKER
-            + "' || EXISTS (SELECT 1 FROM pg_database WHERE datname = '"
-            + id(database)
-            + "');");
+    return psql(ADMIN_DATABASE, existsSql(database));
   }
 
-  /** The answer {@link #exists} printed, or null when it printed none. */
+  /** {@link #exists}'s statement, plain SQL — what the real-postgres test runs over JDBC. */
+  static String existsSql(String database) {
+    return "SELECT '"
+        + EXISTS_MARKER
+        + "' || EXISTS (SELECT 1 FROM pg_database WHERE datname = '"
+        + id(database)
+        + "');";
+  }
+
+  /** The answer {@link #exists} printed ({@code true|false}), or null when it printed none. */
   static Boolean existsAnswer(String output) {
     for (String line : lines(output)) {
       if (line.startsWith(EXISTS_MARKER)) {
-        return "t".equals(line.substring(EXISTS_MARKER.length()).strip());
+        String answer = line.substring(EXISTS_MARKER.length()).strip();
+        // `text || boolean` prints `true`/`false`; psql's own boolean column prints `t`/`f`.
+        return "t".equals(answer) || "true".equals(answer);
       }
     }
     return null;
