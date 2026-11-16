@@ -11,6 +11,7 @@ erDiagram
     string application_name "not null, length 64"
     string batch_id "not null, length 36"
     instant created_at "not null"
+    string deployment_id "length 36"
     text detail
     instant drop_after
     instant dropped_at
