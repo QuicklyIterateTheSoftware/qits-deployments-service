@@ -1507,8 +1507,10 @@ public class DeployService implements ReleaseAnnouncements {
    * same single worker thread: {@link #deploy} clears any prior entry for the name before it does
    * anything and {@link #retrySpecReads()} runs between events, so nothing can put an entry there
    * between the two lines that ask.
+   *
+   * <p>Package-private so the suite can see a hold that wrote no row it could poll for.
    */
-  private boolean isHeldOnSpec(String releasedName) {
+  boolean isHeldOnSpec(String releasedName) {
     return specRetries.containsKey(releasedName);
   }
 
@@ -1596,6 +1598,12 @@ public class DeployService implements ReleaseAnnouncements {
    * <b>held</b>: {@link #retrySpecReads()} reads it again on the observation cadence and deploys it
    * for real the moment it answers. See {@link #recordUnreadableSpec} and {@link SpecException}.
    *
+   * <p><b>"The spec" is every file the release carries</b>: the main one and each variant file it
+   * names, all read by {@link #readRelease} before anything is queued. A variant read that did not
+   * answer holds the release exactly as an unreadable main file does — {@code SPEC_UNREADABLE} on
+   * the main application's places, naming the variant's file — because deploying the main first is
+   * what once took the git host down under the variant's read (qits-2252).
+   *
    * <p><b>The spec read is also where the application name can stop being the repository's</b>, and
    * this is the only place that substitution happens. {@code application:} in the file names what
    * this repository deploys AS, and from the line below every derivation takes that string: the
@@ -1627,18 +1635,22 @@ public class DeployService implements ReleaseAnnouncements {
     // the supersession that ends a pending retry, and a re-announcement of the same one is a
     // fresh attempt rather than a second entry beside the first.
     specRetries.remove(releasedName);
-    SpecSource.SpecRead read;
+    ReleaseRead read;
     try {
-      // The reference, not the application: the git host serves this blob under the repository's
-      // own address. The REV is the released TAG, fully qualified — a bare version would let a
-      // branch of the same name win, and the file that decides where this container runs has to be
-      // the file the version was cut from. The answer carries the commit the tag resolved to, which
-      // is the only place a release deployment can learn one.
-      read = specs.read(repository, SpecSource.tagRev(version));
+      read = readRelease(repository, version);
     } catch (RuntimeException e) {
       recordUnreadableSpec(
-          runId, repository, releasedName, version, packageName, priority, hold, causationId, door,
-          e);
+          runId, repository, releasedName, releasedName, version, null, packageName, priority, hold,
+          causationId, door, e);
+      return;
+    }
+    VariantRead pending = read.pending();
+    if (pending != null) {
+      String mainApplication = applicationName(releasedName, read.main().spec());
+      recordUnreadableSpec(
+          runId, repository, releasedName, mainApplication, version, read.main().commitSha(),
+          packageName, priority, hold, causationId, door,
+          pending.hold(mainApplication, version));
       return;
     }
     deployReadSpec(
@@ -1651,26 +1663,105 @@ public class DeployService implements ReleaseAnnouncements {
         hold,
         causationId,
         door,
-        read.spec(),
-        read.commitSha(),
-        read.declared(),
-        List.of());
+        read.main().spec(),
+        read.main().commitSha(),
+        read.main().declared(),
+        List.of(),
+        read.variants());
   }
 
   /**
-   * The rest of a deployment, once the repository's file has been read — everything that was in
+   * Every file one release carries, read at its released tag before anything of it is queued (the
+   * qits-2252 order): the main file, then each file its {@code variants:} names. The main read's
+   * failure is thrown, exactly as the bare read always was; a variant read's failure is RETURNED,
+   * because whether it holds the release or only fails the variant is the caller's decision.
+   *
+   * <p><b>Why all of them first.</b> The variant files used to be read after the main application
+   * had deployed, and on 2026-11-14 that order lost one: the main deployment of qits-database-oci
+   * restarted the shared postgres, which also holds the git host's database, and the variant read
+   * ten seconds later timed out — retryable, and recorded {@code FAILED} for good, because by then
+   * the main release was done and there was nothing left to hold. A deployment of
+   * this release can be what takes the git host away, so nothing of it is deployed until the git
+   * host has answered for all of it.
+   *
+   * <p>The reference, not the application: the git host serves these blobs under the repository's
+   * own address. The REV is the released TAG, fully qualified — a bare version would let a branch
+   * of the same name win, and the file that decides where a container runs has to be the file the
+   * version was cut from. The main answer carries the commit the tag resolved to, which is the only
+   * place a release deployment can learn one; every file of the release shares it.
+   */
+  private ReleaseRead readRelease(RepositoryRef repository, String version) {
+    SpecSource.SpecRead main = specs.read(repository, SpecSource.tagRev(version));
+    if (!main.declared() || main.spec().variants().isEmpty()) {
+      return new ReleaseRead(main, List.of());
+    }
+    List<VariantRead> variants = new ArrayList<>();
+    for (String variant : main.spec().variants()) {
+      String path = SpecSource.variantPath(variant);
+      try {
+        variants.add(
+            new VariantRead(
+                variant, path, specs.read(repository, SpecSource.tagRev(version), path), null));
+      } catch (RuntimeException e) {
+        variants.add(new VariantRead(variant, path, null, e));
+      }
+    }
+    return new ReleaseRead(main, List.copyOf(variants));
+  }
+
+  /** What {@link #readRelease} found: the main file's read and one outcome per named variant. */
+  private record ReleaseRead(SpecSource.SpecRead main, List<VariantRead> variants) {
+
+    /** The first variant whose read may yet answer — what holds the release — or null. */
+    VariantRead pending() {
+      return variants.stream().filter(VariantRead::retryable).findFirst().orElse(null);
+    }
+  }
+
+  /**
+   * One variant file's outcome, as {@link #readRelease} left it: the read, or the failure that
+   * stands in for one. Nothing here is judged yet — an undeclared answer, a parse error or a
+   * {@link DeploymentSpecParser#checkVariant} breach is {@link #deployVariants}' to decide, and a
+   * retryable failure is a hold for whoever read it, until the deadline makes it a failure too.
+   */
+  private record VariantRead(
+      String variant, String path, SpecSource.SpecRead read, RuntimeException failure) {
+
+    boolean retryable() {
+      return failure != null && SpecException.isRetryable(failure);
+    }
+
+    /**
+     * The cause a held release records, naming the variant's FILE: the rows it lands on are the
+     * main application's, and "spec unreadable" on them must not read as the main file's fault.
+     */
+    SpecException hold(String mainApplication, String version) {
+      return new SpecException(
+          path + " of " + mainApplication + "@" + version + " (variant " + variant + "): "
+              + failure.getMessage(),
+          failure,
+          true);
+    }
+  }
+
+  /**
+   * The rest of a deployment, once the repository's files have been read — everything that was in
    * {@link #deploy} before a failed read stopped being final.
    *
    * <p>It is a method rather than the tail of one because there are two ways to arrive here now:
    * the release event itself, and {@link #retrySpecReads()} minutes later with the same release and
-   * a file that has started answering. Both deploy identically from that point on, which is the
+   * files that have started answering. Both deploy identically from that point on, which is the
    * property worth having — a recovered read is not a second code path.
+   *
+   * <p><b>Everything it deploys was read before it was called.</b> {@code variants} are the
+   * outcomes {@link #readRelease} found, so no git host call sits between the main deployment and
+   * its variants. None is pending here: a retryable one held the release instead, until {@link
+   * #retrySpecReads()}'s deadline made it a failure like any other.
    *
    * <p><b>And this is where a release that never asked to be deployed stops.</b> {@code declared}
    * is the git host's own answer — the repository carries {@link SpecSource#SPEC_PATH} at the
    * released tag, or it does not — and on the {@link Door#RELEASE_EVENT} door a release that
    * carries no file is recorded and goes no further. See {@link #refuseUndeclaredSpec}.
-   *
    */
   private void deployReadSpec(
       String runId,
@@ -1685,7 +1776,8 @@ public class DeployService implements ReleaseAnnouncements {
       DeploymentSpec spec,
       String commitSha,
       boolean declared,
-      List<String> heldRows) {
+      List<String> heldRows,
+      List<VariantRead> variants) {
     deployReadSpec(
         runId,
         repository,
@@ -1702,7 +1794,7 @@ public class DeployService implements ReleaseAnnouncements {
         heldRows,
         null,
         null);
-    if (declared && !spec.variants().isEmpty()) {
+    if (declared && !variants.isEmpty()) {
       deployVariants(
           runId,
           repository,
@@ -1714,29 +1806,38 @@ public class DeployService implements ReleaseAnnouncements {
           causationId,
           door,
           spec,
-          commitSha);
+          commitSha,
+          variants);
     }
   }
 
   /**
    * The VARIANTS a main file names in {@code variants:} — each one more application deployed from
-   * this same release (qits-1976). For each name the file {@link SpecSource#variantPath} is read at
-   * the same released tag, through the same seam, and deployed by {@link #deployReadSpec} exactly as
-   * the main file was: the same version, commit and cause, its own application name, and {@code
-   * image} defaulting to the MAIN file's — so one image is put live twice.
+   * this same release (qits-1976). Each file {@link SpecSource#variantPath} was read at the same
+   * released tag by {@link #readRelease}, before the main application was queued, and arrives here
+   * as an outcome; this reads nothing itself. A usable one is deployed by {@link #deployReadSpec}
+   * exactly as the main file was: the same version, commit and cause, its own application name, and
+   * {@code image} defaulting to the MAIN file's — so one image is put live twice.
    *
    * <p><b>Same places, by the same path a first release takes.</b> A variant is registered through
    * {@link #register} under its own application name, which links it into the entry tier beside the
    * main application and upserts its catalogue row — a brand-new variant is registered exactly as a
    * brand-new application's first release registers it, and a known one keeps the links it has.
    *
-   * <p><b>A variant's failure is its own and never the main deployment's</b>, which has already
-   * run by the time this is reached. A variant file that cannot be read, is absent, does not parse,
-   * or breaks a variant rule ({@link DeploymentSpecParser#checkVariant}) is recorded {@code FAILED}
-   * on the places its application is registered in — and only logged for one never registered,
-   * exactly as an unreadable main file of an unregistered repository is. It is not held for a
-   * retry: the main release is what {@link #retrySpecReads} holds, and the next release reads the
-   * variant again.
+   * <p><b>A read that may yet answer holds the WHOLE release, main included, and never reaches
+   * here</b> (qits-2252). The order used to be the other way round — main deployed, then the
+   * variants read — so a git host that went away under the main deployment failed a variant for
+   * good on a timeout the next read would have survived. Now the release waits {@code
+   * SPEC_UNREADABLE} in {@link #retrySpecReads}, which re-reads every file together and deploys
+   * main and variants once all of them answer. The one exception is the deadline: a variant still
+   * not answering after {@link #SPEC_RETRY_DEADLINE} arrives here as its failure, so the main
+   * deploys and the variant is {@code FAILED} — a variant may delay its main, never strand it.
+   *
+   * <p><b>Every other failure is the variant's own and never the main deployment's</b>, which runs
+   * right before this. A variant file that failed permanently, is absent, does not parse, or breaks
+   * a variant rule ({@link DeploymentSpecParser#checkVariant}) is recorded {@code FAILED} on the
+   * places its application is registered in — and only logged for one never registered, exactly as
+   * an unreadable main file of an unregistered repository is. The next release reads it again.
    */
   private void deployVariants(
       String runId,
@@ -1749,18 +1850,23 @@ public class DeployService implements ReleaseAnnouncements {
       UUID causationId,
       Door door,
       DeploymentSpec main,
-      String commitSha) {
+      String commitSha,
+      List<VariantRead> variants) {
     String mainApplication = applicationName(releasedName, main);
     String mainImage = main.image() != null ? main.image() : mainApplication;
-    for (String variant : main.variants()) {
-      String path = SpecSource.variantPath(variant);
+    for (VariantRead outcome : variants) {
+      String variant = outcome.variant();
+      String path = outcome.path();
       String source = path + " of " + mainApplication + "@" + version;
       // Where a failure is recorded when the file names no usable application of its own: the
       // name such a variant conventionally carries. Never the main application's.
       String fallbackName = mainApplication + "-" + variant;
       DeploymentSpec spec = null;
       try {
-        SpecSource.SpecRead read = specs.read(repository, SpecSource.tagRev(version), path);
+        if (outcome.failure() != null) {
+          throw outcome.failure();
+        }
+        SpecSource.SpecRead read = outcome.read();
         if (!read.declared()) {
           throw new SpecException(
               source + ": `variants:` names `" + variant + "` and the release carries no " + path);
@@ -1851,9 +1957,9 @@ public class DeployService implements ReleaseAnnouncements {
   }
 
   /**
-   * {@link #deployReadSpec(String, RepositoryRef, String, String, String, String, UUID, Door,
-   * DeploymentSpec, String, boolean, List)} for one application — the main one ({@code variant}
-   * null) or a variant, whose {@code image} defaults to {@code defaultImage}.
+   * {@link #deployReadSpec(String, RepositoryRef, String, String, String, String, DeployHold, UUID,
+   * Door, DeploymentSpec, String, boolean, List, List)} for one application — the main one
+   * ({@code variant} null) or a variant, whose {@code image} defaults to {@code defaultImage}.
    */
   private void deployReadSpec(
       String runId,
@@ -2025,12 +2131,20 @@ public class DeployService implements ReleaseAnnouncements {
    * application a file it could not read was speaking for, and guessing would record a failure
    * against somebody else's. It is also why a retry is worth having at all — an unregistered
    * repository gets no row, so without one its very first release would strand invisibly.
+   *
+   * <p><b>A VARIANT file that did not answer comes here too</b> (qits-2252), and then the main file
+   * HAS been read: {@code application} is the main file's own answer and {@code commitSha} the
+   * commit its tag resolved to, so the rows land on the main application's places and the cause
+   * names the variant's file. The hold is still keyed by {@code releasedName}, because that is what
+   * the next release of this repository supersedes it by and what {@link #isHeldOnSpec} asks.
    */
   private void recordUnreadableSpec(
       String runId,
       RepositoryRef repository,
       String releasedName,
+      String application,
       String version,
+      String commitSha,
       String packageName,
       String priority,
       DeployHold hold,
@@ -2040,21 +2154,22 @@ public class DeployService implements ReleaseAnnouncements {
     boolean retryable = SpecException.isRetryable(cause);
     String failure = "[deployment spec unreadable: " + cause.getMessage() + "]";
     LOG.warnf(
-        "Could not read the deployment spec of %s@%s: %s", releasedName, version, cause.getMessage());
+        "Could not read the deployment spec of %s@%s: %s",
+        application, version, cause.getMessage());
 
     List<Queued> queued =
         queue(
             new Release(
                 runId,
                 repository,
-                releasedName,
+                application,
                 version,
-                null,
+                commitSha,
                 packageName,
                 priority,
                 hold,
                 causationId),
-            alreadyRegistered(releasedName));
+            alreadyRegistered(application));
     List<String> rows = new ArrayList<>();
     for (Queued row : queued) {
       finish(
@@ -2090,8 +2205,8 @@ public class DeployService implements ReleaseAnnouncements {
   }
 
   /**
-   * One release whose spec read has not answered yet — everything {@link #deploy} was given, plus
-   * what the retry needs to know when to stop.
+   * One release whose files have not all answered yet — the main one, or a variant it names —
+   * everything {@link #deploy} was given, plus what the retry needs to know when to stop.
    *
    * <p>{@code rows} are the {@code SPEC_UNREADABLE} deployments this release already wrote. They
    * are held so that giving up can settle exactly those rows and nothing else; a recovery leaves
@@ -2121,9 +2236,10 @@ public class DeployService implements ReleaseAnnouncements {
   }
 
   /**
-   * Read the spec of every held release again — <b>on the deploy worker</b>, beside the observation
-   * pass and for the same reason it is there: this can queue a deployment, and a deployment that
-   * ran off a ticker thread would race the cutover invariants the whole class is written around.
+   * Read the files of every held release again — <b>on the deploy worker</b>, beside the
+   * observation pass and for the same reason it is there: this can queue a deployment, and a
+   * deployment that ran off a ticker thread would race the cutover invariants the whole class is
+   * written around.
    *
    * <p><b>Why this is not {@code DeploymentObserver}'s job.</b> That class observes CONTAINERS and
    * writes rows about what they are doing; it explicitly touches nothing that never reached a
@@ -2131,11 +2247,20 @@ public class DeployService implements ReleaseAnnouncements {
    * git host, and the answer to it is a whole deployment rather than a status. Two questions, two
    * passes, one worker.
    *
-   * <p><b>Three outcomes and no fourth.</b> The file answers and the release deploys for real, at
-   * which point the held rows are simply history behind the new ones. It fails again the same way
-   * and the entry ages one attempt. It fails permanently, or the deadline passes, and the rows this
-   * release wrote are settled {@code FAILED} — the terminal word, said once, with what it was
-   * waiting for on it.
+   * <p><b>The main file and every variant file it names are re-read together</b>, through the same
+   * {@link #readRelease} {@link #deploy} uses, because a release is held on whichever of them did
+   * not answer and deploys only once all of them have (qits-2252). Nothing of it is queued until
+   * then, so a variant can never find its main application already live on a read the git host
+   * lost in between.
+   *
+   * <p><b>Four outcomes and no fifth.</b> Every file answers and the release deploys for real, main
+   * and variants, at which point the held rows are simply history behind the new ones. One fails
+   * again the way that may pass and the entry ages one attempt. The MAIN file fails permanently, or
+   * the deadline passes on it, and the rows this release wrote are settled {@code FAILED} — the
+   * terminal word, said once, with what it was waiting for on it. Only a VARIANT is still not
+   * answering at the deadline, and the main file is fine: the main deploys and that variant is
+   * recorded {@code FAILED} by {@link #deployVariants}, so a variant delays its main by at most the
+   * deadline and never strands it.
    *
    * <p>Package-private so the suite drives a pass without waiting on a tick, exactly as {@link
    * DeploymentObserver#observeOnce()} and {@link #sweepInFlight()} are driven.
@@ -2148,9 +2273,9 @@ public class DeployService implements ReleaseAnnouncements {
       if (specRetries.get(held.releasedName()) != held) {
         continue;
       }
-      SpecSource.SpecRead read;
+      ReleaseRead read;
       try {
-        read = specs.read(held.repository(), SpecSource.tagRev(held.version()));
+        read = readRelease(held.repository(), held.version());
       } catch (RuntimeException e) {
         if (SpecException.isRetryable(e) && !expired(held)) {
           specRetries.replace(held.releasedName(), held, held.next());
@@ -2162,13 +2287,30 @@ public class DeployService implements ReleaseAnnouncements {
         giveUpOnSpec(held, e);
         continue;
       }
+      VariantRead pending = read.pending();
+      if (pending != null && !expired(held)) {
+        specRetries.replace(held.releasedName(), held, held.next());
+        LOG.debugf(
+            "The variant file %s of %s@%s still does not answer (attempt %d): %s",
+            pending.path(), held.releasedName(), held.version(), held.attempts() + 1,
+            pending.failure().getMessage());
+        continue;
+      }
       if (!specRetries.remove(held.releasedName(), held)) {
         continue; // superseded between the read and here; the newer release owns the place now
       }
-      LOG.infof(
-          "The deployment spec of %s@%s answered after %d attempt(s) — deploying the release that"
-              + " was held on it",
-          held.releasedName(), held.version(), held.attempts() + 1);
+      if (pending != null) {
+        LOG.warnf(
+            "Giving up on the variant file %s of %s@%s after %d attempt(s) — deploying the main"
+                + " application without it: %s",
+            pending.path(), held.releasedName(), held.version(), held.attempts() + 1,
+            pending.failure().getMessage());
+      } else {
+        LOG.infof(
+            "The deployment spec of %s@%s answered after %d attempt(s) — deploying the release that"
+                + " was held on it",
+            held.releasedName(), held.version(), held.attempts() + 1);
+      }
       deployReadSpec(
           held.runId(),
           held.repository(),
@@ -2179,16 +2321,31 @@ public class DeployService implements ReleaseAnnouncements {
           held.hold(),
           held.causationId(),
           held.door(),
-          read.spec(),
-          read.commitSha(),
-          read.declared(),
-          held.rows());
+          read.main().spec(),
+          read.main().commitSha(),
+          read.main().declared(),
+          held.rows(),
+          read.variants());
     }
   }
 
   /** Whether this release has been held longer than a git host having a moment could explain. */
   private static boolean expired(SpecRetry held) {
     return Duration.between(held.since(), Instant.now()).compareTo(SPEC_RETRY_DEADLINE) > 0;
+  }
+
+  /**
+   * Move every held release's start back by {@code by}, so the suite can cross {@link
+   * #SPEC_RETRY_DEADLINE} without waiting an hour. Package-private and a test's only: a clock seam
+   * for one comparison would be a wider change than the deadline it exists to reach.
+   */
+  void backdateSpecRetries(Duration by) {
+    specRetries.replaceAll(
+        (name, held) ->
+            new SpecRetry(
+                held.runId(), held.repository(), held.releasedName(), held.version(),
+                held.packageName(), held.priority(), held.hold(), held.causationId(), held.door(),
+                held.since().minus(by), held.attempts(), held.rows()));
   }
 
   /**

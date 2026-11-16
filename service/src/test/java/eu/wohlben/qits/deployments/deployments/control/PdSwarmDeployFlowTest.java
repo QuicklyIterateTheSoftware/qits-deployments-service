@@ -20,6 +20,7 @@ import jakarta.persistence.EntityManager;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -313,6 +314,34 @@ public class PdSwarmDeployFlowTest {
     assertEquals("ACTIVE", deployments.get(0).get("status"));
     assertEquals(1, fake.applied().size(), "only the main application was applied");
     assertEquals(1, all("DeploymentActive").size());
+  }
+
+  @Test
+  public void aVariantFileIsReadBeforeTheMainApplicationIsDeployed() {
+    // qits-2252: the main deployment of qits-database-oci restarted the postgres the git host runs
+    // on, and the variant read ten seconds later timed out. So every file of a release is read
+    // before any of it is deployed — asked of the driver at the moment the variant file is read.
+    String environmentId = createEnvironment("swarm-variant-order");
+    specs.script(
+        "repo-swarm-order",
+        DeploymentSpecParser.parse("variants: private\n", "deployments.yml of repo-swarm-order"));
+    specs.scriptAt(
+        "repo-swarm-order",
+        SpecSource.variantPath("private"),
+        DeploymentSpecParser.parse(
+            "application: repo-swarm-order-private\n", "deployments.private.yml"));
+    AtomicInteger appliedAtVariantRead = new AtomicInteger(-1);
+    specs.onReadAt(
+        "repo-swarm-order",
+        SpecSource.variantPath("private"),
+        () -> appliedAtVariantRead.set(fake.applied().size()));
+
+    postRelease("run-variant-order", "repo-swarm-order");
+    awaitSettled(environmentId, 2);
+
+    assertEquals(0, appliedAtVariantRead.get(), "nothing was applied before the variant was read");
+    assertEquals(2, fake.applied().size(), "and then both applications were");
+    assertEquals(1, specs.readsOf("repo-swarm-order", SpecSource.variantPath("private")));
   }
 
   @Test

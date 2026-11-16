@@ -11,6 +11,7 @@ import eu.wohlben.qits.deployments.bus.PdSoftwareReleaseSubscriber;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.http.ContentType;
 import jakarta.inject.Inject;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -144,6 +145,88 @@ public class PdSpecRetryTest {
   }
 
   @Test
+  public void aVariantReadThatMayYetAnswerHoldsTheWholeRelease() {
+    // qits-2252, the measured accident: the variant file's read timed out because the main
+    // deployment had just restarted the postgres the git host runs on, and the variant stayed
+    // FAILED for good. Now a variant that may yet answer holds the release, main included.
+    String repo = "repo-variant-held";
+    String variantPath = SpecSource.variantPath("private");
+    String environmentId = createEnvironment("spec-variant-held");
+    scriptMainAndVariant(repo);
+    postRelease(repo, V_A);
+    awaitSettled(environmentId, 2);
+    driver.reset();
+
+    specs.scriptRetryableFailureAt(repo, variantPath, "HttpTimeoutException: request timed out");
+    postRelease(repo, V_B);
+    List<Map<String, Object>> held = awaitSettled(environmentId, 3);
+    idle();
+
+    Map<String, Object> row = held.get(0);
+    assertEquals(repo, row.get("applicationName"), "the hold is on the MAIN application's place");
+    assertEquals(V_B, row.get("version"));
+    assertEquals("SPEC_UNREADABLE", row.get("status"));
+    assertTrue(
+        ((String) row.get("detail")).contains(variantPath)
+            && ((String) row.get("detail")).contains("request timed out"),
+        "the cause names the variant's file: " + row.get("detail"));
+    assertEquals(List.of(), driver.applied(), "nothing of the release was deployed");
+    assertTrue(deployService.isHeldOnSpec(repo), "the release is held for a re-read");
+
+    int variantReads = specs.readsOf(repo, variantPath);
+    specs.recoverAt(repo, variantPath);
+    tick();
+
+    assertEquals(variantReads + 1, specs.readsOf(repo, variantPath), "the variant was read again");
+    assertTrue(!deployService.isHeldOnSpec(repo), "and the hold is over");
+    List<Map<String, Object>> rows = awaitSettled(environmentId, 5);
+    assertTrue(hasRow(rows, repo, V_B, "ACTIVE"), rows.toString());
+    assertTrue(hasRow(rows, repo + "-private", V_B, "ACTIVE"), rows.toString());
+    assertTrue(hasRow(rows, repo, V_B, "SPEC_UNREADABLE"), "the held row stayed history");
+  }
+
+  @Test
+  public void aVariantStillUnreadableAtTheDeadlineNeverStrandsItsMain() {
+    // The deadline keeps the main safe: a variant may delay the main by at most the hour, then the
+    // main deploys and the variant is FAILED with the same words a broken variant file gets.
+    String repo = "repo-variant-deadline";
+    String variantPath = SpecSource.variantPath("private");
+    String environmentId = createEnvironment("spec-variant-deadline");
+    scriptMainAndVariant(repo);
+    postRelease(repo, V_A);
+    awaitSettled(environmentId, 2);
+
+    specs.scriptRetryableFailureAt(repo, variantPath, "the git host answered 503");
+    postRelease(repo, V_B);
+    assertEquals("SPEC_UNREADABLE", awaitSettled(environmentId, 3).get(0).get("status"));
+    idle();
+
+    tick(); // inside the deadline: still held
+    assertTrue(deployService.isHeldOnSpec(repo));
+    assertEquals(3, awaitSettled(environmentId, 3).size());
+
+    deployService.backdateSpecRetries(Duration.ofMinutes(61));
+    tick();
+
+    assertTrue(!deployService.isHeldOnSpec(repo), "given up, not held forever");
+    List<Map<String, Object>> rows = awaitSettled(environmentId, 5);
+    assertTrue(hasRow(rows, repo, V_B, "ACTIVE"), "the main deployed: " + rows);
+    Map<String, Object> variant =
+        rows.stream()
+            .filter(
+                r ->
+                    (repo + "-private").equals(r.get("applicationName"))
+                        && V_B.equals(r.get("version")))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError(rows.toString()));
+    assertEquals("FAILED", variant.get("status"));
+    assertTrue(
+        ((String) variant.get("detail")).contains("variant private unusable")
+            && ((String) variant.get("detail")).contains("the git host answered 503"),
+        variant.toString());
+  }
+
+  @Test
   public void aHeldReleaseIsReadAgainEveryTickUntilItAnswers() {
     String environmentId = createEnvironment("spec-held-twice");
     postRelease("repo-held-twice", V_A);
@@ -274,6 +357,35 @@ public class PdSpecRetryTest {
   }
 
   // --- helpers ----------------------------------------------------------------------------------
+
+  /** A main file naming the variant {@code private}, whose file names {@code <repo>-private}. */
+  private void scriptMainAndVariant(String repo) {
+    specs.script(repo, DeploymentSpecParser.parse("variants: private\n", "deployments.yml"));
+    specs.scriptAt(
+        repo,
+        SpecSource.variantPath("private"),
+        DeploymentSpecParser.parse(
+            "application: " + repo + "-private\n", "deployments.private.yml"));
+  }
+
+  private static boolean hasRow(
+      List<Map<String, Object>> rows, String application, String version, String status) {
+    return rows.stream()
+        .anyMatch(
+            row ->
+                application.equals(row.get("applicationName"))
+                    && version.equals(row.get("version"))
+                    && status.equals(row.get("status")));
+  }
+
+  /** The worker drained, so what a release did in memory — a hold — is there to be asked. */
+  private void idle() {
+    try {
+      deployService.awaitIdle();
+    } catch (Exception e) {
+      throw new IllegalStateException("the deploy worker did not drain", e);
+    }
+  }
 
   /**
    * One tick of the periodic work, drained: the held spec reads and then the observation pass, both
