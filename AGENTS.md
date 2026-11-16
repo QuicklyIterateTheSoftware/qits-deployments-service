@@ -392,6 +392,10 @@ restart is an operation here now, and so is stopping an application:
     POST /deployments/api/applications/{applicationId}/scale   {"replicas": 0|1}   → 202
     POST /deployments/api/applications/{applicationId}/restart                      → 202
 
+A third, `POST …/{applicationId}/start` → 202 (qits-2249), is NOT an operation on a container: it
+redeploys the newest `ACTIVE` version on the database claims as they are, with no move planned — a
+deployment, with a row of its own. See **Moving a database** below.
+
 Eight things about it, each easy to undo by accident:
 
 - **`applicationId` is the derived key the read surface already carries** — `<environmentId>:<name>`,
@@ -1486,8 +1490,11 @@ provisions the first declared database, where the claim transfer it commits with
 5. **switch** — the claim takes the target (password unchanged) in the transaction that writes
    `SWITCHING`; the source is renamed `<db>_moved_<yyyyMMddHHmm>` (≤63), still fenced, and only then
    `ALLOW_CONNECTIONS false` (nothing connects to a kept copy again); the volume
-   goes; `drop_after = now + qits.deployments.database-move.retention` (`P7D`). One INFO line names
-   both databases and both sides' row totals.
+   goes; the row is `SWITCHED`. One INFO line names both databases and both sides' row totals.
+6. **confirm** — the row is `MOVED` only once the deployment that moved it (`deployment_id`, V24) is
+   live: the cutover writes it in the same bracket as the deployment's `ACTIVE`, and the startup
+   sweep's adoption does the same. `drop_after = finished_at + qits.deployments.database-move.retention`
+   (`P7D`) from then. Anything else rolls it back (below).
 
 **Two names on the SAME server are a rename, not a copy** (qits-2193, the owner's ruling of
 2026-11-14). The dump and restore of a large store on the shared postgres (`qits_platform_mirror` →
@@ -1501,9 +1508,9 @@ password set again from the claim (postgres CLEARS an MD5 password on a role ren
 `GRANT CONNECT` under the new name. Instant, no space, nothing to compare. With an earlier ABORTED
 attempt's leftover under the target name it is dropped first — only while `<src>` still exists, so
 it can never be the data. The switch then keeps no copy: `kept_database`, `drop_after` and the
-counts stay null, `detail` is `renamed in place`, one INFO `Renamed the database <res> of <app>
-(<env>) in place on <server>: <src> → <dst>`, and the retention sweep never meets the row. The way
-back is a rename back — the same script, names swapped. **The rename runs before the claim
+counts stay null (also once `MOVED`), `detail` is `renamed in place`, one INFO `Renamed the database
+<res> of <app> (<env>) in place on <server>: <src> → <dst>`, and the retention sweep never meets the
+row. The way back is a rename back — the same script, names swapped. **The rename runs before the claim
 switches**, so an abort (or a restart finding `RENAMING`, or `VERIFIED` with no counts) runs that
 way back, never a `DROP`; it is idempotent over both states the one-transaction rename can leave.
 Should the way back fail, a plain re-open of the source settles it when the source is there; when
@@ -1569,36 +1576,99 @@ deployer is `stop-first`, so nothing writes when the successor starts.
   (`keptByTheDeployer`): the next update removes it. The operator's door still answers 409 for the
   deployer: its databases move only with its own deployment.
 
-**A deployment that fails AFTER its move switched ROLLS BACK, and only then is FAILED** (qits-2249,
-the owner's ruling of 2026-11-14 — "FAILED after the switch, the application is DOWN" is not an end
-state any more). Whatever failed — provisioning the moved resource, a refused apply, a service that
-never converged, an unexpected throw — reaches `finish`, the one funnel, with a `MoveRollback`
-pending (`DeployService.pendingRollbacks`, cleared at the cutover), and `finish` runs it first:
+**A deployment with a database move ENDS with the service running — live on the target, or rolled
+back onto the source** (qits-2249, the owner's ruling of 2026-11-14: "FAILED after the switch, the
+application is DOWN" is not an end state). The intent is on the ROWS, never only in memory, so a
+restart or a failed step resumes it. The words (`PdDatabaseMoveState`, V1's parity rule — no check
+constraint): `SWITCHED` (claim on the target, the deployment not live yet) and `ROLLING_BACK` (being
+undone) are not terminal; `MOVED` and `ABORTED` are. Every `settleInterrupted` pass — boot, and every
+observation tick — decides a batch past its switch by its DEPLOYMENT (`pd_database_move.deployment_id`,
+V24; a row written before V24 goes by the place's newest deployment):
 
-1. **the moves undone** (`DatabaseMoves.rollBack`): the claim holder's service stopped again if
-   anything runs (a successor crash-looping on the target must not hold it); renamed in place →
-   renamed BACK (`renameShot`, names swapped, the password set again, never a `DROP`); a copy → the
-   kept source renamed back, `ALLOW_CONNECTIONS true` and `CONNECT` granted again
-   (`DatabaseScripts.restoreKept`), then the target dropped (its role too when unclaimed); the claim
-   switched back onto the source; the row `ABORTED`, `drop_after` cleared, detail `rolled back after
-   the switch: <cause>` — which also makes the target a leftover the next attempt may clear;
-2. **every stopped service started on its ORIGINAL spec and database**: when its spec is untouched
-   (nothing was applied, or swarm reverted the update itself — `ROLLED_BACK`, which goes back to the
-   scaled-to-zero spec naming the source) it is SCALED back to the replicas the move recorded; when
-   this deployment's spec is still on it, it is RE-APPLIED from the place's last `ACTIVE` row (that
-   row's image, `recordedBindings` — now naming the source — this spec's shape and policy, no image
-   defaults, the row's routing), awaited and held at its replicas. A rename's stop-old restore runs
-   the database half first and restores the predecessor onto the source;
-3. **then** the row is `FAILED` with `[rolled back: … the move was undone (…) and <service> scaled
-   back to N on its original spec | restored from its last ACTIVE deployment <id> (<version>)]` and
-   the cause under it. The version that served stays `ACTIVE`.
+- still running on this worker (`DeployService.runsHere`, its `pendingRollbacks` entry) → its own
+  `finish` decides; nothing here;
+- `ACTIVE` and nothing rolling back → confirmed `MOVED` (the cutover's own write was lost);
+- anything else — `FAILED`, `SUPERSEDED`, a `STARTING` row a sweep missed, a batch already
+  `ROLLING_BACK` → ROLLED BACK, as below, and the deployment row stamped `[rolled back: …]` (a
+  `QUEUED`/`STARTING`/`ACTIVE` one becomes `FAILED`).
 
-A move whose source cannot be put back (the rename back itself fails) is left `MOVED` with `[the
-rollback is incomplete: …]` in its detail, its claim on the target where the data is, and its
-service NOT started (its spec names a source that is not there); the row says `INCOMPLETE` and an
-ERROR names it. That is the one case left for a person, and the door's move back is the lever. A
-restart in the middle of a rollback is not resumed: the rows are still `MOVED`, so nothing settles
-them, and the next deployment's move (or the door) is what moves the place again.
+In-process, every failure after the switch — provisioning the moved resource, a refused apply, a
+service that never converged, an unexpected throw — reaches `finish`, the one funnel, with a
+`MoveRollback` pending (`DeployService.pendingRollbacks`, cleared at the cutover: it holds only what
+the rows cannot — the spec this deployment applied and whether it is still on the service, the
+registry host, a restored predecessor), and `finish` runs the same rollback first:
+
+1. **the intent** — every row `ROLLING_BACK`, detail `rolling back after the switch: <cause>`, before
+   anything is stopped or renamed;
+2. **the moves undone** (`DatabaseMoves.rollBack`), for every row whose claim still names its target —
+   a row whose claim is back on its source was undone by an earlier pass and is not touched, nor its
+   service stopped, again: the claim holder's service stopped again if anything runs (a successor
+   crash-looping on the target must not hold it); renamed in place → renamed BACK (`renameShot`,
+   names swapped, the password set again, never a `DROP`); a copy → the kept source renamed back,
+   `ALLOW_CONNECTIONS true` and `CONNECT` granted again (`DatabaseScripts.restoreKept`, idempotent),
+   then the target dropped (its role too when unclaimed); the claim switched back onto the source;
+3. **every stopped service started on its ORIGINAL spec and database.** In `finish`: when its spec is
+   untouched (nothing was applied, or swarm reverted the update itself — `ROLLED_BACK`, which goes
+   back to the scaled-to-zero spec naming the source) it is SCALED back to the replicas the move
+   recorded; when this deployment's spec is still on it, it is RE-APPLIED from the place's last
+   `ACTIVE` row (that row's image, `recordedBindings` — now naming the source — this spec's shape
+   and policy, no image defaults, the row's routing), awaited and held at its replicas. After a
+   restart nothing in memory says what was applied, so the settle asks the runtime: a service
+   running a spec that is not the failed deployment's image is scaled back; one running the failed
+   deployment's image, or gone (a rename's stop-old removed its predecessor), is STARTED from the
+   newest `ACTIVE` deployment under its name through the start door's path (below);
+4. **only then** the rows are `ABORTED`, `drop_after` cleared, detail `rolled back after the switch:
+   <cause>` — which also makes the target a leftover the next attempt may clear. The deployment row is
+   `FAILED` with `[rolled back: … the move was undone (…) and <service> scaled back to N on its
+   original spec | restored from its last ACTIVE deployment <id> (<version>)]` and the cause under it.
+   The version that served stays `ACTIVE`.
+
+**Nothing in it is given up on.** A way back that fails (the rename back, the kept source's restore)
+leaves the row `ROLLING_BACK` with `[the rollback is incomplete: …]`, its claim on the target where
+the data is, and its service NOT started (its spec names a source that is not there); a scale back
+or a restore the runtime refuses leaves it `ROLLING_BACK` with `[the service start is owed: …]`. An
+ERROR names either, and every observation pass tries again — the way back first, then the start —
+until the service runs. A scale is retried on every pass; a start through the deploy path no sooner
+than `qits.deployments.database-move.start-retry` (`PT5M`) after a failed one (memory; a boot
+retries at once). A rename's stop-old restore (`restorePredecessor`) runs the database half first
+and re-applies the predecessor **only after a complete undo** — otherwise the rollback is owed as
+above and the pass that completes it starts the predecessor.
+
+**A restart is resumed at every point.** Before the deployment's service name was written: the sweep
+settles the row `FAILED` (`interrupted`), the settle rolls back and scales the untouched service up.
+After the name, before the apply: `SUPERSEDED` (the service still runs the old image), the same. After
+the apply with the new image on the service: the sweep adopts it `ACTIVE` and the moves are `MOVED` in
+the same bracket. In the middle of a rollback: the sweep never adopts a deployment with a
+`ROLLING_BACK` move — whatever image its service names, it is `FAILED`, `[the deployer restarted
+while this deployment's database move was being rolled back; the rollback resumes]`, not
+`interrupted` (the release was decided, so `OwedReleaseSweep` does not re-drive it) — and the settle
+resumes the rollback from where the claims are and starts the service. `PdDatabaseMoveRecoveryTest`
+holds each window.
+
+**A move under way holds the next deployment.** `plan` refuses (before anything stops) a deployment
+of an application with a move of it in that tier that is not terminal and not an operator's `QUEUED`
+one — `the database move <id> of `db` of <app> is still ROLLING_BACK (…)` — because it would plan
+from a claim a settle pass is about to move, and could have its own move undone by it. The settle
+pass ends the condition; the deployment is `FAILED` and is not re-driven.
+
+**An unexpected throw after the stop aborts the batch too.** Any `RuntimeException` inside the stop,
+copy or rename — not only a failed step's own `MoveFailure` (an admin one-shot whose server image
+cannot be read, a driver call that throws) — runs `abortBatch` before it surfaces: source re-opened,
+the service scaled back, the row `ABORTED`, `the move failed unexpectedly: <exception>`.
+
+**The start door: an application started on its claims as they are** — `POST
+/deployments/api/applications/{applicationId}/start` → 202 `{applicationId, applicationName,
+environmentId, deploymentId, version}` (`ApplicationScaling.start`, `DatabaseMoves.queueStart`). The
+break-glass lever for a service a move — or a person moving data by hand — left stopped: the place's
+newest `ACTIVE` version is redeployed through the ordinary deploy path on the worker (provisioning
+included, every binding rendered from the claim it finds) with **no database move planned**, whatever
+that version's spec resolves its databases to (`DatabaseMoves.stayingPut`, which `plan` reads like a
+deferral without the WARN). It writes a new deployment row. Roles: the operator levers' set
+(`qits:admin`, `qits:admin-agent`, `qits:desk-admin`, `qits:desk`) — 403 to `qits:agent` and
+`qits:system`. 400 a malformed id; 404 nothing ever deployed there, or no tier; 409 a deployment of it
+`QUEUED`/`STARTING`, a database move of it not terminal (`QUEUED` included — those decide where the
+data is), no `ACTIVE` deployment to start, or this deployer itself. The settle's start of a rolled-back
+service is the same path (`startOnClaims`).
 
 **A target server that is not deployed DEFERS the move** (the rollout gap before
 `qits-oci-postgresql-private` exists; "deployed" is `PostgresAdmin.deployed`, a service under its
@@ -1620,13 +1690,12 @@ the way back above renames it back (the rename one-shot is instant and carries n
 unknown id; 409 `QUEUED` (nothing runs yet — its redeploy refuses it if it cannot run), terminal, or
 `SWITCHING` and later.
 
-**A restart is never a forgotten move** (`settleInterrupted`, on the worker at boot and on every
-observation tick for what boot could not finish): a batch with a row at `SWITCHING` or later is
-finished AND its application is REDEPLOYED at the version its interrupted deployment was putting live
-(the service is at zero and its spec names the old database). The interrupted-deployment machinery
-does not cover it: `sweepInFlight` flags the row `interrupted` (V16), but only `OwedReleaseSweep`
-re-drives one, and only for a bus release with a `pd_owed_release` obligation, which `Door.MANUAL`
-never writes. Any other batch is aborted. A `QUEUED` operator move is refused at boot only — on a tick it is
+**A restart is never a forgotten move** (`settleInterrupted`, on the worker at boot — after
+`sweepInFlight` — and on every observation tick for what boot could not finish): a batch with a row
+at `SWITCHING` or later has its switch finished and is then decided by its deployment, as above —
+confirmed `MOVED`, or rolled back with its services started on their source. (It used to REDEPLOY the
+interrupted version onto the moved database; nothing re-drives a `Door.MANUAL` deployment, so that
+was the only start it got — the rollback now starts the service itself.) Any other batch is aborted. A `QUEUED` operator move is refused at boot only — on a tick it is
 waiting in the queue behind the pass. The tick also runs `sweepExpired`, which drops kept copies past
 `drop_after` (and the old role, when no claim on that server uses it) and stamps `dropped_at`.
 
