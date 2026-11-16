@@ -599,7 +599,8 @@ class DatabaseMovesTest {
   void aTargetThatAlreadyExistsOnTheTargetServerIsRefused() {
     serversRunningIn("mv-f");
     claim("qits-mvexists", "mv-f", "db", "qits_mvexists_old", "public");
-    containers.script("check", shot -> new DatabaseContainers.Outcome(0, "qits-exists=t\n", false));
+    // qits-2261: postgres prints `qits-exists=true`/`false`, never bare `t`/`f`.
+    containers.script("check", shot -> new DatabaseContainers.Outcome(0, "qits-exists=true\n", false));
 
     ResourceException refused =
         assertThrows(
@@ -615,6 +616,47 @@ class DatabaseMovesTest {
     assertTrue(refused.getMessage().contains("already exists"), refused.getMessage());
     assertEquals(List.of("check"), containers.shots().stream().map(DatabaseContainers.OneShot::purpose).toList());
     assertEquals("qits_mvexists_old", claimOf("qits-mvexists", "mv-f", "db").databaseName);
+    assertTrue(
+        driver.calls().stream().noneMatch(call -> call.startsWith("scale:")),
+        "refused before anything stops: " + driver.calls());
+  }
+
+  @Test
+  void theAlreadyProvisionedRefusalIgnoresAClaimOnAnotherServerOrAnotherTier() {
+    // qits-2261: each tier has its own servers, so a claim of the same name elsewhere is not this
+    // move's own (server, tier) and must not block it.
+    serversRunningIn("mv-cl");
+    serversRunningIn("mv-cl2");
+    claim("qits-mvcl", "mv-cl", "db", "qits_mvcl_old", "public");
+    driver.scriptDeclaredReplicas("mv-cl-qits-mvcl", 1);
+    claim("qits-mvcl-other-tier", "mv-cl2", "db", "qits_mvcl", "public");
+    claim("qits-mvcl-other-server", "mv-cl", "db", "qits_mvcl", "private");
+
+    moves.beforeProvisioning(
+        "qits-mvcl", "mv-cl", null, DeploymentDriver.Exposure.PUBLIC, one("db", "qits_mvcl"));
+
+    assertEquals("qits_mvcl", claimOf("qits-mvcl", "mv-cl", "db").databaseName);
+  }
+
+  @Test
+  void theAlreadyProvisionedRefusalFiresForAClaimOnTheTargetServerInTheSameTier() {
+    serversRunningIn("mv-cl3");
+    claim("qits-mvcl2", "mv-cl3", "db", "qits_mvcl2_old", "public");
+    claim("qits-mvcl2-conflict", "mv-cl3", "db", "qits_mvcl2", "public");
+
+    ResourceException refused =
+        assertThrows(
+            ResourceException.class,
+            () ->
+                moves.beforeProvisioning(
+                    "qits-mvcl2",
+                    "mv-cl3",
+                    null,
+                    DeploymentDriver.Exposure.PUBLIC,
+                    one("db", "qits_mvcl2")));
+
+    assertTrue(refused.getMessage().contains("already provisioned for qits-mvcl2-conflict"), refused.getMessage());
+    assertEquals("qits_mvcl2_old", claimOf("qits-mvcl2", "mv-cl3", "db").databaseName);
   }
 
   /**
