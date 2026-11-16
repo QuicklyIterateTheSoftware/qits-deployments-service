@@ -2203,6 +2203,10 @@ rows written before that.)
     waits for a person and outlives the process that wrote it. Nothing is registered again.
   - **The owed sweep counts a held request as decided** (`countDecidedFor`: no deployment is a
     decision) — `ALREADY_REQUESTED`, never re-sent. `PdDeployHoldTest` holds all of it.
+  - **Nothing re-drives an approval the process lost.** The approval commits the `QUEUED` row and
+    then submits it to the worker; a deployer that stops in between leaves that row `QUEUED`, the
+    same gap every manual-door deployment has. A second approve answers 409 (already settled), so
+    the remedy is a DEPLOY rerun of the release request, which the approved version lets through.
 - **It is a read surface too** (`PdDeploymentRequestController`, `qits:admin` + `qits:agent` +
   `qits:system` — the last so qits-projects can draw a release's deploy phase without forwarding a
   person's session headers; see *Addressing and auth* — with every read
