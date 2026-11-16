@@ -57,6 +57,9 @@ public class FakeSpecSource implements SpecSource {
   /** How often each application's spec has been read, so a retry is countable rather than timed. */
   private final Map<String, Integer> reads = new ConcurrentHashMap<>();
 
+  /** What runs when a file at another path is read — see {@link #onReadAt}. */
+  private final Map<String, Runnable> hooks = new ConcurrentHashMap<>();
+
   public void reset() {
     specs.clear();
     failures.clear();
@@ -65,6 +68,7 @@ public class FakeSpecSource implements SpecSource {
     retryable.clear();
     undeclared.clear();
     reads.clear();
+    hooks.clear();
   }
 
   /**
@@ -165,6 +169,30 @@ public class FakeSpecSource implements SpecSource {
     retryable.remove(key(applicationName, path));
   }
 
+  /**
+   * A file at another path whose read may yet answer — the git host timing out under a variant's
+   * read, which is what the main deployment of a shared postgres did to it (qits-2252).
+   */
+  public void scriptRetryableFailureAt(String applicationName, String path, String message) {
+    failures.put(key(applicationName, path), message);
+    retryable.add(key(applicationName, path));
+  }
+
+  /** {@link #recover} for a file at another path: its reads answer again. */
+  public void recoverAt(String applicationName, String path) {
+    failures.remove(key(applicationName, path));
+    retryable.remove(key(applicationName, path));
+  }
+
+  /**
+   * Run {@code hook} on the deploy worker every time the file at {@code path} is read, before the
+   * read answers — so a test can capture what had already happened at that moment, such as how
+   * many deployments the driver had applied, rather than infer an order from the end state.
+   */
+  public void onReadAt(String applicationName, String path, Runnable hook) {
+    hooks.put(key(applicationName, path), hook);
+  }
+
   /** No file at another path: the 404 arm, for a variant the main file names and nobody wrote. */
   public void scriptNoSpecAt(String applicationName, String path) {
     undeclared.add(key(applicationName, path));
@@ -186,6 +214,10 @@ public class FakeSpecSource implements SpecSource {
     if (!SPEC_PATH.equals(path)) {
       String key = key(repository.applicationName(), path);
       reads.merge(key, 1, Integer::sum);
+      Runnable hook = hooks.get(key);
+      if (hook != null) {
+        hook.run();
+      }
       String failure = failures.get(key);
       if (failure != null) {
         throw new SpecException(failure, retryable.contains(key));

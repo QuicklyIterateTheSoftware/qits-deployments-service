@@ -815,10 +815,13 @@ things about them, each easy to undo by accident:
   private edge's userspace WireGuard would otherwise have the kernel forward tunnel peers around it.
 - **`variants:` is read off the MAIN file only**, and each name is one more blob read at the same tag
   through the same `SpecSource` (`read(ref, rev, path)`, `SpecSource.variantPath`; `SPEC_PATH` stays
-  the two-argument default). `DeployService.deployVariants` runs after the main `deployReadSpec` on
-  both doors that reach it — the release itself and `retrySpecReads` — and deploys each variant
-  through `deployReadSpec` with the variant's application name and the same version, commit and
-  cause.
+  the two-argument default). **Every file is read before anything is deployed** (qits-2252):
+  `DeployService.readRelease` reads the main file and each variant file on both doors —
+  the release itself and `retrySpecReads` — and `deployVariants` reads nothing, it deploys the
+  pre-read outcomes after the main `deployReadSpec`, through `deployReadSpec` with the variant's
+  application name and the same version, commit and cause. The order is the fix for 2026-11-14:
+  qits-database-oci's main deployment restarted the postgres the git host runs on, and the variant
+  read ten seconds later timed out.
 - **A variant is registered the way a first release is**, by `register` under its own name, so it
   lands in the entry tier beside the main application with a catalogue row and link of its own.
   Rollback, redeploy and retirement are per application, as for any other.
@@ -826,7 +829,11 @@ things about them, each easy to undo by accident:
   (`DeploymentSpecParser.checkVariant`: a distinct `application:`, no `variants:`, no
   `renamed_from:`) is a `FAILED` row on the places its application is registered in — the file's
   `application:` when it named a usable one, else `<main>-<variant>` — and a WARN only for one never
-  registered. It is not held for a retry; the main deployment has already run and is untouched.
+  registered; the main deploys regardless. **A RETRYABLE variant read is the exception: it holds the
+  whole release** like an unreadable main file — `SPEC_UNREADABLE` on the main application's places
+  naming the variant's file, a `SpecRetry`, main and variants deployed together once every file
+  answers. Past `SPEC_RETRY_DEADLINE` the main deploys and that variant is `FAILED`: a variant may
+  delay its main, never strand it.
 - **A variant's container is told which variant it is**: `QITS_VARIANT=<variant>` (`private` for
   the private edge), written by `SwarmDeploymentDriver.environment` right after `QITS_APPLICATION`
   from `ServiceSpec.variant` (`Plan.variant`, off the `Target`). A variant gets no deployment
