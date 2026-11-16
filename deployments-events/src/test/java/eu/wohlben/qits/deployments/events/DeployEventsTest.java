@@ -57,9 +57,18 @@ class DeployEventsTest {
         "container exited 1", FINISHED);
   }
 
+  private static final Instant DECLINED = Instant.parse("2026-08-12T10:00:00Z");
+
+  private static DeploymentRequestDeclined aDeclined() {
+    return new DeploymentRequestDeclined(
+        "r-1", "qits-gateway-rr-7", "qits-gateway", "dev", VERSION, "alice", "wrong change",
+        DECLINED);
+  }
+
   @Test
   void everySignatureIsTheClassNameAndTheNameFollowsIt() {
-    for (QitsEvent event : List.of(aQueued(), aStarted(), anActive(), aFailed())) {
+    for (QitsEvent event :
+        List.of(aQueued(), aStarted(), anActive(), aFailed(), aDeclined())) {
       assertEquals(event.getClass().getSimpleName(), event.signature());
       assertEquals(event.signature(), event.name());
     }
@@ -71,6 +80,7 @@ class DeployEventsTest {
     assertEquals(STARTED, aStarted().occurredAt());
     assertEquals(FINISHED, anActive().occurredAt());
     assertEquals(FINISHED, aFailed().occurredAt());
+    assertEquals(DECLINED, aDeclined().occurredAt());
   }
 
   @Test
@@ -348,5 +358,38 @@ class DeployEventsTest {
     assertEquals(
         "private",
         CanonicalJson.payloadTo(CanonicalJson.payload(failed), DeploymentFailed.class).variant());
+  }
+
+  // --- decline (qits-2271) -----------------------------------------------------------------------
+
+  @Test
+  void theDeclinedPayloadIsTheRequestsShapeAndItsSignatureIsItsName() {
+    assertEquals("DeploymentRequestDeclined", aDeclined().signature());
+    assertEquals(
+        "{\"appName\":\"qits-gateway\",\"declinedAt\":\"2026-08-12T10:00:00Z\","
+            + "\"declinedBy\":\"alice\",\"deploymentRequestId\":\"r-1\","
+            + "\"environment\":\"dev\",\"note\":\"wrong change\","
+            + "\"releaseRequestQualifiedId\":\"qits-gateway-rr-7\",\"version\":\""
+            + VERSION
+            + "\"}",
+        CanonicalJson.payload(aDeclined()));
+  }
+
+  @Test
+  void aDeclineWithNoNoteOmitsItAndReadsBack() {
+    DeploymentRequestDeclined bare =
+        new DeploymentRequestDeclined(
+            "r-2", "qits-gateway-rr-7", "qits-gateway", "dev", VERSION, "alice", null, DECLINED);
+
+    String payload = CanonicalJson.payload(bare);
+    assertFalse(payload.contains("note"), payload);
+
+    DeploymentRequestDeclined decoded =
+        CanonicalJson.payloadTo(payload, DeploymentRequestDeclined.class);
+    assertEquals("r-2", decoded.deploymentRequestId());
+    assertEquals("qits-gateway-rr-7", decoded.releaseRequestQualifiedId());
+    assertEquals("alice", decoded.declinedBy());
+    assertEquals(null, decoded.note());
+    assertEquals(DECLINED, decoded.occurredAt());
   }
 }

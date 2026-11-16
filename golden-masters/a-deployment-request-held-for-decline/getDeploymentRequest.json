@@ -1,0 +1,26 @@
+{
+  "deploymentRequest": {
+    "id": "00000000-0000-4000-8000-000000000002",
+    "applicationName": "contract-app-00000001",
+    "variant": null,
+    "version": "2026.103.120000",
+    "environmentId": "00000000-0000-4000-8000-000000000001",
+    "packageName": null,
+    "priority": null,
+    "repoId": "contract-app-00000001",
+    "projectId": null,
+    "qualityGate": "UNMET",
+    "gateDetail": "held for manual approval on contract-app-rr-2",
+    "deploymentId": null,
+    "createdAt": "2026-01-01T00:00:00Z",
+    "gateSettledAt": null,
+    "deploymentStatus": null,
+    "deployHold": true,
+    "releaseRequestQualifiedId": "contract-app-rr-2",
+    "approvedBy": null,
+    "approvedAt": null,
+    "declinedBy": null,
+    "declinedAt": null
+  },
+  "deployment": null
+}

@@ -273,6 +273,23 @@ class GoldenMasterRecordingTest {
               200,
               null,
               null),
+          // qits-2271: a held request a person declines, with a note — the CLI's `qits
+          // deployments requests decline`.
+          new Interaction(
+              ProviderStates.A_HELD_DEPLOYMENT_REQUEST_FOR_DECLINE,
+              "getDeploymentRequest",
+              "GET",
+              "/deployments/api/deployment-requests/{id}",
+              200,
+              null,
+              null),
+          write(
+              ProviderStates.A_HELD_DEPLOYMENT_REQUEST_FOR_DECLINE,
+              "declineDeploymentRequest",
+              "POST",
+              "/deployments/api/deployment-requests/{id}/decline",
+              200,
+              "{\"note\":\"the change is wrong\"}"),
           new Interaction(
               ProviderStates.AN_APPLICATION_RUNNING,
               "listApplications",

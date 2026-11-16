@@ -18,7 +18,9 @@
     "deployHold": true,
     "releaseRequestQualifiedId": "contract-app-rr-1",
     "approvedBy": "an-operator",
-    "approvedAt": "2026-01-01T00:00:00Z"
+    "approvedAt": "2026-01-01T00:00:00Z",
+    "declinedBy": null,
+    "declinedAt": null
   },
   "deployment": {
     "id": "00000000-0000-4000-8000-000000000003",

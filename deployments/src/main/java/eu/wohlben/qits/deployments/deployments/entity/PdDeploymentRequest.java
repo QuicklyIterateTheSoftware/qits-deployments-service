@@ -133,6 +133,17 @@ public class PdDeploymentRequest extends PanacheEntityBase implements CausedRow 
   public Instant approvedAt;
 
   /**
+   * Who declined a held request — the caller's principal name — or null: nobody did (qits-2271,
+   * V25). A decline settles the gate {@code UNMET} for good; it never writes {@link #approvedBy}.
+   */
+  @Column(name = "declined_by", columnDefinition = "text")
+  public String declinedBy;
+
+  /** When a held request was declined, or null. Set together with {@link #declinedBy}. */
+  @Column(name = "declined_at")
+  public Instant declinedAt;
+
+  /**
    * The variant this request deploys ({@code private} for {@code qits-edge-private}), or null for
    * the main application of the release (qits-1976). One release of a repository with {@code
    * variants:} writes rows for several applications under one {@code (repoId, version)}; this is

@@ -32,7 +32,10 @@ import java.time.Instant;
  * <p><b>{@code deployHold} says the release request asked to hold the deployment</b>, and {@code
  * releaseRequestQualifiedId} names that request ({@code qits-ci-service-rr-12}, null when the release
  * named none). {@code approvedBy} and {@code approvedAt} are the approval {@code POST
- * /deployment-requests/{id}/approve} recorded, null until somebody gave one.
+ * /deployment-requests/{id}/approve} recorded, null until somebody gave one. {@code declinedBy} and
+ * {@code declinedAt} are the decline {@code POST /deployment-requests/{id}/decline} recorded
+ * (qits-2271), null unless somebody declined: a declined request is {@code UNMET} and settled, and
+ * nothing deploys it.
  *
  * <p><b>{@code priority} is what the release request declared and is display-only.</b> It arrives
  * from qits-projects through qits-ci and this component records it; nothing here orders anything by
@@ -71,4 +74,6 @@ public record PdDeploymentRequestDto(
     boolean deployHold,
     String releaseRequestQualifiedId,
     String approvedBy,
-    Instant approvedAt) {}
+    Instant approvedAt,
+    String declinedBy,
+    Instant declinedAt) {}

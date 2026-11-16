@@ -77,6 +77,16 @@ public class ProviderStates {
    * answers 200 — and by a read of the held request.
    */
   public static final String A_HELD_DEPLOYMENT_REQUEST = "a deployment request held for approval";
+
+  /**
+   * One release HELD for a person's answer (qits-2271), the way {@link #A_HELD_DEPLOYMENT_REQUEST}
+   * is, but its own: an approval mutates that state, so a decline cannot share it. Its release
+   * request is {@link #DECLINE_RELEASE_REQUEST} and its version {@link #DECLINE_VERSION}. {@code id}
+   * is the request. Named by qits-platform-access-monorepo's {@code qits deployments requests
+   * decline} — the decline answers 200 — and by a read of the held request.
+   */
+  public static final String A_HELD_DEPLOYMENT_REQUEST_FOR_DECLINE =
+      "a deployment request held for decline";
   public static final String AN_APPLICATION_RUNNING = "an application running in an environment";
   public static final String AN_APPLICATION_WITH_A_FAILED_DEPLOYMENT =
       "an application whose only deployment failed";
@@ -156,6 +166,12 @@ public class ProviderStates {
   /** The release request the held state's release came from. */
   static final String HELD_RELEASE_REQUEST = "contract-app-rr-1";
 
+  /** The release request the decline state's release came from. */
+  static final String DECLINE_RELEASE_REQUEST = "contract-app-rr-2";
+
+  /** The released version the decline state holds — distinct from {@link #VERSION}. */
+  static final String DECLINE_VERSION = "2026.103.120000";
+
   /** The released version the deployed states ship. */
   static final String VERSION = "2026.101.120000";
 
@@ -215,6 +231,9 @@ public class ProviderStates {
     states.put(AN_APPLICATION_WITH_CHANGED_SETTINGS, this::anApplicationWithChangedSettings);
     states.put(A_DEPLOYMENT_REQUEST, this::aDeploymentRequest);
     states.put(A_HELD_DEPLOYMENT_REQUEST, this::aHeldDeploymentRequest);
+    states.put(
+        A_HELD_DEPLOYMENT_REQUEST_FOR_DECLINE,
+        () -> aHeldDeploymentRequest(DECLINE_VERSION, DECLINE_RELEASE_REQUEST));
     states.put(AN_APPLICATION_RUNNING, this::anApplicationRunning);
     states.put(AN_APPLICATION_WITH_A_FAILED_DEPLOYMENT, this::anApplicationWithAFailedDeployment);
     states.put(A_DECOMMISSIONED_APPLICATION, this::aDecommissionedApplication);
@@ -593,6 +612,11 @@ public class ProviderStates {
    * the door answers, so clean-up's own {@code awaitIdle} waits for it.
    */
   private Setup aHeldDeploymentRequest() {
+    return aHeldDeploymentRequest(VERSION, HELD_RELEASE_REQUEST);
+  }
+
+  /** {@link #aHeldDeploymentRequest()} at this version, from this release request. */
+  private Setup aHeldDeploymentRequest(String version, String releaseRequest) {
     driver.reset();
     String token = token();
     String environmentId = createEnvironment("contract-" + token, true);
@@ -604,9 +628,9 @@ public class ProviderStates {
             Map.of(
                 "runId", "run-contract",
                 "repoId", application,
-                "version", VERSION,
+                "version", version,
                 "deployHold", true,
-                "releaseRequestQualifiedId", HELD_RELEASE_REQUEST))
+                "releaseRequestQualifiedId", releaseRequest))
         .when()
         .post("/deployments/api/events/software-released")
         .then()
@@ -616,7 +640,7 @@ public class ProviderStates {
         given()
             .header("Authorization", SuiteBearers.operator())
             .queryParam("repoId", application)
-            .queryParam("version", VERSION)
+            .queryParam("version", version)
             .when()
             .get("/deployments/api/deployment-requests")
             .then()

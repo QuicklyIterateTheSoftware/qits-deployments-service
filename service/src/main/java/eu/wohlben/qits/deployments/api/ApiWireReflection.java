@@ -53,6 +53,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       PdDeploymentController.ListDeploymentsResponse.class,
       PdDeploymentRequestController.ListDeploymentRequestsResponse.class,
       PdDeploymentRequestController.DeploymentRequestResponse.class,
+      PdDeploymentRequestController.DeclineRequest.class,
       PdPinController.ListPinsResponse.class,
       PdSettingController.PutSettingRequest.class,
       PdSettingController.ListSettingsResponse.class,
