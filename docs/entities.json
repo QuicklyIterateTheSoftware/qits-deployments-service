@@ -299,6 +299,14 @@
           "cardinality" : "single"
         },
         {
+          "operationId" : "declineDeploymentRequest",
+          "method" : "POST",
+          "path" : "/deployment-requests/{id}/decline",
+          "dto" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$DeploymentRequestResponse",
+          "kind" : "returns",
+          "cardinality" : "single"
+        },
+        {
           "operationId" : "decommissionApplication",
           "method" : "POST",
           "path" : "/applications/{applicationId}/decommission",
@@ -466,6 +474,14 @@
           "operationId" : "approveDeploymentRequest",
           "method" : "POST",
           "path" : "/deployment-requests/{id}/approve",
+          "dto" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$DeploymentRequestResponse",
+          "kind" : "returns",
+          "cardinality" : "single"
+        },
+        {
+          "operationId" : "declineDeploymentRequest",
+          "method" : "POST",
+          "path" : "/deployment-requests/{id}/decline",
           "dto" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$DeploymentRequestResponse",
           "kind" : "returns",
           "cardinality" : "single"
@@ -924,6 +940,14 @@
           "path" : "/environments",
           "dto" : "eu.wohlben.qits.deployments.api.PdEnvironmentController$EnvironmentResponse",
           "kind" : "body",
+          "cardinality" : "single"
+        },
+        {
+          "operationId" : "declineDeploymentRequest",
+          "method" : "POST",
+          "path" : "/deployment-requests/{id}/decline",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
+          "kind" : "returns",
           "cardinality" : "single"
         },
         {

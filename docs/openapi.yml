@@ -69,6 +69,11 @@ components:
           items:
             $ref: "#/components/schemas/ApplicationSpec"
           deprecated: true
+    DeclineRequest:
+      type: object
+      properties:
+        note:
+          type: string
     DecommissionRequest:
       type: object
       properties:
@@ -424,6 +429,10 @@ components:
         approvedBy:
           type: string
         approvedAt:
+          $ref: "#/components/schemas/Instant"
+        declinedBy:
+          type: string
+        declinedAt:
           $ref: "#/components/schemas/Instant"
     PdDeploymentStatus:
       type: string
@@ -1243,6 +1252,54 @@ paths:
             \ would be a rollback)"
         "502":
           description: The released spec could not be read
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Deployment Request Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:admin-agent
+        - qits:desk-admin
+        - qits:desk
+        - qits:agent
+  /deployments/api/deployment-requests/{id}/decline:
+    post:
+      summary: Decline a deployment request held for manual approval — nothing deploys
+      description: "Settles the held request UNMET with declinedBy/declinedAt, together\
+        \ with every other still-held deployment request of the same release request;\
+        \ nothing is queued. A decline is final: to ship the work again, push a branch\
+        \ made from the release's tag and open a new release request."
+      operationId: declineDeploymentRequest
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        description: An optional note recorded with the decline; may be omitted
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeclineRequest"
+        required: false
+      responses:
+        "200":
+          description: "Declined; the settled request, which has no deployment"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentRequestResponse"
+        "400":
+          description: "The body is not {\"note\": string} or absent"
+        "404":
+          description: No such deployment request
+        "409":
+          description: "The request is not held, its gate already settled, or a deployment\
+            \ request of the same release request was already approved"
         "401":
           description: Not Authorized
         "403":
