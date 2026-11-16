@@ -1508,9 +1508,9 @@ password set again from the claim (postgres CLEARS an MD5 password on a role ren
 `GRANT CONNECT` under the new name. Instant, no space, nothing to compare. With an earlier ABORTED
 attempt's leftover under the target name it is dropped first — only while `<src>` still exists, so
 it can never be the data. The switch then keeps no copy: `kept_database`, `drop_after` and the
-counts stay null (also once `MOVED`), `detail` is `renamed in place`, one INFO `Renamed the database
-<res> of <app> (<env>) in place on <server>: <src> → <dst>`, and the retention sweep never meets the
-row. The way back is a rename back — the same script, names swapped. **The rename runs before the claim
+counts stay null, `detail` is `renamed in place`, one INFO `Renamed the database <res> of <app>
+(<env>) in place on <server>: <src> → <dst>`, and the retention sweep never meets the row. The way
+back is a rename back — the same script, names swapped. **The rename runs before the claim
 switches**, so an abort (or a restart finding `RENAMING`, or `VERIFIED` with no counts) runs that
 way back, never a `DROP`; it is idempotent over both states the one-transaction rename can leave.
 Should the way back fail, a plain re-open of the source settles it when the source is there; when
