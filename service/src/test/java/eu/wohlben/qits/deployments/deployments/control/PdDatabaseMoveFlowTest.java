@@ -558,6 +558,87 @@ class PdDatabaseMoveFlowTest {
     assertEquals("public", claim(application, environment).server);
   }
 
+  /** A bare claim row, the {@code DatabaseMovesTest} shape, for a neighbour this test never deploys. */
+  private void seedClaim(String application, String environment, String database, String server) {
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              PdResource row = new PdResource();
+              row.id = UUID.randomUUID().toString();
+              row.applicationName = application;
+              row.environmentName = environment;
+              row.resourceName = "db";
+              row.resourceType = "postgresql";
+              row.databaseName = database;
+              row.roleName = database;
+              row.password = "irrelevant";
+              row.server = server;
+              row.createdAt = java.time.Instant.now();
+              resources.persist(row);
+            });
+  }
+
+  @Test
+  void theDoorIgnoresAClaimOnAnotherServerButRefusesOneOnTheTargetServer() throws Exception {
+    // qits-2261: the door's own "already provisioned" check is now scoped to the target server and
+    // this tier — the same two filters `refusal(Planned)` already applied — because each tier/server
+    // is its own postgres, so a same-named claim anywhere else clashes with nothing. The belt behind
+    // it, ResourceProvisioning.ensurePostgres (`sharesServer`), was narrowed the same way, so the
+    // move this door queues now goes all the way through rather than rolling back at provisioning.
+    String token = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+    String environment = "dbmv-n-" + token;
+    String environmentId = createDesignatedEnvironment(environment);
+    String application = "dbmv-nbr-" + token;
+    String database = "qits_dbmv_nbr_" + token;
+    String freeElsewhere = "qits_dbmv_free_" + token;
+    String heldHere = "qits_dbmv_held_" + token;
+    specs.script(application, declaring(DeploymentDriver.Exposure.PUBLIC));
+    driver.scriptRunningImage(environment + "-qits-oci-postgresql", "registry.example/qits/pg:1");
+    release(application, "2026.101.120000");
+    assertEquals(database, claim(application, environment).databaseName);
+    driver.scriptDeclaredReplicas(environment + "-" + application, 1);
+
+    // A neighbour's claim of the SAME name, but on the OTHER server of this same tier: no clash.
+    seedClaim("dbmv-nbr-private-" + token, environment, freeElsewhere, "private");
+
+    JsonPath accepted = requestMove(Map.of("application", application, "database", freeElsewhere));
+    assertFalse(accepted.getString("note") != null && accepted.getString("note").contains("already provisioned for"));
+    assertEquals(freeElsewhere, accepted.getString("move.targetDatabase"));
+    deployService.awaitIdle();
+
+    // The move went all the way through: same server, so a rename in place — no dump, no restore —
+    // and the claim now names the target database. The neighbour's own claim is untouched.
+    JsonPath moved = move(accepted.getString("move.id"));
+    assertEquals("MOVED", moved.getString("move.state"));
+    assertEquals(List.of(), containers.shots("extract"));
+    assertEquals(List.of(), containers.shots("ingest"));
+    assertEquals(1, containers.shots("rename").size());
+    assertEquals(freeElsewhere, claim(application, environment).databaseName);
+    assertEquals(List.of("ACTIVE", "DECOMMISSIONED"), statuses(environmentId));
+    assertEquals(
+        freeElsewhere, claim("dbmv-nbr-private-" + token, environment).databaseName);
+    driver.scriptDeclaredReplicas(environment + "-" + application, 1);
+
+    // A neighbour's claim of a different name, on the TARGET server of this SAME tier: refused.
+    seedClaim("dbmv-nbr-public-" + token, environment, heldHere, "public");
+
+    String refusal =
+        given()
+            .header("Authorization", SuiteBearers.bearer("dbmove-agent", "qits:agent"))
+            .contentType(ContentType.JSON)
+            .body(Map.of("application", application, "database", heldHere))
+            .when()
+            .post(MOVES)
+            .then()
+            .statusCode(409)
+            .extract()
+            .asString();
+    assertTrue(
+        refusal.contains("`" + heldHere + "` is already provisioned for dbmv-nbr-public-" + token),
+        refusal);
+    assertEquals(freeElsewhere, claim(application, environment).databaseName);
+  }
+
   @Test
   void aSwitchARestartCutShortBeforeV24IsFinishedAndConfirmedByThePlacesLiveDeployment()
       throws Exception {

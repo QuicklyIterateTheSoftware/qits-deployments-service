@@ -2592,6 +2592,9 @@ public class DatabaseMoves {
     }
     resources.listByDatabase(targetDatabase).stream()
         .filter(row -> !row.id.equals(claim.id))
+        // Only a claim on the target server itself: each tier has its own servers (qits-2261).
+        .filter(row -> tier.name.equals(row.environmentName))
+        .filter(row -> DatabaseServer.parse(row.server) == targetServer)
         .findFirst()
         .ifPresent(
             row -> {

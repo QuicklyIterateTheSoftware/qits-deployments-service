@@ -49,6 +49,17 @@ public class ResourceProvisioningTest {
 
   private void existingRow(
       String application, String environment, String name, String database, String password) {
+    existingRow(application, environment, name, database, password, "public");
+  }
+
+  /** The same, with an explicit server — qits-2261: a neighbour's claim on the other postgres. */
+  private void existingRow(
+      String application,
+      String environment,
+      String name,
+      String database,
+      String password,
+      String server) {
     QuarkusTransaction.requiringNew()
         .run(
             () -> {
@@ -61,6 +72,7 @@ public class ResourceProvisioningTest {
               row.databaseName = database;
               row.roleName = database;
               row.password = password;
+              row.server = server;
               row.createdAt = Instant.now();
               resources.persist(row);
             });
@@ -152,6 +164,8 @@ public class ResourceProvisioningTest {
     // Two repositories naming one database is the one collision the qits_ allowlist cannot prevent,
     // so the registry answers it — and it answers with a FAILED deployment rather than a silent
     // no-op that would hand one application's store to another.
+    // qits-2261: this is the SAME tier and the SAME server (both default to public), so the belt
+    // still fires — narrowing it to the claim's own postgres must not widen this refusal.
     existingRow("prov-owner", "prov-e", "db", "qits_prov_shared", "the-owners-password");
 
     ResourceException refused =
@@ -162,6 +176,45 @@ public class ResourceProvisioningTest {
     assertTrue(refused.getMessage().contains("prov-owner"), refused.getMessage());
     assertTrue(refused.getMessage().contains("qits_prov_shared"), refused.getMessage());
     assertEquals(List.of(), provisioner.requests(), "the seam was never even called");
+  }
+
+  @Test
+  public void anotherApplicationsDatabaseOnTheOtherServerDoesNotRefuseProvisioning() {
+    // qits-2261: each tier/server is its own postgres, so a same-named claim on the OTHER server of
+    // this same tier is a different database and clashes with nothing — ensurePostgres's own belt,
+    // not the door's (DatabaseMoves.request), which is widened the same way for the same reason.
+    existingRow("prov-elsewhere-server", "prov-z", "db", "qits_prov_server_split", "theirs", "private");
+
+    List<DeploymentDriver.ResourceBinding> bindings =
+        provisioning.ensureAll("prov-new-on-public", "prov-z", one("db", "qits_prov_server_split"));
+
+    assertEquals(1, provisioner.requests().size());
+    assertEquals("qits_prov_server_split", provisioner.requests().get(0).databaseName());
+    assertEquals(
+        "jdbc:postgresql://prov-z-qits-oci-postgresql:5432/qits_prov_server_split",
+        bindings.get(0).value("URL"));
+    // The neighbour's own claim, on its own server, is untouched.
+    assertEquals(
+        "theirs", row("prov-elsewhere-server", "prov-z", "db").orElseThrow().password);
+  }
+
+  @Test
+  public void anotherApplicationsDatabaseInAnotherEnvironmentDoesNotRefuseProvisioning() {
+    // qits-2261: a same-named claim in a DIFFERENT tier is on a different postgres entirely (each
+    // tier has its own public server too), so it is no concern of this one — the general case
+    // `aPredecessorsDatabaseInAnotherTierDoesNotRefuseThisOne` below proves for a declared rename.
+    existingRow("prov-elsewhere-tier", "prov-z-other", "db", "qits_prov_tier_split", "theirs");
+
+    List<DeploymentDriver.ResourceBinding> bindings =
+        provisioning.ensureAll("prov-new-elsewhere-tier", "prov-z", one("db", "qits_prov_tier_split"));
+
+    assertEquals(1, provisioner.requests().size());
+    assertEquals("qits_prov_tier_split", provisioner.requests().get(0).databaseName());
+    assertEquals(
+        "jdbc:postgresql://prov-z-qits-oci-postgresql:5432/qits_prov_tier_split",
+        bindings.get(0).value("URL"));
+    assertEquals(
+        "theirs", row("prov-elsewhere-tier", "prov-z-other", "db").orElseThrow().password);
   }
 
   @Test

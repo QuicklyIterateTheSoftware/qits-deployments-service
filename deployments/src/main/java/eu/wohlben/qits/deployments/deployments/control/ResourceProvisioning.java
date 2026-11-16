@@ -567,8 +567,20 @@ public class ResourceProvisioning {
                   // outcome to refuse is the old one: an empty database under the new name and the
                   // data orphaned under the old.
                   refuseUnmovedClaim(applicationName, environmentName, renamedFrom, name, database);
+                  // Where this claim is provisioned: where it IS, or where the rule puts a new one.
+                  DatabaseServer target =
+                      resources
+                          .findOne(applicationName, environmentName, name)
+                          .map(row -> DatabaseServer.parse(row.server))
+                          .orElse(ruleServer);
                   for (PdResource claim : resources.listByDatabase(database)) {
                     if (claim.applicationName.equals(applicationName)) {
+                      continue;
+                    }
+                    if (!claim.applicationName.equals(renamedFrom)
+                        && !sharesServer(claim, environmentName, target)) {
+                      // Each tier and each server is its own postgres (qits-2261): the same name
+                      // there is another database, not this one.
                       continue;
                     }
                     if (!claim.applicationName.equals(renamedFrom)) {
@@ -712,6 +724,15 @@ public class ResourceProvisioning {
 
   /** What the registry bracket hands out: the stored password, and the server the claim is on. */
   private record Claim(String password, DatabaseServer server) {}
+
+  /**
+   * Whether another claim sits on the same postgres as this one: the same tier and the same server.
+   * A row without a tier (written before the plane had one) counts as the same, so it still refuses.
+   */
+  private static boolean sharesServer(PdResource claim, String environmentName, DatabaseServer server) {
+    return (claim.environmentName == null || claim.environmentName.equals(environmentName))
+        && DatabaseServer.parse(claim.server) == server;
+  }
 
   /**
    * The claim this deployment would provision for {@code name} — its own, or on a rename with no
