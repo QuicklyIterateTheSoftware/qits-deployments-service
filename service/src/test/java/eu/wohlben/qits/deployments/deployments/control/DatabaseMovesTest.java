@@ -20,7 +20,6 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -638,10 +637,8 @@ class DatabaseMovesTest {
     assertTrue(rename.contains("ALTER ROLE qits_platform_mvto RENAME TO qits_mvto;"), rename);
     assertFalse(rename.contains("DROP DATABASE"), "the kept copy keeps its name and its retention");
 
-    // Switched, not refused or aborted; MOVED is the cutover's word once qits-2249 lands.
     PdDatabaseMove move = movesOf("qits-mvto").get(0);
-    assertFalse(Set.of(PdDatabaseMoveState.REFUSED, PdDatabaseMoveState.ABORTED).contains(move.state), move.detail);
-    assertEquals("qits_mvto", claimOf("qits-mvto", "mv-to", "db").databaseName);
+    assertEquals(PdDatabaseMoveState.MOVED, move.state);
     assertEquals("qits_mvto", claimOf("qits-mvto", "mv-to", "db").roleName);
   }
 
@@ -657,9 +654,7 @@ class DatabaseMovesTest {
     String rename = containers.shots("rename").get(0).script();
     assertFalse(rename.contains("\\c "), rename);
     assertTrue(rename.indexOf("DROP ROLE IF EXISTS qits_mvtn;") < rename.indexOf("BEGIN;"), rename);
-    PdDatabaseMove move = movesOf("qits-mvtn").get(0);
-    assertFalse(Set.of(PdDatabaseMoveState.REFUSED, PdDatabaseMoveState.ABORTED).contains(move.state), move.detail);
-    assertEquals("qits_mvtn", claimOf("qits-mvtn", "mv-tn", "db").databaseName);
+    assertEquals(PdDatabaseMoveState.MOVED, movesOf("qits-mvtn").get(0).state);
   }
 
   @Test
