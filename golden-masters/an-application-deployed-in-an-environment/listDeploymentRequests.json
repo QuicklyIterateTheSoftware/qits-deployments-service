@@ -19,7 +19,9 @@
       "deployHold": false,
       "releaseRequestQualifiedId": null,
       "approvedBy": null,
-      "approvedAt": null
+      "approvedAt": null,
+      "declinedBy": null,
+      "declinedAt": null
     }
   ]
 }

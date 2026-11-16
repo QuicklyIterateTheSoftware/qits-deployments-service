@@ -213,6 +213,65 @@
       ]
     },
     {
+      "name": "a deployment request held for decline",
+      "slug": "a-deployment-request-held-for-decline",
+      "params": {
+        "applicationName": "contract-app-00000001",
+        "environmentId": "00000000-0000-4000-8000-000000000001",
+        "id": "00000000-0000-4000-8000-000000000002"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "declineDeploymentRequest",
+          "method": "POST",
+          "path": "/deployments/api/deployment-requests/{id}/decline",
+          "body": {
+            "note": "the change is wrong"
+          },
+          "status": 200,
+          "file": "a-deployment-request-held-for-decline/declineDeploymentRequest.json",
+          "frozen": {
+            "ids": [
+              "$.deploymentRequest.id",
+              "$.deploymentRequest.environmentId"
+            ],
+            "instants": [
+              "$.deploymentRequest.createdAt",
+              "$.deploymentRequest.gateSettledAt",
+              "$.deploymentRequest.declinedAt"
+            ],
+            "strings": [
+              "$.deploymentRequest.applicationName",
+              "$.deploymentRequest.repoId"
+            ],
+            "listFilteredTo": null
+          }
+        },
+        {
+          "operationId": "getDeploymentRequest",
+          "method": "GET",
+          "path": "/deployments/api/deployment-requests/{id}",
+          "status": 200,
+          "file": "a-deployment-request-held-for-decline/getDeploymentRequest.json",
+          "frozen": {
+            "ids": [
+              "$.deploymentRequest.id",
+              "$.deploymentRequest.environmentId"
+            ],
+            "instants": [
+              "$.deploymentRequest.createdAt"
+            ],
+            "strings": [
+              "$.deploymentRequest.applicationName",
+              "$.deploymentRequest.repoId"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "a deployment request that deployed",
       "slug": "a-deployment-request-that-deployed",
       "params": {

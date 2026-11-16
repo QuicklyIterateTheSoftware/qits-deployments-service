@@ -18,7 +18,9 @@
     "deployHold": true,
     "releaseRequestQualifiedId": "contract-app-rr-1",
     "approvedBy": null,
-    "approvedAt": null
+    "approvedAt": null,
+    "declinedBy": null,
+    "declinedAt": null
   },
   "deployment": null
 }
