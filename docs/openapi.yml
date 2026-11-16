@@ -941,6 +941,41 @@ paths:
         - qits:admin-agent
         - qits:desk-admin
         - qits:desk
+  /deployments/api/applications/{applicationId}/start:
+    post:
+      summary: "Start an application on its current database claims — its newest ACTIVE\
+        \ version redeployed, no database move planned"
+      operationId: startApplication
+      parameters:
+      - name: applicationId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "202":
+          description: Queued on the deploy worker; the ACTIVE deployment and the
+            version it redeploys are named
+        "400":
+          description: Not an application id
+        "404":
+          description: "Nothing has ever been deployed for this application, or its\
+            \ tier is gone"
+        "409":
+          description: "A deployment or a database move of it is in flight, it has\
+            \ no ACTIVE deployment to start, or it is this deployer itself"
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Application Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:admin-agent
+        - qits:desk-admin
+        - qits:desk
   /deployments/api/claims/idp-clients:
     get:
       summary: "Every idp-client row this component holds, ordered by clientId — qits-idp's\

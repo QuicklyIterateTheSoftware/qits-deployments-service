@@ -27,6 +27,26 @@ public class PdDatabaseMoveRepository implements PanacheRepositoryBase<PdDatabas
         "state not in ?1 order by createdAt asc, id asc", List.copyOf(PdDatabaseMoveState.TERMINAL));
   }
 
+  /** Every move one deployment's run wrote (V24, qits-2249), oldest first. */
+  public List<PdDatabaseMove> listByDeployment(String deploymentId) {
+    return list("deploymentId = ?1 order by createdAt asc, id asc", deploymentId);
+  }
+
+  /**
+   * The moves of an application in a tier that are under way and not an operator's {@code QUEUED}
+   * one — a stop, a copy, a switch awaiting its deployment, a rollback owed (qits-2249). What a new
+   * deployment of it and the start door wait behind.
+   */
+  public List<PdDatabaseMove> listUnderWay(String applicationName, String environmentName) {
+    return list(
+        "applicationName = ?1 and environmentName = ?2 and state not in ?3 order by createdAt asc, id asc",
+        applicationName,
+        environmentName,
+        java.util.stream.Stream.concat(
+                PdDatabaseMoveState.TERMINAL.stream(), java.util.stream.Stream.of(PdDatabaseMoveState.QUEUED))
+            .toList());
+  }
+
   /** The kept copies whose retention is over and that nothing has dropped yet. */
   public List<PdDatabaseMove> listExpired(Instant now) {
     return list(

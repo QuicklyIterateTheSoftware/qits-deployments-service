@@ -92,6 +92,14 @@ public class PdDatabaseMove extends PanacheEntityBase {
   @Column(name = "state", nullable = false, length = 32)
   public PdDatabaseMoveState state;
 
+  /**
+   * The deployment whose run wrote this row (V24, qits-2249): what decides, after the switch, whether
+   * the move is {@code MOVED} (that deployment went live) or rolled back (it did not). Null on a row
+   * written before V24, on an operator's move still {@code QUEUED}, and on the deployer's own move.
+   */
+  @Column(name = "deployment_id", length = 36)
+  public String deploymentId;
+
   /** The swarm service this move scaled to zero, or null when nothing was running. */
   @Column(name = "service_name", length = 255)
   public String serviceName;

@@ -3,10 +3,14 @@ package eu.wohlben.qits.deployments.deployments.control;
 import static eu.wohlben.qits.deployments.deployments.control.DeployService.CUTOVER_BUDGET;
 
 import eu.wohlben.qits.db.DbRetry;
+import eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove;
+import eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentStatus;
+import eu.wohlben.qits.deployments.deployments.persistence.PdDatabaseMoveRepository;
 import eu.wohlben.qits.deployments.deployments.persistence.PdDeploymentRepository;
 import eu.wohlben.qits.deployments.environments.control.ApplicationKeys;
+import eu.wohlben.qits.deployments.environments.control.EnvironmentService;
 import eu.wohlben.qits.deployments.environments.control.PdIdentifiers;
 import eu.wohlben.qits.deployments.environments.error.BadRequestException;
 import eu.wohlben.qits.deployments.environments.error.ConflictException;
@@ -15,6 +19,7 @@ import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;
+import java.util.List;
 import org.jboss.logging.Logger;
 
 /**
@@ -58,6 +63,11 @@ import org.jboss.logging.Logger;
  * a new stamp drops a leading one and keeps everything under it — which is the deployment's own
  * diagnosis, and the thing that must never be lost.
  *
+ * <p><b>A third lever, {@link #start}, IS a deployment, and says so</b> (qits-2249): the break-glass
+ * start of an application on the database claims as they are — the newest {@code ACTIVE} version
+ * redeployed through the ordinary deploy path with no database move planned, for a service a move or
+ * a hand fix left stopped. It writes a new deployment row like any deploy does.
+ *
  * <p><b>Nothing arriving over HTTP shapes an argv.</b> The caller names an application id; the
  * service name the update is issued against comes off the <b>deployment row</b> ({@code
  * container_name}, which under swarm is the service's name and therefore its address), the same
@@ -84,6 +94,9 @@ public class ApplicationScaling {
   @Inject PdDeploymentRepository deployments;
   @Inject DeploymentDriver driver;
   @Inject DeployService worker;
+  @Inject DatabaseMoves databaseMoves;
+  @Inject PdDatabaseMoveRepository moves;
+  @Inject EnvironmentService environments;
 
   /**
    * What the door answers with: what it resolved, and what it queued. It is not an outcome —
@@ -144,6 +157,100 @@ public class ApplicationScaling {
     return accepted(placed, null);
   }
 
+  /**
+   * What the start door queued: the place, and the {@code ACTIVE} deployment whose version it
+   * redeploys. Not an outcome — the new deployment row is read from the listing.
+   */
+  public record StartAccepted(
+      String applicationId,
+      String applicationName,
+      String environmentId,
+      String deploymentId,
+      String version) {}
+
+  /**
+   * Start an application on its database claims as they are now — the break-glass door (qits-2249,
+   * {@code POST /applications/{id}/start}). The newest {@code ACTIVE} version is redeployed through
+   * the ordinary deploy path on the worker: provisioning runs, every binding is rendered from the
+   * claim it finds, and NO database move is planned, whatever that version's spec resolves its
+   * databases to. For a service a database move left stopped, or one a person stopped and moved by
+   * hand: the one door that starts it on the data where it is.
+   *
+   * <p>Refused, on the request thread: an unknown application or one on no tier (404); a deployment
+   * of it {@code QUEUED} or {@code STARTING}, or a database move of it not yet settled — queued,
+   * running, awaiting its deployment or being rolled back (409: those decide where the data is, and a
+   * start beside them would race them for the claims); no {@code ACTIVE} deployment to start (409);
+   * and this deployer itself, which is running if it answers (409).
+   *
+   * @param actor who asked, for the log; null reads as "an operator"
+   */
+  public StartAccepted start(String applicationId, String actor) {
+    ApplicationKeys.Key key = keyOf(applicationId);
+    String application = key.applicationName();
+    PdIdentifiers.requireName(application, "application name");
+    if (BootResourceRegistration.APPLICATION.equals(application)) {
+      throw new ConflictException(
+          application + " is this deployer: it is running, since it answered, so there is nothing to start");
+    }
+    if (key.environmentId() == null || key.environmentId().isBlank()) {
+      throw new NotFoundException(applicationId + " names no tier, so nothing of it is deployed to start");
+    }
+    return QuarkusTransaction.joiningExisting()
+        .call(
+            () -> {
+              List<PdDeployment> rows =
+                  deployments.listForPlaceNewestFirst(application, key.environmentId());
+              if (rows.isEmpty()) {
+                throw new NotFoundException(
+                    "nothing has ever been deployed for " + applicationId + ", so there is nothing to start");
+              }
+              String tier = environments.require(key.environmentId()).name;
+              for (PdDeployment row : rows) {
+                if (row.status == PdDeploymentStatus.QUEUED || row.status == PdDeploymentStatus.STARTING) {
+                  throw new ConflictException(
+                      "deployment " + row.id + " of " + applicationId + " is " + row.status
+                          + ": it decides what runs, so a start waits for it");
+                }
+              }
+              List<PdDatabaseMove> unsettled =
+                  moves.list(
+                      "applicationName = ?1 and environmentName = ?2 and state not in ?3",
+                      application,
+                      tier,
+                      List.copyOf(PdDatabaseMoveState.TERMINAL));
+              if (!unsettled.isEmpty()) {
+                PdDatabaseMove move = unsettled.get(0);
+                throw new ConflictException(
+                    "the database move "
+                        + move.id
+                        + " of `"
+                        + move.resourceName
+                        + "` of "
+                        + application
+                        + " is "
+                        + move.state
+                        + ": it decides where the data is, so a start waits for it to settle");
+              }
+              PdDeployment active =
+                  rows.stream()
+                      .filter(row -> row.status == PdDeploymentStatus.ACTIVE)
+                      .findFirst()
+                      .orElseThrow(
+                          () ->
+                              new ConflictException(
+                                  applicationId
+                                      + " has no ACTIVE deployment to start: its newest is "
+                                      + rows.get(0).status));
+              DatabaseMoves.StartQueued queued = databaseMoves.queueStart(active, tier, actor);
+              return new StartAccepted(
+                  applicationId,
+                  application,
+                  key.environmentId(),
+                  queued.deploymentId(),
+                  queued.version());
+            });
+  }
+
   private static Accepted accepted(Placed placed, Integer replicas) {
     return new Accepted(
         placed.applicationId(),
@@ -165,15 +272,7 @@ public class ApplicationScaling {
    * was issued.
    */
   private Placed resolve(String applicationId) {
-    ApplicationKeys.Key key =
-        ApplicationKeys.parse(applicationId)
-            .orElseThrow(
-                () ->
-                    new BadRequestException(
-                        "'"
-                            + applicationId
-                            + "' is not an application id: it reads <environmentId>:<name>, or"
-                            + " platform:<name> for an application on no tier"));
+    ApplicationKeys.Key key = keyOf(applicationId);
     // The name reaches a query and, through the row, a service name — checked where every other
     // stored identifier is, at the boundary.
     PdIdentifiers.requireName(key.applicationName(), "application name");
@@ -203,6 +302,17 @@ public class ApplicationScaling {
               + " never reached the orchestrator, so no service carries this application yet");
     }
     return placed;
+  }
+
+  private static ApplicationKeys.Key keyOf(String applicationId) {
+    return ApplicationKeys.parse(applicationId)
+        .orElseThrow(
+            () ->
+                new BadRequestException(
+                    "'"
+                        + applicationId
+                        + "' is not an application id: it reads <environmentId>:<name>, or"
+                        + " platform:<name> for an application on no tier"));
   }
 
   // --- on the worker -----------------------------------------------------------------------------

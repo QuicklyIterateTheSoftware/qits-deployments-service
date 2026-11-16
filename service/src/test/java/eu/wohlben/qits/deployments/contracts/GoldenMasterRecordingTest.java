@@ -296,6 +296,15 @@ class GoldenMasterRecordingTest {
               202,
               null,
               null),
+          // qits-2249: the break-glass start — the newest ACTIVE version on the current claims.
+          new Interaction(
+              ProviderStates.AN_APPLICATION_RUNNING,
+              "startApplication",
+              "POST",
+              "/deployments/api/applications/{applicationId}/start",
+              202,
+              null,
+              null),
           new Interaction(
               ProviderStates.AN_APPLICATION_RUNNING,
               "retireApplication",
