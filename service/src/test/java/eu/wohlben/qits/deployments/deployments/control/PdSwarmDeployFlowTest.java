@@ -125,6 +125,11 @@ public class PdSwarmDeployFlowTest {
     assertTrue(queued.occurredAt.compareTo(started.occurredAt) <= 0, "queued before started");
     assertTrue(started.occurredAt.compareTo(active.occurredAt) <= 0, "started before active");
     assertNull(only("DeploymentFailed", 0), "a green deployment announces no failure");
+    // A release declaring no variants names none on its row — an empty list, never null
+    // (qits-2296).
+    List<Map<String, Object>> release = requests("repoId=repo-swarm-green&version=" + VERSION);
+    assertEquals(1, release.size(), release.toString());
+    assertEquals(List.of(), release.get(0).get("variants"));
   }
 
   @Test
@@ -273,6 +278,25 @@ public class PdSwarmDeployFlowTest {
     assertEquals(1, release.size(), release.toString());
     assertEquals("repo-swarm-req", release.get(0).get("applicationName"));
     assertNull(release.get(0).get("variant"));
+    // qits-2296: the main row names the variants the release declares, so a reader waiting on the
+    // whole release knows a variant row is coming before it exists.
+    assertEquals(List.of("private"), release.get(0).get("variants"));
+    assertEquals(
+        release,
+        requests("repoId=repo-swarm-req&version=" + VERSION + "&includeVariants=false"),
+        "false is the default listing");
+
+    // ...and asked for, the release's listing carries the variant's row too, newest first.
+    List<Map<String, Object>> whole =
+        requests("repoId=repo-swarm-req&version=" + VERSION + "&includeVariants=true");
+    assertEquals(
+        List.of("repo-swarm-req-private", "repo-swarm-req"),
+        whole.stream().map(row -> (String) row.get("applicationName")).toList(),
+        whole.toString());
+    assertEquals("private", whole.get(0).get("variant"));
+    assertEquals(List.of(), whole.get(0).get("variants"), "a variant's row declares nothing");
+    assertEquals("ACTIVE", whole.get(0).get("deploymentStatus"));
+    assertEquals(List.of("private"), whole.get(1).get("variants"));
 
     List<Map<String, Object>> variant =
         requests("environmentId=" + environmentId + "&applicationName=repo-swarm-req-private");
@@ -308,12 +332,81 @@ public class PdSwarmDeployFlowTest {
         DeploymentSpecParser.parse("application: repo-swarm-broken\n", "deployments.same.yml"));
 
     postRelease("run-variant-broken", "repo-swarm-broken");
-    List<Map<String, Object>> deployments = awaitSettled(environmentId, 1);
+    // The main application, and one FAILED row for each broken variant (qits-2296).
+    List<Map<String, Object>> deployments = awaitSettled(environmentId, 4);
 
-    assertEquals("repo-swarm-broken", deployments.get(0).get("applicationName"));
-    assertEquals("ACTIVE", deployments.get(0).get("status"));
+    Map<String, Object> main =
+        deployments.stream()
+            .filter(row -> "repo-swarm-broken".equals(row.get("applicationName")))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError(deployments.toString()));
+    assertEquals("ACTIVE", main.get("status"));
     assertEquals(1, fake.applied().size(), "only the main application was applied");
     assertEquals(1, all("DeploymentActive").size());
+  }
+
+  @Test
+  public void anUnregisteredVariantThatBreaksStillEndsInAFailedRow() {
+    // qits-2296: the main row names every declared variant, and a reader waiting on the release
+    // waits for a terminal row of each. A variant that breaks before it was ever registered has no
+    // place of its own, so its FAILED row lands on the MAIN application's places, under the name
+    // the variant would have carried (`<main>-<variant>`, or the file's own `application:`) and
+    // with `variant` set — nothing is registered for it.
+    String environmentId = createEnvironment("swarm-variant-unregistered");
+    specs.script(
+        "repo-swarm-unreg",
+        DeploymentSpecParser.parse(
+            "variants: private, missing, same\n", "deployments.yml of repo-swarm-unreg"));
+    specs.scriptFailureAt(
+        "repo-swarm-unreg",
+        SpecSource.variantPath("private"),
+        "deployments.private.yml line 1: unknown key `nonsense`");
+    // `missing` is scripted nowhere; `same` names the main application, which a variant may not.
+    specs.scriptAt(
+        "repo-swarm-unreg",
+        SpecSource.variantPath("same"),
+        DeploymentSpecParser.parse("application: repo-swarm-unreg\n", "deployments.same.yml"));
+
+    postRelease("run-variant-unregistered", "repo-swarm-unreg");
+    awaitSettled(environmentId, 4);
+
+    List<Map<String, Object>> whole =
+        requests("repoId=repo-swarm-unreg&version=" + VERSION + "&includeVariants=true");
+    Map<String, Object> mainRow =
+        whole.stream()
+            .filter(row -> row.get("variant") == null)
+            .findFirst()
+            .orElseThrow(() -> new AssertionError(whole.toString()));
+    assertEquals(List.of("private", "missing", "same"), mainRow.get("variants"));
+    assertEquals("ACTIVE", mainRow.get("deploymentStatus"));
+    for (String variant : List.of("private", "missing", "same")) {
+      Map<String, Object> row =
+          whole.stream()
+              .filter(r -> variant.equals(r.get("variant")))
+              .findFirst()
+              .orElseThrow(() -> new AssertionError(variant + " has no row: " + whole));
+      assertEquals("repo-swarm-unreg-" + variant, row.get("applicationName"));
+      assertEquals(environmentId, row.get("environmentId"), "the main application's place");
+      assertEquals("FAILED", row.get("deploymentStatus"), row.toString());
+      assertNotNull(row.get("deploymentId"));
+    }
+    assertEquals(4, whole.size(), whole.toString());
+    assertEquals(
+        1,
+        requests("repoId=repo-swarm-unreg&version=" + VERSION).size(),
+        "the default listing is still the main application's alone");
+
+    List<OutboxEvent> failures = all("DeploymentFailed");
+    assertEquals(3, failures.size());
+    assertTrue(
+        failures.stream()
+            .allMatch(
+                event ->
+                    event.payload.contains("\"status\":\"FAILED\"")
+                        && event.payload.contains("\"variant\":\"")),
+        failures.toString());
+    // Nothing was registered for them: a variant's next, usable release registers it for real.
+    assertEquals(1, fake.applied().size(), "only the main application was applied");
   }
 
   @Test

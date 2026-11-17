@@ -313,6 +313,47 @@
       ]
     },
     {
+      "name": "a release with a variant deployed",
+      "slug": "a-release-with-a-variant-deployed",
+      "params": {
+        "applicationName": "contract-app-00000001",
+        "environmentId": "00000000-0000-4000-8000-000000000001",
+        "repoId": "contract-app-00000001",
+        "version": "2026.101.120000"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listDeploymentRequests",
+          "method": "GET",
+          "path": "/deployments/api/deployment-requests",
+          "query": {
+            "includeVariants": "true",
+            "repoId": "{repoId}",
+            "version": "{version}"
+          },
+          "status": 200,
+          "file": "a-release-with-a-variant-deployed/listDeploymentRequests.json",
+          "frozen": {
+            "ids": [
+              "$.deploymentRequests[*].id",
+              "$.deploymentRequests[*].environmentId",
+              "$.deploymentRequests[*].deploymentId"
+            ],
+            "instants": [
+              "$.deploymentRequests[*].createdAt",
+              "$.deploymentRequests[*].gateSettledAt"
+            ],
+            "strings": [
+              "$.deploymentRequests[*].applicationName",
+              "$.deploymentRequests[*].repoId"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "a released version of a deployable repository",
       "slug": "a-released-version-of-a-deployable-repository",
       "params": {

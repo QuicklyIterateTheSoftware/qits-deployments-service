@@ -6,6 +6,7 @@ import eu.wohlben.qits.deployments.api.SuiteBearers;
 import eu.wohlben.qits.deployments.deployments.control.ArtifactPurge;
 import eu.wohlben.qits.deployments.deployments.control.DeployService;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentDriver;
+import eu.wohlben.qits.deployments.deployments.control.DeploymentSpecParser;
 import eu.wohlben.qits.deployments.deployments.control.EdgeRouteTables;
 import eu.wohlben.qits.deployments.deployments.control.FakeArtifactPurge;
 import eu.wohlben.qits.deployments.deployments.control.FakeDeploymentDriver;
@@ -95,6 +96,15 @@ public class ProviderStates {
   public static final String A_SERVICE_LINKED_INTO_AN_ENVIRONMENT =
       "a service linked into an environment";
   public static final String AN_ENVIRONMENT_TO_TEAR_DOWN = "an environment to tear down";
+
+  /**
+   * One release whose main file declares {@code variants: private} (qits-1976), both applications
+   * deployed ACTIVE in a designated environment: the main {@code contract-app-<token>} and the
+   * variant {@code contract-app-<token>-private}, same {@code repoId} and {@code version}. Its main
+   * request names {@code variants: ["private"]}, and {@code ?includeVariants=true} lists the
+   * variant's request beside it (qits-2296) — what qits-projects reads to wait for a whole release.
+   */
+  public static final String A_RELEASE_WITH_A_VARIANT = "a release with a variant deployed";
 
   /**
    * One application deployed ACTIVE whose spec declares a postgres resource {@code db}, its claim on
@@ -239,6 +249,7 @@ public class ProviderStates {
     states.put(A_DECOMMISSIONED_APPLICATION, this::aDecommissionedApplication);
     states.put(A_SERVICE_LINKED_INTO_AN_ENVIRONMENT, this::aServiceLinkedIntoAnEnvironment);
     states.put(AN_ENVIRONMENT_TO_TEAR_DOWN, this::anEnvironmentToTearDown);
+    states.put(A_RELEASE_WITH_A_VARIANT, this::aReleaseWithAVariant);
     states.put(AN_APPLICATION_HOLDING_A_DATABASE, this::anApplicationHoldingADatabase);
     states.put(A_FINISHED_DATABASE_MOVE, this::aFinishedDatabaseMove);
     states.put(A_RUNNING_DATABASE_MOVE, this::aRunningDatabaseMove);
@@ -405,6 +416,35 @@ public class ProviderStates {
     String application = "contract-app-" + token;
     release(application, VERSION);
     settle(environmentId, 1);
+    Map<String, String> params = new TreeMap<>();
+    params.put("applicationName", application);
+    params.put("environmentId", environmentId);
+    params.put("repoId", application);
+    params.put("version", VERSION);
+    return new Setup(params, List.of(token));
+  }
+
+  /**
+   * {@link #A_RELEASE_WITH_A_VARIANT}: a main file naming {@code variants: private}, the variant
+   * file naming {@code <application>-private}, one release, and both applications ACTIVE. The main
+   * deploys first and the variant after it, so the variant's request is the newer row.
+   */
+  private Setup aReleaseWithAVariant() {
+    driver.reset();
+    String token = token();
+    String environmentId = createEnvironment("contract-" + token, true);
+    String application = "contract-app-" + token;
+    specs.script(
+        application,
+        DeploymentSpecParser.parse("variants: private\n", "deployments.yml of " + application));
+    specs.scriptAt(
+        application,
+        SpecSource.variantPath("private"),
+        DeploymentSpecParser.parse(
+            "application: " + application + "-private\n",
+            "deployments.private.yml of " + application));
+    release(application, VERSION);
+    settleAllActive(environmentId, 2);
     Map<String, String> params = new TreeMap<>();
     params.put("applicationName", application);
     params.put("environmentId", environmentId);
@@ -968,6 +1008,23 @@ public class ProviderStates {
       if (statuses.size() == count
           && "ACTIVE".equals(statuses.get(0))
           && statuses.subList(1, count).stream().allMatch("DECOMMISSIONED"::equals)) {
+        return;
+      }
+      pause(environmentId);
+    }
+    throw new IllegalStateException(
+        "the deployments into " + environmentId + " never settled: " + statuses(environmentId));
+  }
+
+  /**
+   * Waits until the environment holds {@code count} deployments, every one ACTIVE — the shape of one
+   * release deployed as several applications, where nothing supersedes anything.
+   */
+  private static void settleAllActive(String environmentId, int count) {
+    long deadline = System.currentTimeMillis() + 15_000;
+    while (System.currentTimeMillis() < deadline) {
+      List<String> statuses = statuses(environmentId);
+      if (statuses.size() == count && statuses.stream().allMatch("ACTIVE"::equals)) {
         return;
       }
       pause(environmentId);

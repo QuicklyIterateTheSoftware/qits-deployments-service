@@ -133,6 +133,11 @@ class ConsumerPactVerificationTest {
     return states.params(ProviderStates.AN_APPLICATION_DEPLOYED);
   }
 
+  @State(ProviderStates.A_RELEASE_WITH_A_VARIANT)
+  Map<String, String> aReleaseWithAVariant() {
+    return states.params(ProviderStates.A_RELEASE_WITH_A_VARIANT);
+  }
+
   @State(ProviderStates.THE_PLATFORM_ENVIRONMENT)
   Map<String, String> thePlatformEnvironment() {
     return states.params(ProviderStates.THE_PLATFORM_ENVIRONMENT);

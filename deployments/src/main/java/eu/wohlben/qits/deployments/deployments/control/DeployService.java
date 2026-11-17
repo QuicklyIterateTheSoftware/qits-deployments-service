@@ -1683,7 +1683,7 @@ public class DeployService implements ReleaseAnnouncements {
     } catch (RuntimeException e) {
       recordUnreadableSpec(
           runId, repository, releasedName, releasedName, version, null, packageName, priority, hold,
-          causationId, door, e);
+          causationId, door, List.of(), e);
       return;
     }
     VariantRead pending = read.pending();
@@ -1691,7 +1691,7 @@ public class DeployService implements ReleaseAnnouncements {
       String mainApplication = applicationName(releasedName, read.main().spec());
       recordUnreadableSpec(
           runId, repository, releasedName, mainApplication, version, read.main().commitSha(),
-          packageName, priority, hold, causationId, door,
+          packageName, priority, hold, causationId, door, read.main().spec().variants(),
           pending.hold(mainApplication, version));
       return;
     }
@@ -1878,8 +1878,9 @@ public class DeployService implements ReleaseAnnouncements {
    * <p><b>Every other failure is the variant's own and never the main deployment's</b>, which runs
    * right before this. A variant file that failed permanently, is absent, does not parse, or breaks
    * a variant rule ({@link DeploymentSpecParser#checkVariant}) is recorded {@code FAILED} on the
-   * places its application is registered in — and only logged for one never registered, exactly as
-   * an unreadable main file of an unregistered repository is. The next release reads it again.
+   * places its application is registered in — and, for one never registered, on the MAIN
+   * application's places under the variant's name (qits-2296), so every variant the main row
+   * declares ends in a terminal row of its own. The next release reads it again.
    */
   private void deployVariants(
       String runId,
@@ -1921,8 +1922,8 @@ public class DeployService implements ReleaseAnnouncements {
                 ? spec.application()
                 : fallbackName;
         recordVariantFailure(
-            runId, repository, name, variant, version, commitSha, packageName, priority, hold,
-            causationId, e);
+            runId, repository, mainApplication, name, variant, version, commitSha, packageName,
+            priority, hold, causationId, e);
         continue;
       }
       LOG.infof(
@@ -1957,12 +1958,24 @@ public class DeployService implements ReleaseAnnouncements {
 
   /**
    * A variant whose file could not be used: {@code FAILED} rows, naming why, on the places its
-   * application is registered in. A variant never registered has no place and gets a WARN only —
-   * the unreadable-main-file stance, one application over.
+   * application is registered in.
+   *
+   * <p><b>A variant never registered is recorded on its MAIN application's places</b>, under its
+   * own name and with {@code variant} set (qits-2296). It used to get a WARN only — the
+   * unreadable-main-file stance, one application over — but the main row now names every declared
+   * variant, and a reader waiting on the release (qits-projects, deciding FINALIZED) waits for a
+   * terminal row of each. A variant that failed before it was ever registered would leave that
+   * reader waiting for a row nobody writes. Unlike an unreadable main file, the place is known
+   * here: the main file was read and the main application was just registered, and a variant is
+   * linked into exactly the tiers its main application is. Nothing is registered for it — no
+   * catalogue row, no alias — only the request, the {@code FAILED} deployment and its {@code
+   * DeploymentFailed}, as for a registered one. Only a main application registered nowhere still
+   * leaves a WARN alone.
    */
   private void recordVariantFailure(
       String runId,
       RepositoryRef repository,
+      String mainApplication,
       String applicationName,
       String variant,
       String version,
@@ -1977,6 +1990,9 @@ public class DeployService implements ReleaseAnnouncements {
         "The variant %s (%s@%s) was not deployed: %s",
         variant, applicationName, version, cause.getMessage());
     List<Target> places = alreadyRegistered(applicationName, variant);
+    if (places.isEmpty()) {
+      places = alreadyRegistered(mainApplication, applicationName, variant);
+    }
     if (places.isEmpty()) {
       return;
     }
@@ -2061,7 +2077,10 @@ public class DeployService implements ReleaseAnnouncements {
                 packageName,
                 priority,
                 hold,
-                causationId),
+                causationId,
+                // The main rows name the variants this file declares, before the main deploys;
+                // a variant file declares none (checkVariant), and its rows never carry them.
+                variant == null && spec != null ? spec.variants() : List.of()),
             targets);
     if (failure != null) {
       for (Queued row : queued) {
@@ -2179,6 +2198,9 @@ public class DeployService implements ReleaseAnnouncements {
    * commit its tag resolved to, so the rows land on the main application's places and the cause
    * names the variant's file. The hold is still keyed by {@code releasedName}, because that is what
    * the next release of this repository supersedes it by and what {@link #isHeldOnSpec} asks.
+   *
+   * @param variants the variants the main file declares, when it was read — so the held main rows
+   *     already name them (qits-2296); empty when the main file itself did not answer
    */
   private void recordUnreadableSpec(
       String runId,
@@ -2192,6 +2214,7 @@ public class DeployService implements ReleaseAnnouncements {
       DeployHold hold,
       UUID causationId,
       Door door,
+      List<String> variants,
       RuntimeException cause) {
     boolean retryable = SpecException.isRetryable(cause);
     String failure = "[deployment spec unreadable: " + cause.getMessage() + "]";
@@ -2210,7 +2233,8 @@ public class DeployService implements ReleaseAnnouncements {
                 packageName,
                 priority,
                 hold,
-                causationId),
+                causationId,
+                variants),
             alreadyRegistered(application));
     List<String> rows = new ArrayList<>();
     for (Queued row : queued) {
@@ -2455,6 +2479,11 @@ public class DeployService implements ReleaseAnnouncements {
    * One accepted release, as the values every row it writes needs. It exists so the request and the
    * deployment are written from one description rather than from eight positional arguments — the
    * {@link Plan} stance, applied one step earlier.
+   *
+   * <p>{@code variants} are the names the release's MAIN file declares under {@code variants:}
+   * (qits-2296), written onto every main-application request {@link #queue} creates so a reader of
+   * the release's listing knows which variant rows are still to come. Empty wherever the main file
+   * was not read or declares none; the variant rows themselves never carry it.
    */
   private record Release(
       String runId,
@@ -2465,11 +2494,29 @@ public class DeployService implements ReleaseAnnouncements {
       String packageName,
       String priority,
       DeployHold hold,
-      UUID causationId) {
+      UUID causationId,
+      List<String> variants) {
 
     /** Null and {@link DeployHold#NONE} say the same thing: the release asked for no hold. */
     Release {
       hold = held(hold);
+      variants = variants == null ? List.of() : List.copyOf(variants);
+    }
+
+    /** A release whose rows declare no variants — every path that did not read a main file. */
+    Release(
+        String runId,
+        RepositoryRef repository,
+        String applicationName,
+        String version,
+        String commitSha,
+        String packageName,
+        String priority,
+        DeployHold hold,
+        UUID causationId) {
+      this(
+          runId, repository, applicationName, version, commitSha, packageName, priority, hold,
+          causationId, List.of());
     }
   }
 
@@ -2963,7 +3010,17 @@ public class DeployService implements ReleaseAnnouncements {
 
   /** {@link #alreadyRegistered(String)} for a variant's application, whose failures say so. */
   private List<Target> alreadyRegistered(String applicationName, String variant) {
-    Optional<LinkedService> known = findService(applicationName);
+    return alreadyRegistered(applicationName, applicationName, variant);
+  }
+
+  /**
+   * The places {@code registeredName} is registered in, as targets for {@code applicationName} —
+   * the same name, except for a variant never registered whose failure is recorded on its MAIN
+   * application's places under its own name ({@link #recordVariantFailure}, qits-2296).
+   */
+  private List<Target> alreadyRegistered(
+      String registeredName, String applicationName, String variant) {
+    Optional<LinkedService> known = findService(registeredName);
     if (known.isEmpty()) {
       return List.of();
     }
@@ -3051,6 +3108,12 @@ public class DeployService implements ReleaseAnnouncements {
                     // Null for the main application; a variant's name otherwise — what keeps a
                     // variant's rows out of the release's own listing (qits-1976).
                     request.variant = target.variant();
+                    // ...and on the main rows, the variants the release declares: rows a reader
+                    // of the release must wait for, which are queued only after this main
+                    // deployment has run (qits-2296).
+                    if (target.variant() == null && !release.variants().isEmpty()) {
+                      request.declaredVariants = String.join(",", release.variants());
+                    }
                     Gate verdict = gate(release, target);
                     request.qualityGate = verdict.state();
                     request.gateDetail = verdict.detail();
@@ -5511,9 +5574,24 @@ public class DeployService implements ReleaseAnnouncements {
    * release's OWN deployment and takes its newest row, so a variant that deployed after the main
    * application, or failed, would decide the release's verdict. A variant's requests stay on every
    * other listing — its application's, its tier's and its project's.
+   *
+   * <p><b>…unless the caller asks for them</b> ({@code includeVariants}, qits-2296). A reader
+   * deciding whether a WHOLE release is done — qits-projects' FINALIZED — has to see a variant that
+   * failed, and has to know variants are coming at all: the main application deploys to {@code
+   * ACTIVE} before its variants are queued. The main rows name the declared variants ({@code
+   * variants} on the wire) and this listing, opted into, carries the variant rows beside them, so
+   * that reader waits until each declared name has a terminal row. Opt-in, so the default answer is
+   * exactly the qits-1976 one and a reader taking "the newest row" is not handed a variant's.
+   *
+   * @param includeVariants true to list the variants' rows too, interleaved newest-first by {@code
+   *     seq} with the main application's; false for the main application's rows alone
    */
-  public List<RequestWithDeployment> deploymentRequestsByRelease(String repoId, String version) {
-    return withDeployments(requests.listMainByRepoAndVersionNewestFirst(repoId, version));
+  public List<RequestWithDeployment> deploymentRequestsByRelease(
+      String repoId, String version, boolean includeVariants) {
+    return withDeployments(
+        includeVariants
+            ? requests.listByRepoAndVersionNewestFirst(repoId, version)
+            : requests.listMainByRepoAndVersionNewestFirst(repoId, version));
   }
 
   /**

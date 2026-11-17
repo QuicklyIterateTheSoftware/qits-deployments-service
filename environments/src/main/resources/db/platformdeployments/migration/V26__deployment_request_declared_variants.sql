@@ -1,0 +1,18 @@
+-- WHICH VARIANTS A RELEASE DECLARES, ON ITS MAIN REQUEST (qits-2296).
+--
+-- V18 told a variant's request rows apart from the main application's, so the by-release listing
+-- could leave them out. That left the reader of the listing — qits-projects, deciding whether a
+-- release request is FINALIZED — unable to wait for a variant at all: the main application deploys
+-- to ACTIVE BEFORE its variants are queued, so at the moment the main row is terminal the variant
+-- rows do not exist yet, and nothing said they were coming.
+--
+-- So the MAIN request names them, from the moment it is written: the names the main
+-- deployments.yml lists under `variants:`, COMMA-SEPARATED, IN THE FILE'S ORDER — V19's
+-- `retired_settings` convention. A variant name is an application-name suffix and holds no comma.
+-- The read door serves it as a list (`variants`), empty where the column is null.
+--
+-- NULLABLE, NO DEFAULT AND NO BACKFILL. Null is a main request whose release declares no variants,
+-- every variant's own request, a request whose main file could not be read (nothing knows what it
+-- would have declared), and every request written before this column existed — those releases'
+-- variants, if any, already ran or failed and nothing waits on them now.
+alter table pd_deployment_request add column declared_variants text;

@@ -53,6 +53,18 @@ public class DeploymentMapper {
   }
 
   /**
+   * The {@code declared_variants} column as the list it is: comma-separated variant names in the
+   * file's order, and an EMPTY list — never null — when the row names none, so a reader iterating
+   * "the variants still to come" needs no null arm. A variant name holds no comma.
+   */
+  private static List<String> declaredVariants(String column) {
+    if (column == null || column.isBlank()) {
+      return List.of();
+    }
+    return List.of(column.split(","));
+  }
+
+  /**
    * The deployment REQUEST's wire shape — a field-for-field copy of the row, plus one field that is
    * not on it.
    *
@@ -75,6 +87,7 @@ public class DeploymentMapper {
         request.id,
         request.applicationName,
         request.variant,
+        declaredVariants(request.declaredVariants),
         request.version,
         request.environmentId,
         request.packageName,
