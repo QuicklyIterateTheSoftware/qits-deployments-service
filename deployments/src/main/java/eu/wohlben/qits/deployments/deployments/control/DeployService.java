@@ -451,6 +451,8 @@ public class DeployService implements ReleaseAnnouncements {
             LOG.warnf(e, "Could not label the services that carry no placement yet");
           }
           removeLeftoverPlatformNetwork();
+          // The seed stack's retired config volumes (qits-2266), once nothing uses them.
+          removeRetiredVolumes();
           // The route tables (qits-2174), once the labels are on: the private edge fetches its
           // table from this process at its own start, and answers nothing until one is built.
           edgeRoutes.observe();
@@ -508,6 +510,18 @@ public class DeployService implements ReleaseAnnouncements {
       driver.removeLeftoverPlatformNetwork();
     } catch (RuntimeException e) {
       LOG.warnf(e, "Could not check the leftover qits-platform overlay; the next pass asks again");
+    }
+  }
+
+  /**
+   * The seed stack's retired config volumes, gone once nothing uses them (qits-2266) — never any
+   * other volume. Called only on the worker, and never fails what called it.
+   */
+  private void removeRetiredVolumes() {
+    try {
+      driver.removeRetiredVolumes();
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "Could not sweep the retired config volumes; the next sweep asks again");
     }
   }
 
@@ -3909,6 +3923,9 @@ public class DeployService implements ReleaseAnnouncements {
     edgeRoutes.afterDeploy(plan.applicationName());
     // ...and, for either edge, the split check at once rather than on its cadence (qits-2215).
     splitCheck.afterDeploy(plan.applicationName());
+    // ...and the retired config volumes (qits-2266): a deployment that just shed /work/config may
+    // have released the last user of one. We are on the worker, so no other docker write races it.
+    removeRetiredVolumes();
   }
 
   /**

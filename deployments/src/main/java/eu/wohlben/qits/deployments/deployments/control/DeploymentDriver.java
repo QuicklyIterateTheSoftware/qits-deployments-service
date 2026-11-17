@@ -384,6 +384,13 @@ public interface DeploymentDriver {
    */
   default void removeLeftoverPlatformNetwork() {}
 
+  /**
+   * Remove the seed stack's retired {@code qits-<x>-config} volumes once nothing uses them
+   * (qits-2266) — asked at startup and after every successful deployment, on the deploy worker.
+   * Never any other volume, and it never throws. Nothing for a driver that has no such volumes.
+   */
+  default void removeRetiredVolumes() {}
+
   /** What a network this component made is for. */
   enum NetworkKind {
     /** An environment's public nodes ({@code availableOnEnv}). */

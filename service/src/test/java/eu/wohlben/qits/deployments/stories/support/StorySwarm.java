@@ -404,6 +404,8 @@ public final class StorySwarm {
       case "network" -> "network " + at(argv, 1) + (isListing(argv, 1) ? "" : " " + last);
       case "service" -> service(argv, last);
       case "ps" -> "ps by label";
+      // The retired-volume sweep (qits-2266) asks `volume ls` by name; the verb is the question.
+      case "volume" -> "volume " + at(argv, 1);
       default -> command;
     };
   }
@@ -722,6 +724,17 @@ public final class StorySwarm {
           ;;
         ps)
           out=''
+          ;;
+        volume)
+          # The retired-volume sweep's `volume ls` (qits-2266): this stand-in holds no volumes, so
+          # the seed stack's config volumes are already gone and the sweep asks nothing further.
+          case "${2:-}" in
+            ls) out='' ;;
+            *)
+              code=1
+              out="unknown volume command: ${2:-}"
+              ;;
+          esac
           ;;
         *)
           code=1

@@ -87,7 +87,8 @@ import org.jboss.logging.Logger;
  * <p><b>What a service keeps across an update</b> is its mounts, its networks and its published
  * ports: {@link #buildUpdateArgv} changes the image, the identity labels, the environment and the
  * update policy, and nothing else — bar a mount in {@link #RETIRED_MOUNT_TARGETS} nothing states
- * any more, which it removes (qits-2266). Changing the SHAPE of a service — another port, a new alias —
+ * any more, which it removes (qits-2266), and whose named volumes {@link #removeRetiredVolumes}
+ * then removes once nothing uses them. Changing the SHAPE of a service — another port, a new alias —
  * is therefore a {@code service rm} and a redeploy, which is the honest reading of it: a change of
  * shape is not a deployment.
  *
@@ -250,8 +251,39 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * forever, and Quarkus, whose working directory is {@code /work}, still loaded its stale {@code
    * application.properties}. A list of named targets and never a diff: see {@link
    * #missingDeclaredVolume} for why "remove what nothing declares" would be an estate-wide outage.
+   *
+   * <p>The mount's volumes go too, once nothing uses them: {@link #RETIRED_VOLUMES}.
    */
   static final Set<String> RETIRED_MOUNT_TARGETS = Set.of("/work/config");
+
+  /**
+   * The named volumes behind {@link #RETIRED_MOUNT_TARGETS} — the seed stack's three {@code
+   * qits-<x>-config} — which {@link #removeRetiredVolumes} removes once no service spec mounts them
+   * and no live container holds them (qits-2266). Named, never a pattern and never "volumes nothing
+   * uses": a volume nothing mounts this minute is very often somebody's data.
+   */
+  static final List<String> RETIRED_VOLUMES =
+      List.of("qits-deployments-config", "qits-containers-config", "qits-system-config");
+
+  /**
+   * Every service's name, then each mount source it states, {@code |}-separated — one line per
+   * service of one {@code service inspect}: what {@link #retiredVolumeVerdict} looks a retired
+   * volume up in.
+   */
+  static final String SERVICE_MOUNT_SOURCES_FORMAT =
+      "{{.Spec.Name}}{{range .Spec.TaskTemplate.ContainerSpec.Mounts}}|{{.Source}}{{end}}";
+
+  /** A container's id and its state word, for {@link #retiredVolumeVerdict}. */
+  static final String CONTAINER_STATE_FORMAT = "{{.ID}} {{.State}}";
+
+  /**
+   * The container states a retired volume's holder may be in and still be removed: swarm keeps the
+   * old spec's dead tasks as history, and {@code volume rm} refuses while any of them exists.
+   */
+  private static final Set<String> SPENT_CONTAINER_STATES = Set.of("exited", "dead", "created");
+
+  /** Set once a sweep found every {@link #RETIRED_VOLUMES} gone: no further sweep asks anything. */
+  private volatile boolean retiredVolumesGone;
 
   /**
    * Every network alias the live service carries, one per line, across all of its attachments —
@@ -4120,6 +4152,169 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       return;
     }
     LOG.info("removed the leftover qits-platform overlay");
+  }
+
+  /**
+   * The retired volumes go once nothing uses them (qits-2266): for each of {@link
+   * #RETIRED_VOLUMES}, one {@code volume ls -q --filter name=^<name>$} — and when it is there, a
+   * {@code service ls -q} and one {@code service inspect} of every service's mount sources, a
+   * {@code ps -a --filter volume=<name>}, a {@code rm} of the spent containers holding it, and a
+   * {@code volume rm}. Never {@code -f}: a refusal is a kept volume. A service still mounting it or
+   * a container still running on it keeps it, with an INFO; a call that fails or times out keeps it
+   * with a WARN, and the next sweep asks again. Once a sweep finds all three gone, later sweeps ask
+   * nothing. Never throws.
+   */
+  @Override
+  public void removeRetiredVolumes() {
+    if (retiredVolumesGone) {
+      return;
+    }
+    boolean allGone = true;
+    for (String volume : RETIRED_VOLUMES) {
+      try {
+        allGone &= removeRetiredVolume(volume);
+      } catch (RuntimeException e) {
+        LOG.warnf(e, "Could not sweep the retired volume %s; the next sweep asks again", volume);
+        allGone = false;
+      }
+    }
+    retiredVolumesGone = allGone;
+  }
+
+  /** One volume of {@link #removeRetiredVolumes}; true when it is gone, now or already. */
+  private boolean removeRetiredVolume(String volume) {
+    ContainerProcess.Result listed =
+        run(DockerArgv.volumeLsByName(runtime, volume), INSPECT_TIMEOUT);
+    if (failed(listed, "list the retired volume " + volume)) {
+      return false;
+    }
+    if (!lines(listed.output()).contains(volume)) {
+      return true;
+    }
+    ContainerProcess.Result services =
+        run(SwarmArgv.serviceLsQuiet(runtime, List.of()), CLEANUP_TIMEOUT);
+    if (failed(services, "list the services that might mount " + volume)) {
+      return false;
+    }
+    List<String> ids = lines(services.output());
+    List<String> mountLines = List.of();
+    if (!ids.isEmpty()) {
+      ContainerProcess.Result mounts =
+          run(buildServiceMountSourcesArgv(ids), INSPECT_TIMEOUT);
+      if (failed(mounts, "read the mounts of the services that might mount " + volume)) {
+        return false;
+      }
+      mountLines = lines(mounts.output());
+    }
+    ContainerProcess.Result holders =
+        run(buildVolumeContainersArgv(volume), INSPECT_TIMEOUT);
+    if (failed(holders, "list the containers holding " + volume)) {
+      return false;
+    }
+    RetiredVolumeVerdict verdict =
+        retiredVolumeVerdict(volume, mountLines, lines(holders.output()));
+    if (!verdict.removable()) {
+      LOG.infof("%s; kept", verdict.keptBecause());
+      return false;
+    }
+    if (!verdict.spentContainers().isEmpty()) {
+      ContainerProcess.Result reaped =
+          run(buildContainerRmArgv(verdict.spentContainers()), CLEANUP_TIMEOUT);
+      if (failed(reaped, "remove the spent containers holding " + volume)) {
+        return false;
+      }
+    }
+    ContainerProcess.Result removed = run(DockerArgv.volumeRm(runtime, volume), CLEANUP_TIMEOUT);
+    if (failed(removed, "remove the retired volume " + volume)) {
+      return false;
+    }
+    LOG.infof("Removed the retired volume %s (qits-2266)", volume);
+    return true;
+  }
+
+  /** A failed or timed-out call, WARNed with its output: the sweep keeps the volume this time. */
+  private static boolean failed(ContainerProcess.Result result, String what) {
+    if (result.exitCode() == 0 && !result.timedOut()) {
+      return false;
+    }
+    LOG.warnf(
+        "Could not %s (%s); it is kept and the next sweep asks again: %s",
+        what,
+        result.timedOut() ? "timed out" : "exit " + result.exitCode(),
+        safe(result.output()).strip());
+    return true;
+  }
+
+  /**
+   * What {@link #retiredVolumeVerdict} answers: kept, and why — or removable, after the spent
+   * containers holding it go.
+   */
+  record RetiredVolumeVerdict(String keptBecause, List<String> spentContainers) {
+    boolean removable() {
+      return keptBecause == null;
+    }
+
+    static RetiredVolumeVerdict kept(String why) {
+      return new RetiredVolumeVerdict(why, List.of());
+    }
+  }
+
+  private static final Pattern CONTAINER_ID = Pattern.compile("[0-9a-f]{12,64}");
+
+  /**
+   * The decision of {@link #removeRetiredVolume}, over what the CLI answered: {@code
+   * serviceMountLines} in {@link #SERVICE_MOUNT_SOURCES_FORMAT}, {@code containerLines} in {@link
+   * #CONTAINER_STATE_FORMAT}. Kept when a service's spec mounts it, when a container holding it is
+   * in any state but a spent one ({@link #SPENT_CONTAINER_STATES}), or when a line does not read;
+   * otherwise removable after exactly the spent containers go. Package-private for the test.
+   */
+  static RetiredVolumeVerdict retiredVolumeVerdict(
+      String volume, List<String> serviceMountLines, List<String> containerLines) {
+    for (String line : serviceMountLines) {
+      String[] fields = line.strip().split("\\|", -1);
+      for (int i = 1; i < fields.length; i++) {
+        if (fields[i].strip().equals(volume)) {
+          return RetiredVolumeVerdict.kept(volume + " is still mounted by " + fields[0].strip());
+        }
+      }
+    }
+    List<String> spent = new ArrayList<>();
+    for (String line : containerLines) {
+      String[] fields = line.strip().split("\\s+");
+      if (fields.length < 2 || !CONTAINER_ID.matcher(fields[0]).matches()) {
+        return RetiredVolumeVerdict.kept(
+            volume + " is held by a container that does not read (" + line.strip() + ")");
+      }
+      String state = fields[1].toLowerCase(Locale.ROOT);
+      if (!SPENT_CONTAINER_STATES.contains(state)) {
+        return RetiredVolumeVerdict.kept(
+            volume + " is still held by container " + fields[0] + ", which is " + state);
+      }
+      spent.add(fields[0]);
+    }
+    return new RetiredVolumeVerdict(null, List.copyOf(spent));
+  }
+
+  /** One {@code service inspect} of every id, in {@link #SERVICE_MOUNT_SOURCES_FORMAT}. */
+  List<String> buildServiceMountSourcesArgv(List<String> ids) {
+    List<String> argv =
+        new ArrayList<>(
+            SwarmArgv.serviceInspect(runtime, ids.get(0), SERVICE_MOUNT_SOURCES_FORMAT));
+    argv.addAll(ids.subList(1, ids.size()));
+    return List.copyOf(argv);
+  }
+
+  /** {@code ps -a --filter volume=<name>}, in {@link #CONTAINER_STATE_FORMAT}. */
+  List<String> buildVolumeContainersArgv(String volume) {
+    return List.of(
+        runtime, "ps", "-a", "--filter", "volume=" + volume, "--format", CONTAINER_STATE_FORMAT);
+  }
+
+  /** {@code rm <ids>} — never {@code -f}: only spent containers are named, and a refusal keeps. */
+  List<String> buildContainerRmArgv(List<String> ids) {
+    List<String> argv = new ArrayList<>(List.of(runtime, "rm"));
+    argv.addAll(ids);
+    return List.copyOf(argv);
   }
 
   private boolean serviceExists(String name) {

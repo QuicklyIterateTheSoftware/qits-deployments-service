@@ -5135,6 +5135,186 @@ class SwarmDeploymentDriverTest {
         "it never names any other network: " + cli.calls);
   }
 
+  // --- the retired config volumes (qits-2266) ---------------------------------------------------
+
+  private static final String SYSTEM_CONFIG = "qits-system-config";
+
+  private static String volumeLs(String volume) {
+    return "volume ls -q --filter name=^" + volume + "$";
+  }
+
+  /** The seed volume is there; what else the CLI answers is the test's. */
+  private SwarmDeploymentDriver driverWithSystemConfigPresent() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script(volumeLs(SYSTEM_CONFIG), result(0, SYSTEM_CONFIG + "\n"));
+    return driver;
+  }
+
+  private int removals() {
+    return (int)
+        cli.calls.stream()
+            .filter(argv -> argv.size() > 1 && argv.get(1).equals("rm")
+                || argv.size() > 2 && argv.get(2).equals("rm"))
+            .count();
+  }
+
+  @Test
+  void anAbsentRetiredVolumeCostsOneListingAndALaterSweepNothing() {
+    SwarmDeploymentDriver driver = driver();
+
+    driver.removeRetiredVolumes();
+
+    assertEquals(
+        List.of(
+            List.of("docker", "volume", "ls", "-q", "--filter", "name=^qits-deployments-config$"),
+            List.of("docker", "volume", "ls", "-q", "--filter", "name=^qits-containers-config$"),
+            List.of("docker", "volume", "ls", "-q", "--filter", "name=^qits-system-config$")),
+        cli.calls);
+
+    driver.removeRetiredVolumes();
+    assertEquals(3, cli.calls.size(), "all three gone is remembered: " + cli.calls);
+  }
+
+  @Test
+  void aRetiredVolumeAServiceStillMountsIsKept() {
+    SwarmDeploymentDriver driver = driverWithSystemConfigPresent();
+    cli.script("service ls -q", result(0, "id1\nid2\n"));
+    cli.script(
+        "service inspect --format " + SwarmDeploymentDriver.SERVICE_MOUNT_SOURCES_FORMAT,
+        result(0, "dev-qits-ci|qits-ci-data\ndev-qits-system|qits-system-config|/var/run/x.sock\n"));
+
+    driver.removeRetiredVolumes();
+
+    assertEquals(
+        List.of(
+            "docker",
+            "service",
+            "inspect",
+            "--format",
+            SwarmDeploymentDriver.SERVICE_MOUNT_SOURCES_FORMAT,
+            "id1",
+            "id2"),
+        cli.matching("service inspect"));
+    assertEquals(0, removals(), cli.calls.toString());
+
+    driver.removeRetiredVolumes();
+    assertEquals(2, cli.count(volumeLs(SYSTEM_CONFIG)), "a kept volume is asked about again");
+  }
+
+  @Test
+  void aRetiredVolumeARunningContainerHoldsIsKept() {
+    SwarmDeploymentDriver driver = driverWithSystemConfigPresent();
+    cli.script(
+        "ps -a --filter volume=qits-system-config",
+        result(0, "abcdef123456 exited\n0123456789ab running\n"));
+
+    driver.removeRetiredVolumes();
+
+    assertEquals(
+        List.of(
+            "docker",
+            "ps",
+            "-a",
+            "--filter",
+            "volume=qits-system-config",
+            "--format",
+            "{{.ID}} {{.State}}"),
+        cli.matching("ps -a"));
+    assertEquals(0, removals(), cli.calls.toString());
+  }
+
+  @Test
+  void aRetiredVolumeOnlySpentContainersHoldGoesAfterThem() {
+    SwarmDeploymentDriver driver = driverWithSystemConfigPresent();
+    cli.script(
+        "ps -a --filter volume=qits-system-config",
+        result(0, "abcdef123456 exited\n0123456789ab dead\n"));
+
+    driver.removeRetiredVolumes();
+
+    List<String> containerRm = List.of("docker", "rm", "abcdef123456", "0123456789ab");
+    List<String> volumeRm = List.of("docker", "volume", "rm", SYSTEM_CONFIG);
+    assertEquals(2, removals(), cli.calls.toString());
+    assertTrue(cli.calls.contains(containerRm), cli.calls.toString());
+    assertTrue(
+        cli.calls.indexOf(containerRm) < cli.calls.indexOf(volumeRm),
+        "the containers go first, or volume rm refuses: " + cli.calls);
+    assertFalse(cli.calls.stream().anyMatch(argv -> argv.contains("-f")), "never forced");
+
+    int asked = cli.calls.size();
+    driver.removeRetiredVolumes();
+    assertEquals(asked, cli.calls.size(), "all gone now, so nothing more is asked");
+  }
+
+  @Test
+  void aCallThatFailsRemovesNothingAndThrowsNothing() {
+    SwarmDeploymentDriver failedList = driver();
+    cli.script("volume ls", result(1, "Cannot connect to the Docker daemon"));
+    failedList.removeRetiredVolumes();
+    assertEquals(0, removals(), cli.calls.toString());
+    failedList.removeRetiredVolumes();
+    assertEquals(6, cli.count("volume ls"), "a failed sweep asks again next time");
+
+    SwarmDeploymentDriver failedPs = driverWithSystemConfigPresent();
+    cli.script("ps -a --filter volume=", result(1, "daemon down"));
+    failedPs.removeRetiredVolumes();
+    assertEquals(0, removals(), cli.calls.toString());
+
+    SwarmDeploymentDriver timedOut = driverWithSystemConfigPresent();
+    cli.script("service ls -q", new ContainerProcess.Result(0, "", true, false));
+    timedOut.removeRetiredVolumes();
+    assertEquals(0, removals(), cli.calls.toString());
+
+    SwarmDeploymentDriver refusedRm = driverWithSystemConfigPresent();
+    cli.script("ps -a --filter volume=", result(0, "abcdef123456 exited\n"));
+    cli.script("docker rm abcdef123456", result(1, "Error: container is in use"));
+    refusedRm.removeRetiredVolumes();
+    assertEquals(0, cli.count("volume rm"), "a refused container rm keeps the volume");
+  }
+
+  @Test
+  void aVolumeOutsideTheRetiredSetIsNeverTouched() {
+    SwarmDeploymentDriver driver = driver();
+    // A runtime that ignores the name filter: the listing names an unused volume of somebody's.
+    cli.script("volume ls", result(0, "qits-projects-data\n"));
+
+    driver.removeRetiredVolumes();
+
+    assertEquals(3, cli.calls.size(), cli.calls.toString());
+    assertEquals(0, removals(), cli.calls.toString());
+    assertTrue(
+        cli.calls.stream()
+            .allMatch(argv -> String.join(" ", argv).contains("-config$")),
+        "only the three retired names are ever asked about: " + cli.calls);
+  }
+
+  @Test
+  void theRetiredVolumeVerdictReadsMountsAndContainerStates() {
+    assertEquals(
+        "qits-system-config is still mounted by dev-qits-system",
+        SwarmDeploymentDriver.retiredVolumeVerdict(
+                SYSTEM_CONFIG, List.of("dev-qits-system|qits-system-config"), List.of())
+            .keptBecause());
+    // A source that merely CONTAINS the name is another volume.
+    assertTrue(
+        SwarmDeploymentDriver.retiredVolumeVerdict(
+                SYSTEM_CONFIG, List.of("x|qits-system-config-2", "y"), List.of())
+            .removable());
+    assertFalse(
+        SwarmDeploymentDriver.retiredVolumeVerdict(
+                SYSTEM_CONFIG, List.of(), List.of("abcdef123456 paused"))
+            .removable());
+    assertFalse(
+        SwarmDeploymentDriver.retiredVolumeVerdict(
+                SYSTEM_CONFIG, List.of(), List.of("not-an-id exited"))
+            .removable());
+    assertEquals(
+        List.of("abcdef123456", "0123456789ab"),
+        SwarmDeploymentDriver.retiredVolumeVerdict(
+                SYSTEM_CONFIG, List.of(), List.of("abcdef123456 exited", "0123456789ab created"))
+            .spentContainers());
+  }
+
   private static final class ScriptedCli implements SwarmDeploymentDriver.Cli {
 
     final List<List<String>> calls = Collections.synchronizedList(new ArrayList<>());
