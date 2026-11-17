@@ -45,10 +45,19 @@ import org.jboss.logging.Logger;
  *   <li><b>{@code public}</b> (qits-edge): every service with exposure {@code public} and a
  *       non-empty {@code routes} label; every private one with routes is in {@code withdrawn}, by
  *       its host, so the public edge's {@code /main-navigation} leaves it out.
- *   <li><b>{@code private}</b> (qits-edge-private): every service with exposure {@code private} and
- *       routes; {@code withdrawn} is empty.
+ *   <li><b>{@code private}</b> (qits-edge-private and qits-edge-overlay): every service with
+ *       exposure {@code private} and routes; {@code withdrawn} is empty.
  *   <li><b>Never in a table:</b> the edges themselves, and services with no routes.
  * </ul>
+ *
+ * <p><b>Two tables, three push targets</b> (qits-2304). A table is what is built and stored — one
+ * {@code pd_edge_route_table} row each, {@link #TABLES}. A target is an edge it is pushed to,
+ * {@link #TARGETS}: {@code public} carries the public table, and both private-kind edges carry the
+ * private one — {@code private}, the WireGuard tunnel edge, and {@code overlay}, the edge that
+ * serves {@code qits-private} alone and never leaves a gap on redeploy ({@link #tableOf}). The
+ * overlay edge holds the same table the private edge does, row, version and body, so a new private
+ * version is pushed to both and each is asked separately what it holds; one being unreachable (the
+ * overlay edge before its first deployment) costs the other nothing.
  *
  * <p><b>The version only goes up and survives a lost database.</b> A changed content hash gives
  * {@code max(stored + 1, epoch millis now)} ({@link #nextVersion}); an unchanged one keeps it. The
@@ -61,20 +70,34 @@ public class EdgeRouteTables {
 
   private static final Logger LOG = Logger.getLogger(EdgeRouteTables.class);
 
+  /** The public table, and the push target that carries it: qits-edge. */
   public static final String PUBLIC = "public";
+
+  /** The private table, and the push target that carries it to qits-edge-private. */
   public static final String PRIVATE = "private";
 
-  /** Both edges, in push order. */
-  public static final List<String> EDGES = List.of(PUBLIC, PRIVATE);
+  /**
+   * The push target qits-edge-overlay (qits-2304). It is no table: it carries {@link #PRIVATE}'s.
+   */
+  public static final String OVERLAY = "overlay";
+
+  /** The tables that are built and stored, one row each, in push order — and the door's names. */
+  public static final List<String> TABLES = List.of(PUBLIC, PRIVATE);
+
+  /** The edges a table is pushed to, in push order; {@link #tableOf} names what each carries. */
+  public static final List<String> TARGETS = List.of(PUBLIC, PRIVATE, OVERLAY);
 
   /** The public edge's application, which is in no table. */
   public static final String PUBLIC_EDGE_APPLICATION = "qits-edge";
 
-  /** The private edge's application, which is in no table. */
+  /** The private edge's application — the WireGuard tunnel edge — which is in no table. */
   public static final String PRIVATE_EDGE_APPLICATION = "qits-edge-private";
 
+  /** The overlay edge's application (qits-2304), which is in no table. */
+  public static final String OVERLAY_EDGE_APPLICATION = "qits-edge-overlay";
+
   private static final Set<String> EDGE_APPLICATIONS =
-      Set.of(PUBLIC_EDGE_APPLICATION, PRIVATE_EDGE_APPLICATION);
+      Set.of(PUBLIC_EDGE_APPLICATION, PRIVATE_EDGE_APPLICATION, OVERLAY_EDGE_APPLICATION);
 
   /**
    * The hash and the body: a plain mapper, so the bytes do not depend on the application's Jackson
@@ -89,7 +112,7 @@ public class EdgeRouteTables {
   /** What the last {@link #rebuild} read off the runtime; null before the first and after a failure. */
   private volatile List<DeploymentDriver.LabelledService> lastRead;
 
-  /** The edge whose table an application's deploy reaching healthy must push, or null. */
+  /** The push target an application's deploy reaching healthy must push its table to, or null. */
   public static String edgeOf(String application) {
     if (PUBLIC_EDGE_APPLICATION.equals(application)) {
       return PUBLIC;
@@ -97,7 +120,29 @@ public class EdgeRouteTables {
     if (PRIVATE_EDGE_APPLICATION.equals(application)) {
       return PRIVATE;
     }
+    if (OVERLAY_EDGE_APPLICATION.equals(application)) {
+      return OVERLAY;
+    }
     return null;
+  }
+
+  /** Whether {@code application} is one of the three edges, which no table ever routes. */
+  public static boolean isEdgeApplication(String application) {
+    return application != null && EDGE_APPLICATIONS.contains(application);
+  }
+
+  /** The table a push target carries: {@code overlay} carries the private one. */
+  public static String tableOf(String target) {
+    return switch (target) {
+      case PUBLIC -> PUBLIC;
+      case PRIVATE, OVERLAY -> PRIVATE;
+      default -> throw new IllegalArgumentException("there is no `" + target + "` edge");
+    };
+  }
+
+  /** The push targets that carry {@code table}, in {@link #TARGETS} order. */
+  public static List<String> targetsOf(String table) {
+    return TARGETS.stream().filter(target -> tableOf(target).equals(table)).toList();
   }
 
   /** What one table holds, without its version: what the content hash is over. */
@@ -111,7 +156,7 @@ public class EdgeRouteTables {
 
   /**
    * Build both tables from the labels and store each whose content changed, as a new version.
-   * Returns the edges whose version moved, in {@link #EDGES} order; empty when nothing changed or
+   * Returns the TABLES whose version moved, in {@link #TABLES} order — never a push target; empty when nothing changed or
    * the runtime could not be read. Public, with the instant as an argument, so the suite and the
    * golden-master state can pin the version.
    */
@@ -128,7 +173,7 @@ public class EdgeRouteTables {
             () -> {
               Map<String, Content> tables = contentsOf(services.get(), environmentNames());
               List<String> moved = new ArrayList<>();
-              for (String edge : EDGES) {
+              for (String edge : TABLES) {
                 if (store(edge, tables.get(edge), builtAt)) {
                   moved.add(edge);
                 }

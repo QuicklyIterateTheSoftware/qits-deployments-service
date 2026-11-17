@@ -590,14 +590,27 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   String privateNetworkSubnet;
 
   /**
-   * The private edge's application name (qits-2117) — the swarm service labelled {@link
-   * DeploymentDriver#APP_NAME_LABEL}{@code =<this>} whose VIP on {@link #privateNetwork} a {@code
-   * private} or {@code both} service is handed as its first resolver. {@code qits-edge-private}
-   * shipped, the name qits-containers' {@code PrivateEdgeResolver} and the runner's {@code
-   * PrivateEdge} look for too.
+   * The private edge's application name (qits-2117) — the WireGuard tunnel edge, {@code
+   * qits-edge-private} shipped. Since qits-2304 it names the edge's IDENTITY — an edge, so never
+   * handed resolvers; its {@link #updateMonitor} floor; its VIP-move re-apply — and no longer decides
+   * whose VIP a private service asks first: that is {@link #resolverApplications}' answer, which
+   * lists this application last, as the fallback.
    */
   @ConfigProperty(name = "qits.deployments.swarm.private-edge.application")
   String privateEdgeApplication;
+
+  /**
+   * The applications a private service may resolve through, in order of preference (qits-2304) —
+   * {@code qits-edge-overlay,qits-edge-private} shipped. The first that has a swarm service labelled
+   * {@link DeploymentDriver#APP_NAME_LABEL}{@code =<it>} with a VIP on {@link #privateNetwork} is the
+   * private service's first resolver ({@link #resolverVip}); an application with no such service is
+   * skipped. qits-containers' {@code PrivateEdgeResolver} and the runner's {@code PrivateEdge} must
+   * look in the same order. Every one of them is an edge: never handed resolvers, its VIP move
+   * re-applies the services behind it, its monitor is floored at its start period. Empty: {@link
+   * #privateEdgeApplication} alone, the qits-2117 behaviour.
+   */
+  @ConfigProperty(name = "qits.deployments.swarm.private-edge.resolver-applications")
+  Optional<List<String>> resolverApplications;
 
   /**
    * Where this process's own resolvers are read from (qits-2117): the upstreams that follow the
@@ -794,9 +807,12 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     boolean recreate =
         missingVolume != null || missingAlias != null || drift != null || resolverDrift != null;
     boolean updating = exists && !recreate;
-    if (isPrivateEdge(spec) && !self) {
-      // The VIP before, so the verdict can tell a recreate (a new VIP) from an update (the same).
-      edgeVipsBefore.put(target, Optional.ofNullable(privateEdgeVip().vip()).orElse(""));
+    if (isResolverEdge(spec) && !self) {
+      // The resolver VIP before, so the verdict can tell whether what private services ask first
+      // moved: a recreate of the edge they resolve through (a new VIP), or the first deployment of
+      // a preferred one (qits-2304: qits-edge-overlay arriving takes over from qits-edge-private).
+      // An update of either, or a recreate of the one nobody asks first, keeps it.
+      edgeVipsBefore.put(target, Optional.ofNullable(resolverVip().vip()).orElse(""));
     }
     List<String> argv;
     try {
@@ -1000,11 +1016,11 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   @Override
   public Convergence awaitConverged(String name, Duration timeout) {
     Convergence verdict = awaitVerdict(name, timeout);
-    // The private edge's own deployment, now that it is serving: if its VIP moved, every private
-    // and both service this process deployed still asks the old one first (qits-2117).
+    // A resolver edge's own deployment, now that it is serving: if the resolver VIP moved, every
+    // private service this process deployed still asks the old one first (qits-2117, qits-2304).
     String vipBefore = edgeVipsBefore.remove(name);
     if (vipBefore != null && verdict.outcome() == ConvergenceOutcome.CONVERGED) {
-      String vipAfter = privateEdgeVip().vip();
+      String vipAfter = resolverVip().vip();
       if (vipAfter != null && !vipAfter.equals(vipBefore)) {
         reapplyBehindPrivateEdge(vipAfter);
       }
@@ -2277,26 +2293,65 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   /** A service the rule does not cover: no lookup was made, so there is nothing to say. */
   static final Resolvers NOT_ASKED = new Resolvers(List.of(), null);
 
-  /** The private edge's VIP on the overlay, or null with the reason. */
-  record EdgeVip(String vip, String why) {}
+  /**
+   * A resolver edge's VIP on the overlay, or null with the reason — and {@code absent}: whether the
+   * reason is only that no swarm service carries the application, the one answer {@link
+   * #resolverVip} walks past to the next preference.
+   */
+  record EdgeVip(String vip, String why, boolean absent) {
+
+    EdgeVip(String vip, String why) {
+      this(vip, why, false);
+    }
+  }
 
   /**
-   * Whether this spec takes the private edge as resolver: {@code private}, and not an edge. The
-   * private edge would resolve through itself, and the public edge resolves the world
-   * for the world — neither gets one.
+   * Whether this spec takes the private edge as resolver: {@code private}, and not an edge. An
+   * edge on the overlay would resolve through itself or its sibling, and the public edge resolves
+   * the world for the world — none of the three gets one.
    */
   boolean wantsPrivateEdgeResolvers(ServiceSpec spec) {
     return spec.exposure() != Exposure.PUBLIC && !isEdge(spec);
   }
 
   private boolean isEdge(ServiceSpec spec) {
-    return PUBLIC_EDGE_APPLICATION.equals(spec.applicationName()) || isPrivateEdge(spec);
+    return PUBLIC_EDGE_APPLICATION.equals(spec.applicationName())
+        || isPrivateEdge(spec)
+        || isResolverEdge(spec);
   }
 
   private boolean isPrivateEdge(ServiceSpec spec) {
     return privateEdgeApplication != null
         && !privateEdgeApplication.isBlank()
         && privateEdgeApplication.strip().equals(spec.applicationName());
+  }
+
+  /**
+   * Whether this spec deploys an edge private services resolve through — the private edge or any
+   * of {@link #resolverApplications} (qits-2304): the ones whose VIP move re-applies the services
+   * behind them, and whose monitor is floored at their start period.
+   */
+  private boolean isResolverEdge(ServiceSpec spec) {
+    return isPrivateEdge(spec) || resolverApplications().contains(spec.applicationName());
+  }
+
+  /**
+   * {@link #resolverApplications}, stripped and without blanks, in order — or {@link
+   * #privateEdgeApplication} alone when it names none.
+   */
+  List<String> resolverApplications() {
+    List<String> listed = new ArrayList<>();
+    List<String> configured =
+        resolverApplications == null ? List.of() : resolverApplications.orElse(List.of());
+    for (String application : configured) {
+      if (application != null && !application.isBlank() && !listed.contains(application.strip())) {
+        listed.add(application.strip());
+      }
+    }
+    if (listed.isEmpty() && privateEdgeApplication != null && !privateEdgeApplication.isBlank()) {
+      listed.add(privateEdgeApplication.strip());
+    }
+    return List.copyOf(listed);
   }
 
   /**
@@ -2312,7 +2367,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       return NOT_ASKED;
     }
     try {
-      EdgeVip edge = privateEdgeVip();
+      EdgeVip edge = resolverVip();
       if (edge.vip() == null) {
         return new Resolvers(List.of(), edge.why());
       }
@@ -2334,28 +2389,26 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   }
 
   /**
-   * Where the private edge is on the overlay — qits-containers' {@code PrivateEdgeResolver} and the
-   * runner's {@code PrivateEdge}, step for step:
-   *
-   * <ol>
-   *   <li>{@code docker network inspect --format {{.Id}} <private-network>} — the overlay's id;
-   *   <li>{@code docker service ls -q --filter label=<APP_NAME_LABEL>=<private-edge application>}
-   *       — which must answer exactly one service;
-   *   <li>{@code docker service inspect} over {@code .Endpoint.VirtualIPs} — the entry whose {@code
-   *       NetworkID} is the overlay's, its {@code /prefix} stripped.
-   * </ol>
-   *
-   * Read-only; a step that fails says why. Never throws.
+   * The VIP private services resolve through first (qits-2304): {@link #resolverApplications} in
+   * order, the first one {@link #edgeVipOf} finds. An application with no swarm service at all is
+   * walked past — qits-edge-overlay before its first deployment, so qits-edge-private's VIP stands
+   * until then. <b>Any other failure stops the walk with no VIP</b>, never falls through: an inspect
+   * that timed out for the overlay edge would otherwise hand the next deployment the private edge's
+   * VIP, its resolver drift would recreate it onto the fallback, and the one after that back again.
+   * No VIP is the fail-safe the drift check already honours. Never throws.
    */
-  EdgeVip privateEdgeVip() {
+  EdgeVip resolverVip() {
     if (privateNetwork == null || privateNetwork.isBlank()) {
       return new EdgeVip(null, "qits.deployments.swarm.private-network names no network");
     }
-    if (privateEdgeApplication == null || privateEdgeApplication.isBlank()) {
-      return new EdgeVip(null, "qits.deployments.swarm.private-edge.application names nothing");
+    List<String> applications = resolverApplications();
+    if (applications.isEmpty()) {
+      return new EdgeVip(
+          null,
+          "neither qits.deployments.swarm.private-edge.resolver-applications nor"
+              + " qits.deployments.swarm.private-edge.application names anything");
     }
     String network = privateNetwork.strip();
-    String application = privateEdgeApplication.strip();
     ContainerProcess.Result inspected =
         run(
             SwarmArgv.networkInspect(runtime, network, "{{.Id}}"),
@@ -2366,6 +2419,32 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       return new EdgeVip(
           null, "the network " + network + " has no id: " + safe(inspected.output()).strip());
     }
+    List<String> absent = new ArrayList<>();
+    for (String application : applications) {
+      EdgeVip edge = edgeVipOf(application, network, networkId);
+      if (!edge.absent()) {
+        return edge;
+      }
+      absent.add(edge.why());
+    }
+    return new EdgeVip(null, String.join("; ", absent), true);
+  }
+
+  /**
+   * Where one resolver edge is on the overlay — qits-containers' {@code PrivateEdgeResolver} and
+   * the runner's {@code PrivateEdge}, step for step, after {@link #resolverVip} read the overlay's
+   * id ({@code docker network inspect --format {{.Id}} <private-network>}):
+   *
+   * <ol>
+   *   <li>{@code docker service ls -q --filter label=<APP_NAME_LABEL>=<application>} — which must
+   *       answer exactly one service; none at all is {@code absent};
+   *   <li>{@code docker service inspect} over {@code .Endpoint.VirtualIPs} — the entry whose {@code
+   *       NetworkID} is the overlay's, its {@code /prefix} stripped.
+   * </ol>
+   *
+   * Read-only; a step that fails says why. Never throws.
+   */
+  private EdgeVip edgeVipOf(String application, String network, String networkId) {
     ContainerProcess.Result listed =
         run(
             SwarmArgv.serviceLsQuiet(
@@ -2383,7 +2462,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
               + "="
               + application
               + ", found "
-              + services.size());
+              + services.size(),
+          services.isEmpty());
     }
     String service = services.get(0);
     ContainerProcess.Result vips =
@@ -2677,8 +2757,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       return;
     }
     LOG.infof(
-        "Re-applying %d service(s) after %s moved to %s",
-        stale.size(), privateEdgeApplication.strip(), vip);
+        "Re-applying %d service(s) after their resolver edge moved to %s", stale.size(), vip);
     for (ServiceSpec spec : stale) {
       try {
         ApplyResult result = apply(spec);
@@ -2996,7 +3075,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
 
   /**
    * The {@code --update-monitor} of a spec's service: {@code qits.deployments.swarm.update-monitor-seconds},
-   * and for the private edge ({@link #privateEdgeApplication}) never less than its health start
+   * and for the private edge ({@link #privateEdgeApplication}) and every other resolver edge ({@link
+   * #resolverApplications}, so qits-edge-overlay, qits-2304) never less than its health start
    * period (qits-2215). The private edge is healthy only once it holds a route table, so a release
    * that cannot load one must still be inside the monitor when its health check gives up — or
    * swarm calls the update complete before the task is ever judged, and {@code
@@ -3004,7 +3084,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   Duration updateMonitor(ServiceSpec spec) {
     Duration monitor = Duration.ofSeconds(updateMonitorSeconds);
-    if (privateEdgeApplication != null && privateEdgeApplication.equals(spec.applicationName())) {
+    if (isResolverEdge(spec)) {
       Duration startPeriod = startPeriod(spec);
       if (startPeriod.compareTo(monitor) > 0) {
         return startPeriod;

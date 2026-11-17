@@ -20,7 +20,8 @@ import org.junit.jupiter.api.Test;
  * FakeDeploymentDriver}: a {@code qits-edge-private} release that does not converge healthy, with
  * nothing swarm can revert to, has its last ACTIVE version re-applied by the deployer and is
  * recorded FAILED saying so; a healthy one is left alone; and nothing else is ever restored this
- * way — not another application, and not an update swarm already rolled back.
+ * way — not another application, and not an update swarm already rolled back. The overlay edge
+ * (qits-2304), which private services resolve through, is covered the same way.
  */
 @QuarkusTest
 class PdPrivateEdgeRollbackTest {
@@ -81,6 +82,31 @@ class PdPrivateEdgeRollbackTest {
     assertTrue(restored.imageRef().endsWith(":" + V_OLD), restored.imageRef());
     assertEquals(applied.get(0).wireAlias(), restored.wireAlias(), "the same service, put back");
     assertEquals(2, driver.awaited().size(), "the restore waited for its own convergence");
+  }
+
+  @Test
+  void theOverlayEdgesRecreateIsRolledBackTheSameWay() {
+    // qits-2304: every overlay client asks qits-edge-overlay first, so a recreate of it that never
+    // goes healthy is put back like the tunnel edge's.
+    String overlay = "qits-edge-overlay";
+    String environmentId = createEnvironment("pe-overlay-rollback");
+    List<Map<String, Object>> first = deploy(environmentId, overlay, V_OLD, 1);
+    String previousId = (String) first.get(0).get("id");
+    driver.reset();
+    driver.scriptConvergences(
+        DeploymentDriver.Convergence.failed("task exited: unhealthy (no route table)"),
+        DeploymentDriver.Convergence.converged(List.of()));
+
+    List<Map<String, Object>> rows = deploy(environmentId, overlay, V_NEW, 2);
+
+    Map<String, Object> failed = row(rows, V_NEW);
+    assertEquals("FAILED", failed.get("status"));
+    String detail = (String) failed.get("detail");
+    assertTrue(detail.contains(overlay + " " + V_NEW + " failed its health check"), detail);
+    assertTrue(detail.contains(previousId + " (" + V_OLD + ")"), detail);
+    assertEquals("ACTIVE", row(rows, V_OLD).get("status"));
+    assertEquals(2, driver.applied().size(), driver.applied().toString());
+    assertEquals(V_OLD, driver.applied().get(1).version());
   }
 
   @Test

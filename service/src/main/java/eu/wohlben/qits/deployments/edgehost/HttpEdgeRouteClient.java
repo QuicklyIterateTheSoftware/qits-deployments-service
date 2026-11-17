@@ -25,7 +25,10 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * edge admits). The pact rows are {@code Contracts.EDGE}.
  *
  * <p>The public edge is dialled by its public name ({@code qits.deployments.edges.public-url}), the
- * private one on qits-private ({@code qits.deployments.edges.private-url}, port 80).
+ * private one on qits-private ({@code qits.deployments.edges.private-url}, port 80), and the overlay
+ * edge (qits-2304) on qits-private too ({@code qits.deployments.edges.overlay-url}, port 80) — sent
+ * the private table, whose body names {@code "edge":"private"}, which is the table the overlay edge
+ * holds.
  */
 @ApplicationScoped
 public class HttpEdgeRouteClient implements EdgeRouteClient {
@@ -41,6 +44,9 @@ public class HttpEdgeRouteClient implements EdgeRouteClient {
 
   @ConfigProperty(name = "qits.deployments.edges.private-url")
   String privateUrl;
+
+  @ConfigProperty(name = "qits.deployments.edges.overlay-url")
+  String overlayUrl;
 
   @ConfigProperty(name = "qits.deployments.edges.timeout-seconds")
   long timeoutSeconds;
@@ -152,6 +158,7 @@ public class HttpEdgeRouteClient implements EdgeRouteClient {
         switch (edge) {
           case EdgeRouteTables.PUBLIC -> publicUrl;
           case EdgeRouteTables.PRIVATE -> privateUrl;
+          case EdgeRouteTables.OVERLAY -> overlayUrl;
           default -> throw new EdgeRouteException("there is no `" + edge + "` edge");
         };
     if (base == null || base.isBlank()) {

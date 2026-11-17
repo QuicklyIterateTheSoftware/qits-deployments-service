@@ -20,11 +20,17 @@ import org.jboss.logging.Logger;
  * <ul>
  *   <li>after a new version is stored ({@link #refresh}, called after every apply, retirement and
  *       teardown that finishes);
- *   <li>after a deploy of {@code qits-edge} or {@code qits-edge-private} reaches healthy ({@link
- *       #afterDeploy}) — whatever its version, because a new edge task may hold nothing yet;
+ *   <li>after a deploy of {@code qits-edge}, {@code qits-edge-private} or {@code qits-edge-overlay}
+ *       reaches healthy ({@link #afterDeploy}) — whatever its version, because a new edge task may
+ *       hold nothing yet;
  *   <li>on each observation pass ({@link #observe}), when the edge's {@code GET /edge-route-table}
  *       reports a version below the stored one, or none. The same version is not pushed again.
  * </ul>
+ *
+ * <p><b>Per push target, not per table</b> (qits-2304): a table that moved goes to every target that
+ * carries it ({@link EdgeRouteTables#targetsOf}) — the private one to qits-edge-private AND
+ * qits-edge-overlay — and each target is read, compared and WARNed about on its own. The overlay
+ * edge before its first deployment is one WARN for the {@code overlay} target and nothing else.
  *
  * <p><b>A push never blocks or fails a deploy.</b> Every method here catches everything: a failure
  * is one WARN per edge per outage, {@code route table push to <edge> failed: <reason>}, and the
@@ -39,10 +45,10 @@ public class EdgeRoutePusher {
 
   @Inject EdgeRouteClient client;
 
-  /** The edges whose last push or read failed: an outage already WARNed about. */
+  /** The push targets whose last push or read failed: an outage already WARNed about. */
   private final Map<String, Boolean> failing = new ConcurrentHashMap<>();
 
-  /** Rebuild both tables and push each whose version moved. Never throws. */
+  /** Rebuild both tables and push each whose version moved, to every target carrying it. Never throws. */
   public void refresh() {
     List<String> moved;
     try {
@@ -51,8 +57,8 @@ public class EdgeRoutePusher {
       LOG.warnf(e, "Could not rebuild the route tables; the next pass tries again");
       return;
     }
-    for (String edge : moved) {
-      push(edge);
+    for (String target : targetsOf(moved)) {
+      push(target);
     }
   }
 
@@ -68,18 +74,19 @@ public class EdgeRoutePusher {
       LOG.warnf(e, "Could not rebuild the route tables; the next pass tries again");
       moved = List.of();
     }
-    for (String edge : moved) {
-      push(edge);
+    List<String> pushed = targetsOf(moved);
+    for (String target : pushed) {
+      push(target);
     }
-    String edge = EdgeRouteTables.edgeOf(application);
-    if (edge != null && !moved.contains(edge)) {
-      push(edge);
+    String target = EdgeRouteTables.edgeOf(application);
+    if (target != null && !pushed.contains(target)) {
+      push(target);
     }
   }
 
   /**
-   * The observation pass: rebuild and push what moved, then ask each other edge what it holds and
-   * push when that is below the stored version. Never throws.
+   * The observation pass: rebuild and push what moved, then ask each other target what it holds
+   * and push when that is below the stored version of the table it carries. Never throws.
    */
   public void observe() {
     List<String> moved;
@@ -89,8 +96,8 @@ public class EdgeRoutePusher {
       LOG.warnf(e, "Could not rebuild the route tables; the next pass tries again");
       moved = List.of();
     }
-    for (String edge : EdgeRouteTables.EDGES) {
-      if (moved.contains(edge)) {
+    for (String edge : EdgeRouteTables.TARGETS) {
+      if (moved.contains(EdgeRouteTables.tableOf(edge))) {
         push(edge);
         continue;
       }
@@ -113,7 +120,9 @@ public class EdgeRoutePusher {
     }
   }
 
-  /** Push the stored table of one edge. Whether the edge now holds it. Never throws. */
+  /**
+   * Push one target the stored table it carries. Whether the edge now holds it. Never throws.
+   */
   boolean push(String edge) {
     Optional<PdEdgeRouteTable> stored = stored(edge);
     if (stored.isEmpty()) {
@@ -147,13 +156,21 @@ public class EdgeRoutePusher {
     }
   }
 
-  private Optional<PdEdgeRouteTable> stored(String edge) {
+  /** The stored row of the table {@code target} carries. */
+  private Optional<PdEdgeRouteTable> stored(String target) {
     try {
-      return tables.storedRow(edge);
+      return tables.storedRow(EdgeRouteTables.tableOf(target));
     } catch (RuntimeException e) {
-      LOG.warnf(e, "Could not read the stored route table of the %s edge", edge);
+      LOG.warnf(e, "Could not read the stored route table of the %s edge", target);
       return Optional.empty();
     }
+  }
+
+  /** Every target carrying one of {@code moved}'s tables, in {@link EdgeRouteTables#TARGETS} order. */
+  private static List<String> targetsOf(List<String> moved) {
+    return EdgeRouteTables.TARGETS.stream()
+        .filter(target -> moved.contains(EdgeRouteTables.tableOf(target)))
+        .toList();
   }
 
   private static int applications(PdEdgeRouteTable table) {

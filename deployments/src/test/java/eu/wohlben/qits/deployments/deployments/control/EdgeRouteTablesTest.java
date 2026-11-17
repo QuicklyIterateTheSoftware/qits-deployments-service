@@ -1,8 +1,10 @@
 package eu.wohlben.qits.deployments.deployments.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.deployments.deployments.dto.EdgeRouteTableDto;
@@ -104,6 +106,7 @@ class EdgeRouteTablesTest {
         List.of(
             service("dev-qits-edge", "qits-edge", "public", "/edge", "edge", Map.of()),
             service("dev-qits-edge-private", "qits-edge-private", "private", "/x", null, Map.of()),
+            service("dev-qits-edge-overlay", "qits-edge-overlay", "private", "/y", null, Map.of()),
             service("dev-qits-oci-postgresql", "qits-oci-postgresql", "public", "", "", Map.of()),
             service("dev-qits-daemon", "qits-daemon", "private", null, null, Map.of()),
             service("dev-qits-unplaced", "qits-unplaced", null, "/unplaced", null, Map.of()));
@@ -187,6 +190,22 @@ class EdgeRouteTablesTest {
   void anApplicationIsTheEdgeOfItsOwnDeployOnlyWhenItIsAnEdge() {
     assertEquals(EdgeRouteTables.PUBLIC, EdgeRouteTables.edgeOf("qits-edge"));
     assertEquals(EdgeRouteTables.PRIVATE, EdgeRouteTables.edgeOf("qits-edge-private"));
+    assertEquals(EdgeRouteTables.OVERLAY, EdgeRouteTables.edgeOf("qits-edge-overlay"));
     assertNull(EdgeRouteTables.edgeOf("qits-ci"));
+    assertTrue(EdgeRouteTables.isEdgeApplication("qits-edge-overlay"));
+    assertFalse(EdgeRouteTables.isEdgeApplication("qits-ci"));
+  }
+
+  @Test
+  void twoTablesAreStoredAndThreeTargetsCarryThem() {
+    // qits-2304: the overlay edge is a push target, never a table of its own.
+    assertEquals(List.of("public", "private"), EdgeRouteTables.TABLES);
+    assertEquals(List.of("public", "private", "overlay"), EdgeRouteTables.TARGETS);
+    assertEquals(EdgeRouteTables.PUBLIC, EdgeRouteTables.tableOf(EdgeRouteTables.PUBLIC));
+    assertEquals(EdgeRouteTables.PRIVATE, EdgeRouteTables.tableOf(EdgeRouteTables.PRIVATE));
+    assertEquals(EdgeRouteTables.PRIVATE, EdgeRouteTables.tableOf(EdgeRouteTables.OVERLAY));
+    assertEquals(List.of("public"), EdgeRouteTables.targetsOf(EdgeRouteTables.PUBLIC));
+    assertEquals(List.of("private", "overlay"), EdgeRouteTables.targetsOf(EdgeRouteTables.PRIVATE));
+    assertThrows(IllegalArgumentException.class, () -> EdgeRouteTables.tableOf("nowhere"));
   }
 }
