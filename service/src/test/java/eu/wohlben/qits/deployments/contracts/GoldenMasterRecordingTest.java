@@ -166,6 +166,18 @@ class GoldenMasterRecordingTest {
               null,
               null,
               List.of()),
+          // qits-2296: a release with a variant, listed WITH it — the main row names the variant,
+          // and the variant's own row is beside it.
+          new Interaction(
+              ProviderStates.A_RELEASE_WITH_A_VARIANT,
+              "listDeploymentRequests",
+              "GET",
+              "/deployments/api/deployment-requests",
+              Map.of("repoId", "{repoId}", "version", "{version}", "includeVariants", "true"),
+              200,
+              null,
+              null,
+              List.of()),
           new Interaction(
               ProviderStates.THE_PLATFORM_ENVIRONMENT,
               "listEnvironments",

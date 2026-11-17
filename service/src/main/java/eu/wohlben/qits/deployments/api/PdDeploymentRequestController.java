@@ -24,6 +24,7 @@ import java.util.List;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.media.Content;
 import org.eclipse.microprofile.openapi.annotations.media.Schema;
+import org.eclipse.microprofile.openapi.annotations.parameters.Parameter;
 import org.eclipse.microprofile.openapi.annotations.parameters.RequestBody;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 
@@ -52,7 +53,9 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  *   <li><b>{@code ?repoId=&version=}</b> — the exact-match join a release page follows the other
  *       way. <b>Both or neither</b>: half the pair is a 400, because a lone {@code repoId} would
  *       silently answer with a repository's whole history and a lone {@code version} with every
- *       repository's.
+ *       repository's. The main application's rows only, unless {@code &includeVariants=true}
+ *       asks for the release's variants' rows too (qits-2296) — what a reader waiting on the
+ *       whole release needs, beside each main row's {@code variants}.
  * </ol>
  *
  * <p>With none of them, 400 — an unscoped listing would return every request on the instance.
@@ -144,7 +147,14 @@ public class PdDeploymentRequestController {
       @QueryParam("applicationName") String applicationName,
       @QueryParam("projectId") String projectId,
       @QueryParam("repoId") String repoId,
-      @QueryParam("version") String version) {
+      @QueryParam("version") String version,
+      @Parameter(
+              description =
+                  "With the repoId/version pair: also list the release's VARIANTS' requests"
+                      + " (qits-2296), newest-first beside the main application's. Default false —"
+                      + " the main application's rows alone. Ignored by the other filters.")
+          @QueryParam("includeVariants")
+          boolean includeVariants) {
     if (stated(environmentId)) {
       // Ordered, and held through a short database outage for the deployment listing's reason: a
       // lost connection here would turn "which releases were asked for in this tier" into a 404 for
@@ -171,7 +181,7 @@ public class PdDeploymentRequestController {
       return listOf(
           reads.call(
               "The deployment requests of " + repoId + "@" + version,
-              () -> deployService.deploymentRequestsByRelease(repoId, version)));
+              () -> deployService.deploymentRequestsByRelease(repoId, version, includeVariants)));
     }
     throw new BadRequestException(
         "one of environmentId, projectId or the repoId/version pair is required");

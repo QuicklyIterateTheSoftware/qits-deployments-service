@@ -172,6 +172,10 @@ public class PdSpecRetryTest {
         "the cause names the variant's file: " + row.get("detail"));
     assertEquals(List.of(), driver.applied(), "nothing of the release was deployed");
     assertTrue(deployService.isHeldOnSpec(repo), "the release is held for a re-read");
+    // The main file WAS read, so the held main row already names the variant (qits-2296).
+    List<Map<String, Object>> heldRequests = requests(repo, V_B);
+    assertEquals(1, heldRequests.size(), heldRequests.toString());
+    assertEquals(List.of("private"), heldRequests.get(0).get("variants"));
 
     int variantReads = specs.readsOf(repo, variantPath);
     specs.recoverAt(repo, variantPath);
@@ -183,6 +187,14 @@ public class PdSpecRetryTest {
     assertTrue(hasRow(rows, repo, V_B, "ACTIVE"), rows.toString());
     assertTrue(hasRow(rows, repo + "-private", V_B, "ACTIVE"), rows.toString());
     assertTrue(hasRow(rows, repo, V_B, "SPEC_UNREADABLE"), "the held row stayed history");
+    // The re-queued main row names the variant too, and the variant's own row is listed beside it
+    // when asked for (qits-2296).
+    List<Map<String, Object>> release = requests(repo, V_B);
+    assertEquals(2, release.size(), release.toString());
+    assertTrue(
+        release.stream().allMatch(r -> List.of("private").equals(r.get("variants"))),
+        release.toString());
+    assertEquals(3, requests(repo, V_B + "&includeVariants=true").size());
   }
 
   @Test
@@ -366,6 +378,19 @@ public class PdSpecRetryTest {
         SpecSource.variantPath("private"),
         DeploymentSpecParser.parse(
             "application: " + repo + "-private\n", "deployments.private.yml"));
+  }
+
+  /** One release's deployment requests, by {@code ?repoId=&version=} — the version may carry more. */
+  private List<Map<String, Object>> requests(String repoId, String version) {
+    return given()
+        .header("Authorization", SuiteBearers.operator())
+        .when()
+        .get("/deployments/api/deployment-requests?repoId=" + repoId + "&version=" + version)
+        .then()
+        .statusCode(200)
+        .extract()
+        .jsonPath()
+        .getList("deploymentRequests");
   }
 
   private static boolean hasRow(

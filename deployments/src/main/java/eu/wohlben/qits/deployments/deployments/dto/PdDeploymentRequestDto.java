@@ -3,6 +3,7 @@ package eu.wohlben.qits.deployments.deployments.dto;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentStatus;
 import eu.wohlben.qits.deployments.deployments.entity.PdQualityGate;
 import java.time.Instant;
+import java.util.List;
 
 /**
  * One deployment request on the wire: <b>this version of this application was asked for here, the
@@ -45,7 +46,16 @@ import java.time.Instant;
  * <p><b>{@code variant} names the variant this request deploys</b> ({@code private} for {@code
  * qits-edge-private}), and is null for a release's main application — every request but a
  * variant's, and every one written before variants existed (qits-1976). A release's own listing
- * ({@code ?repoId=&version=}) carries only the null ones.
+ * ({@code ?repoId=&version=}) carries only the null ones, unless it is asked with {@code
+ * includeVariants=true} (qits-2296), when it carries the variants' rows too.
+ *
+ * <p><b>{@code variants} names the variants the release DECLARES</b> (qits-2296): on a main
+ * application's row, the names its {@code deployments.yml} lists under {@code variants:}, in the
+ * file's order ({@code ["private"]} for {@code qits-edge}). It is never null — {@code []} for a
+ * release that declares none, and {@code []} on a variant's own row, a row whose main file could
+ * not be read, and every row written before the field existed. It is there because the main
+ * application deploys before its variants are queued: a reader waiting for a whole release learns
+ * from the main row which variant rows are still to come, and waits for each to be terminal.
  *
  * <p><b>{@code deploymentStatus} is the one field here that is not this row's own</b> — it is
  * joined from the deployment {@code deploymentId} names, and it is on the request because the
@@ -59,6 +69,7 @@ public record PdDeploymentRequestDto(
     String id,
     String applicationName,
     String variant,
+    List<String> variants,
     String version,
     String environmentId,
     String packageName,

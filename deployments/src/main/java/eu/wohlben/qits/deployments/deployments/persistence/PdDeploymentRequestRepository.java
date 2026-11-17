@@ -80,12 +80,27 @@ public class PdDeploymentRequestRepository
    *
    * <p><b>The main application's rows only</b>: a release whose spec names {@code variants:} also
    * writes rows for each variant's application under the same pair, and those are not the release's
-   * own deployment (qits-1976). They are found by their application name instead.
+   * own deployment (qits-1976). They are found by their application name instead, or through
+   * {@link #listByRepoAndVersionNewestFirst} by a reader that asked for them.
    */
   public List<PdDeploymentRequest> listMainByRepoAndVersionNewestFirst(
       String repoId, String version) {
     return list(
         "repoId = ?1 and version = ?2 and variant is null order by seq desc", repoId, version);
+  }
+
+  /**
+   * {@link #listMainByRepoAndVersionNewestFirst}'s release, WITH its variants' rows (qits-2296) —
+   * every request under the pair, main and variant alike, interleaved newest-first by {@code seq}.
+   *
+   * <p>It is the listing for a reader that waits on the whole release rather than reading its own
+   * deployment off the newest row: the main application deploys before its variants are queued,
+   * and its rows name the variants declared ({@link PdDeploymentRequest#declaredVariants}), so such
+   * a reader waits until each named variant has a terminal row here. A reader that takes the newest
+   * row as the release's verdict must keep using the main-only listing, for qits-1976's reason.
+   */
+  public List<PdDeploymentRequest> listByRepoAndVersionNewestFirst(String repoId, String version) {
+    return list("repoId = ?1 and version = ?2 order by seq desc", repoId, version);
   }
 
   /**

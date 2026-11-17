@@ -148,10 +148,24 @@ public class PdDeploymentRequest extends PanacheEntityBase implements CausedRow 
    * the main application of the release (qits-1976). One release of a repository with {@code
    * variants:} writes rows for several applications under one {@code (repoId, version)}; this is
    * what tells the release's own deployment apart from its variants', so the by-release listing can
-   * leave the variants out.
+   * leave the variants out unless it is asked for them ({@code includeVariants}, qits-2296).
    */
   @Column(length = 64)
   public String variant;
+
+  /**
+   * The variants the release's main file declares under {@code variants:}, comma-separated in the
+   * file's order (qits-2296, V26) — set on the MAIN application's rows only, and null on every
+   * other row: a release with no variants, a variant's own row, a main file that could not be read,
+   * and every row from before the column.
+   *
+   * <p>It exists for the reader waiting on a whole release. The main application deploys to {@code
+   * ACTIVE} before its variants are queued, so a by-release listing read at that moment holds no
+   * variant rows yet; this is what says rows for these names are still to come. A variant name is
+   * an application-name suffix and holds no comma, so the split is exact.
+   */
+  @Column(name = "declared_variants", columnDefinition = "text")
+  public String declaredVariants;
 
   /** The repository the release came from, in the git host's own storage key. Resolved by nobody. */
   @Column(name = "repo_id")

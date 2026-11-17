@@ -398,6 +398,10 @@ components:
           type: string
         variant:
           type: string
+        variants:
+          type: array
+          items:
+            type: string
         version:
           type: string
         environmentId:
@@ -1156,6 +1160,13 @@ paths:
         in: query
         schema:
           type: string
+      - description: "With the repoId/version pair: also list the release's VARIANTS'\
+          \ requests (qits-2296), newest-first beside the main application's. Default\
+          \ false — the main application's rows alone. Ignored by the other filters."
+        name: includeVariants
+        in: query
+        schema:
+          type: boolean
       - name: projectId
         in: query
         schema:

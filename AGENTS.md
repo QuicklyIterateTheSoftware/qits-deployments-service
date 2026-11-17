@@ -828,8 +828,11 @@ things about them, each easy to undo by accident:
 - **A variant's failure is its own.** Unreadable, absent, unparseable or breaking a variant rule
   (`DeploymentSpecParser.checkVariant`: a distinct `application:`, no `variants:`, no
   `renamed_from:`) is a `FAILED` row on the places its application is registered in — the file's
-  `application:` when it named a usable one, else `<main>-<variant>` — and a WARN only for one never
-  registered; the main deploys regardless. **A RETRYABLE variant read is the exception: it holds the
+  `application:` when it named a usable one, else `<main>-<variant>`. One never registered gets the
+  same `FAILED` row (request, deployment, `DeploymentFailed`) on the MAIN application's places
+  under that name, with `variant` set and nothing registered (qits-2296) — it used to be a WARN
+  only, which left a reader waiting on the release without the row it was told to expect. The main
+  deploys regardless. **A RETRYABLE variant read is the exception: it holds the
   whole release** like an unreadable main file — `SPEC_UNREADABLE` on the main application's places
   naming the variant's file, a `SpecRetry`, main and variants deployed together once every file
   answers. Past `SPEC_RETRY_DEADLINE` the main deploys and that variant is `FAILED`: a variant may
@@ -843,6 +846,13 @@ things about them, each easy to undo by accident:
 - **The events say which is which**: `DeploymentActive.variant` and `DeploymentFailed.variant`, the
   last components, null for the main deployment. A release-following consumer reads non-null as "not
   the release's own deployment". An adopted or retired frame names none (a row records no variant).
+- **The release's listing says which variants are coming** (qits-2296, V26): every MAIN request
+  row records the names its file declares (`declared_variants`, comma-separated, served as
+  `variants`, `[]` when none and on every variant row), written when the release is queued and so
+  before the main deploys — the main runs to `ACTIVE` before any variant row exists.
+  `?repoId=&version=` stays main-only; `&includeVariants=true` adds the variant rows, newest-first
+  by `seq`. A reader deciding a whole release (qits-projects' FINALIZED) waits until each declared
+  name has a terminal row there; a reader taking the newest row as the verdict keeps the default.
   **Retirement is not inferred**: removing a name from `variants:` stops its deploys, and its
   application is retired through the retire door — this schema records no link from a repository to
   its variants, and guessing one from deployment history would retire applications nobody asked to.
@@ -3315,6 +3325,12 @@ nothing. `PdDecommission` is a stamped `CausedRow` (request thread, the `PdEnvir
 `image_defaults:` deleted from the settings store, comma-separated in file order, keys only. Null is
 every row that retired nothing and every row from before the column; **no backfill**, because what
 those retired was never recorded.
+
+**`V26__deployment_request_declared_variants.sql` is V19's shape on the request** (qits-2296):
+`declared_variants text`, nullable, comma-separated in file order, on `pd_deployment_request` —
+the variants a MAIN row's release declares, so a reader of the release knows which variant rows are
+still to come. Null on every other row and on rows from before the column; **no backfill**, since
+those releases' variants already ran or failed and nothing waits on them.
 
 **Nulls are distinct to `=`, and the queries still test for one.** A deployment's `environment_id` was
 null until V8 and is the designated tier now, so the null-testing arms of
