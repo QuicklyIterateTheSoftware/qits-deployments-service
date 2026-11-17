@@ -52,6 +52,9 @@ import java.util.Map;
  *       and {@code quarkus.oidc-client.qits.*} — the bearer the read presents, minted there too.
  *       An application's environment is the settings store, in this process's own database, so
  *       there is no second peer to point anywhere.
+ *   <li><b>{@code qits.deployments.edges.*-url}</b> — a closed loopback port. The route-table
+ *       pushes run on the deploy worker, and an edge alias the build machine happens to resolve
+ *       would hold that worker for a whole retry budget per edge. Nothing here records them.
  *   <li><b>{@code observe-interval-seconds=0}</b> — see below.
  *   <li><b>{@code otel} and {@code eventstream} dark</b> — a step container has no qits-observability
  *       and no qits-events, and an exporter retrying against an unresolvable host would bury the
@@ -81,6 +84,12 @@ public class StoryProfile extends PdPackagedSurfaceIT.PackagedUnderTarget {
 
   /** …and the bus client's store, which is opened and migrated even though the bus is dark. */
   private static final String EVENTSTREAM_PROPERTY = "qits.test.stories.eventstream-url";
+
+  /**
+   * Where every edge's route-table push goes: a loopback literal on port 1 (tcpmux, never bound on
+   * a build machine), refused in one attempt with no lookup and no retry.
+   */
+  static final String EDGE_NOBODY_LISTENS = "http://127.0.0.1:1";
 
   @Override
   public Map<String, String> getConfigOverrides() {
@@ -120,6 +129,19 @@ public class StoryProfile extends PdPackagedSurfaceIT.PackagedUnderTarget {
 
     // The timer whose pass a recording cannot tell from a deployment's own. See the class javadoc.
     overrides.put("qits.deployments.observe-interval-seconds", "0");
+
+    // The three edges' route-table door (qits-2174), at a closed loopback port. EdgeRoutePusher
+    // pushes on the deploy worker — the boot's first rebuild included — and the shipped addresses
+    // are wire aliases (http://dev-qits-edge-private:80, …-overlay:80) that a build machine may
+    // well resolve: on a CI lease they did, every connect timed out, and qits-http-core's
+    // RetryPolicy rode each one for its whole budget, ~35 s apiece, holding the ONE deploy worker
+    // past StoryPlatform's settle wait. A loopback literal is never retried (RetryPolicy.loopback)
+    // and is refused at once, so every push is one WARN in milliseconds, as the public edge's
+    // *.localhost name already was. No recorder sits behind these sockets, so no story's diagram
+    // moves: the rebuild's `service ls` is StorySwarm's, and that is unchanged.
+    overrides.put("qits.deployments.edges.public-url", EDGE_NOBODY_LISTENS);
+    overrides.put("qits.deployments.edges.private-url", EDGE_NOBODY_LISTENS);
+    overrides.put("qits.deployments.edges.overlay-url", EDGE_NOBODY_LISTENS);
     return overrides;
   }
 }
