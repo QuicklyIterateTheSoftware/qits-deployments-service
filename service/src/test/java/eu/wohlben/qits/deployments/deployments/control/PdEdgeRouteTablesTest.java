@@ -141,9 +141,53 @@ class PdEdgeRouteTablesTest {
 
     pusher.afterDeploy("qits-edge-private");
     assertEquals(1, edges.pushesTo("private").size());
+    assertEquals(0, edges.pushesTo("overlay").size(), "the tunnel edge's deploy is not the overlay's");
+
+    pusher.afterDeploy("qits-edge-overlay");
+    assertEquals(1, edges.pushesTo("overlay").size());
+    assertEquals(1, edges.pushesTo("private").size(), "nor the overlay's the tunnel edge's");
+    assertEquals(
+        tables.storedRow("private").orElseThrow().body,
+        edges.pushesTo("overlay").get(0).table(),
+        "the overlay edge is sent the private table, verbatim");
 
     pusher.afterDeploy("qits-ci");
-    assertEquals(2, edges.pushes().size(), "another application's deploy pushes nothing unchanged");
+    assertEquals(3, edges.pushes().size(), "another application's deploy pushes nothing unchanged");
+  }
+
+  @Test
+  void aNewPrivateVersionIsPushedToBothPrivateKindEdges() {
+    // qits-2304: two tables, three targets — the private table goes to qits-edge-private and to
+    // qits-edge-overlay, the same body, and no third row is stored for it.
+    driver.scriptLabelledServices(List.of(routed("qits-rt-o", "private", "rto")));
+
+    pusher.refresh();
+
+    String body = tables.storedRow("private").orElseThrow().body;
+    assertEquals(1, edges.pushesTo("private").size());
+    assertEquals(1, edges.pushesTo("overlay").size());
+    assertEquals(body, edges.pushesTo("private").get(0).table());
+    assertEquals(body, edges.pushesTo("overlay").get(0).table());
+    assertTrue(tables.storedRow("overlay").isEmpty(), "the overlay edge is a target, not a table");
+    assertEquals(version("private"), edges.held("overlay").orElseThrow());
+  }
+
+  @Test
+  void anOverlayEdgeNotDeployedYetFailsNothingAndIsCaughtUpOnceItAnswers() {
+    driver.scriptLabelledServices(List.of(routed("qits-rt-p", "private", "rtp")));
+    edges.failWith("overlay", "no such host: dev-qits-edge-overlay");
+
+    assertDoesNotThrow(() -> pusher.refresh());
+    assertEquals(1, edges.pushesTo("private").size(), "the tunnel edge is pushed regardless");
+    assertEquals(version("private"), edges.held("private").orElseThrow());
+    assertDoesNotThrow(() -> pusher.observe());
+    assertDoesNotThrow(() -> pusher.afterDeploy("qits-ci"));
+
+    // It is deployed: its own deploy pushes it, and so would the next pass.
+    edges.clearFailure("overlay");
+    pusher.observe();
+    assertEquals(version("private"), edges.held("overlay").orElseThrow());
+    assertEquals(1, edges.pushesTo("private").size(), "the private edge held it all along");
   }
 
   @Test
@@ -153,12 +197,14 @@ class PdEdgeRouteTablesTest {
     long stored = version("public");
     edges.reset();
 
-    // Both edges hold what was pushed: the pass reads each and pushes nothing.
+    // Every edge holds what was pushed: the pass reads each and pushes nothing.
     edges.reportHeld("public", stored);
     edges.reportHeld("private", version("private"));
+    edges.reportHeld("overlay", version("private"));
     pusher.observe();
     assertEquals(1, edges.readsOf("public"));
     assertEquals(1, edges.readsOf("private"));
+    assertEquals(1, edges.readsOf("overlay"), "the overlay edge is asked on its own");
     assertEquals(List.of(), edges.pushes());
 
     // The public edge was redeployed onto an empty cache, the private one onto an older table.
@@ -167,6 +213,7 @@ class PdEdgeRouteTablesTest {
     pusher.observe();
     assertEquals(1, edges.pushesTo("public").size());
     assertEquals(1, edges.pushesTo("private").size());
+    assertEquals(0, edges.pushesTo("overlay").size(), "the overlay edge still holds the version");
   }
 
   @Test

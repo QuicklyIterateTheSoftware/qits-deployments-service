@@ -229,6 +229,14 @@ public class DeployService implements ReleaseAnnouncements {
   @ConfigProperty(name = "qits.deployments.swarm.private-edge.application")
   String privateEdgeApplication;
 
+  /**
+   * The edges private services resolve through (qits-2304) — {@code qits-edge-overlay} beside the
+   * private edge: their recreate is rolled back the same way, since losing one cuts every service
+   * that asks it first.
+   */
+  @ConfigProperty(name = "qits.deployments.swarm.private-edge.resolver-applications")
+  Optional<List<String>> resolverApplications;
+
   /** The settings store a rename cutover copies onto its successor and retires for its predecessor. */
   @Inject Settings settings;
 
@@ -5238,9 +5246,21 @@ public class DeployService implements ReleaseAnnouncements {
         previous, true, converged.converged(), converged.converged() ? null : converged.detail());
   }
 
-  /** Whether {@code plan} deploys the private edge — the one application the recreate rollback covers. */
+  /**
+   * Whether {@code plan} deploys a private-kind edge — the private edge, or one of the resolver
+   * edges (qits-2304: qits-edge-overlay) — the applications the recreate rollback covers.
+   */
   private boolean isPrivateEdge(Plan plan) {
-    return privateEdgeApplication != null && privateEdgeApplication.equals(plan.applicationName());
+    String application = plan.applicationName();
+    if (application == null) {
+      return false;
+    }
+    if (privateEdgeApplication != null && privateEdgeApplication.strip().equals(application)) {
+      return true;
+    }
+    return resolverApplications != null
+        && resolverApplications.orElse(List.of()).stream()
+            .anyMatch(listed -> listed != null && listed.strip().equals(application));
   }
 
   /**
@@ -5252,8 +5272,12 @@ public class DeployService implements ReleaseAnnouncements {
    * #restoreLastActive}, the qits-2249 machinery) and the new deployment is recorded {@code FAILED},
    * saying so. Returns the sentence the row is failed with.
    *
-   * <p>Only the private edge ({@code qits.deployments.swarm.private-edge.application}); widening it
-   * to every stop-first service is a follow-up. An update that swarm itself rolled back never gets
+   * <p>Only the private-kind edges: the private edge ({@code
+   * qits.deployments.swarm.private-edge.application}) and the edges private services resolve
+   * through ({@code qits.deployments.swarm.private-edge.resolver-applications}, so qits-edge-overlay
+   * since qits-2304 — every overlay client asks it first, and a recreate that never goes healthy
+   * would leave each of them with a dead first resolver). Widening it to every stop-first service is
+   * a follow-up. An update that swarm itself rolled back never gets
    * here: it converges {@code ROLLED_BACK}, and the update path's {@code --update-failure-action
    * rollback} with a monitor of at least the start period is what reverted it.
    */

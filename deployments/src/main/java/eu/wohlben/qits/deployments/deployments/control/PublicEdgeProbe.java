@@ -7,9 +7,9 @@ import java.io.IOException;
  * split check's probe that a private application is NOT served there. Its implementation is {@code
  * edgehost/TlsPublicEdgeProbe}; the suite installs {@code FakePublicEdgeProbe}.
  *
- * <p><b>Why not a plain request.</b> The deployer is private, and its resolvers ask the private
- * edge first (qits-2117), so {@code https://stt.qits.<domain>} from here reaches the PRIVATE edge,
- * which serves it. The probe has to enter where the internet enters: it connects to the address the
+ * <p><b>Why not a plain request.</b> The deployer is private, and its resolvers ask a private-kind
+ * edge first (qits-2117; the overlay edge since qits-2304), so {@code https://stt.qits.<domain>}
+ * from here reaches that edge, which serves it. The probe has to enter where the internet enters: it connects to the address the
  * apex {@code qits.<domain>} resolves to — a name only the public edge serves — and asks for the
  * private host by SNI and {@code Host}.
  */

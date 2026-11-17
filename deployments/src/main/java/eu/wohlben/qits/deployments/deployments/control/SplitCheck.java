@@ -33,7 +33,7 @@ import org.jboss.logging.Logger;
  * </ol>
  *
  * <p><b>When.</b> On the observation pass, at most every {@code qits.deployments.split-check.every}
- * (10 minutes shipped), and once after each deploy of either edge reaches healthy. Both on the
+ * (10 minutes shipped), and once after each deploy of any of the three edges reaches healthy. Both on the
  * deploy worker, right after the route tables' own rebuild, whose label read this reuses ({@link
  * EdgeRouteTables#lastRead}) — so the check adds no {@code service ls} of its own. A pass whose
  * label read failed checks nothing and keeps the last result; the next pass tries again.
@@ -96,7 +96,7 @@ public class SplitCheck {
     runSafely(now);
   }
 
-  /** After a deploy of {@code application} reached healthy: a check when it is either edge. */
+  /** After a deploy of {@code application} reached healthy: a check when it is one of the edges. */
   public void afterDeploy(String application) {
     if (EdgeRouteTables.edgeOf(application) != null) {
       runSafely(Instant.now());

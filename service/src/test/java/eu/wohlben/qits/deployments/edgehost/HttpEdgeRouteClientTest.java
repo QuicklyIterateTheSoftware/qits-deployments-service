@@ -67,6 +67,19 @@ class HttpEdgeRouteClientTest {
   }
 
   @Test
+  void theOverlayEdgeIsDialledAtItsOwnAddressWithThePrivateTable() throws IOException {
+    // qits-2304: a third target, its own url, sent the private table as it is.
+    String url = serve(204, "");
+    HttpEdgeRouteClient client =
+        EdgeRouteClients.at("http://127.0.0.1:1", "http://127.0.0.1:1", url);
+
+    client.push("overlay", "{\"edge\":\"private\",\"version\":1}");
+
+    assertEquals(List.of("PUT /edge-route-table Bearer " + EdgeRouteClients.BEARER), seen);
+    assertThrows(EdgeRouteException.class, () -> client.push("private", "{}"), "port 1 refuses");
+  }
+
+  @Test
   void anAnswerTheDoorDoesNotPromiseIsAnException() throws IOException {
     String url = serve(503, "{\"error\":\"idp unreachable\"}");
     HttpEdgeRouteClient client = EdgeRouteClients.at(url);

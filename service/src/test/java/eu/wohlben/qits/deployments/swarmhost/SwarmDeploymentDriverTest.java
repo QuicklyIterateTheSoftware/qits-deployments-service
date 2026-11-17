@@ -132,6 +132,10 @@ class SwarmDeploymentDriverTest {
     // The shipped private-edge keys (qits-2117). The resolv.conf is the suite's own: no lookup ever
     // gets that far unless a test scripts the private edge, so every other argv is unchanged.
     driver.privateEdgeApplication = "qits-edge-private";
+    // The shipped preference (qits-2304): the overlay edge first, the private edge as fallback. No
+    // test scripts the overlay edge unless it is about it, so its `service ls` answers nothing and
+    // every lookup falls through to qits-edge-private exactly as before.
+    driver.resolverApplications = Optional.of(List.of("qits-edge-overlay", "qits-edge-private"));
     driver.resolvConf = resolvConf("nameserver 127.0.0.11\n").toString();
     cli = new ScriptedCli();
     driver.scriptCli(cli);
@@ -511,6 +515,11 @@ class SwarmDeploymentDriverTest {
       assertTrue(argv.containsAll(List.of("--update-monitor", "120s")), argv.toString());
       assertTrue(argv.containsAll(List.of("--health-start-period", "120s")), argv.toString());
     }
+
+    // The overlay edge (qits-2304) holds the private table the same way, so the same floor.
+    List<String> overlay =
+        driver.buildUpdateArgv(variantSpec("qits-edge-overlay", "overlay"), "dev-qits-edge-overlay");
+    assertTrue(overlay.containsAll(List.of("--update-monitor", "120s")), overlay.toString());
 
     // Every other application keeps the configured monitor, whatever its start period.
     List<String> other = driver.buildUpdateArgv(spec(), "dev-qits-gateway");
@@ -4432,10 +4441,165 @@ class SwarmDeploymentDriverTest {
     for (DeploymentDriver.ServiceSpec edge :
         List.of(
             shaped("qits-edge-private", "dev-qits-edge-private", DeploymentDriver.Exposure.PRIVATE),
+            shaped("qits-edge-overlay", "dev-qits-edge-overlay", DeploymentDriver.Exposure.PRIVATE),
             shaped("qits-edge", "dev-qits-edge", DeploymentDriver.Exposure.PUBLIC))) {
       List<String> argv = driver.buildCreateArgv(edge, edge.wireAlias(), driver.collapse(edge));
       assertEquals(List.of(), dnsArguments(argv, "--dns"), edge.applicationName());
+      assertFalse(driver.wantsPrivateEdgeResolvers(edge), edge.applicationName());
     }
+  }
+
+  // --- qits-2304: the overlay edge is the preferred resolver -----------------------------------
+
+  private static final String OVERLAY_LS =
+      "service ls -q --filter label=qits.platform.deployments.app-name=qits-edge-overlay";
+
+  /**
+   * Exactly one qits-edge-overlay service and its VIP on the overlay. Call it BEFORE {@link
+   * #scriptPrivateEdge}: the scripted keys match in the order they were first put, and the private
+   * edge's VIP key matches every inspect.
+   */
+  private void scriptOverlayEdge(String vip) {
+    cli.script(OVERLAY_LS, result(0, "overlaysvc0001\n"));
+    cli.script(
+        " overlaysvc0001",
+        result(0, "flatnetid0000000000000001 10.0.1.7/24\n" + PRIVATE_NET_ID + " " + vip + "/20\n"));
+  }
+
+  @Test
+  void aDeployedOverlayEdgeIsTheFirstResolver() {
+    SwarmDeploymentDriver driver = driverWithUpstreams();
+    scriptOverlayEdge("10.231.0.8");
+    scriptPrivateEdge("10.231.0.5");
+    DeploymentDriver.ServiceSpec spec = exposed(DeploymentDriver.Exposure.PRIVATE);
+
+    List<String> argv = driver.buildCreateArgv(spec, "dev-qits-gateway", driver.collapse(spec));
+
+    assertEquals(
+        List.of("10.231.0.8", "9.9.9.9", "1.1.1.1"),
+        dnsArguments(argv, "--dns"),
+        "the overlay edge's VIP, not the private edge's: " + argv);
+    assertEquals(
+        0,
+        cli.count("app-name=qits-edge-private"),
+        "the private edge is not even asked once the overlay edge answered");
+  }
+
+  @Test
+  void noOverlayEdgeYetFallsBackToThePrivateEdge() {
+    SwarmDeploymentDriver driver = driverWithUpstreams();
+    cli.script(OVERLAY_LS, result(0, ""));
+    scriptPrivateEdge("10.231.0.5");
+    DeploymentDriver.ServiceSpec spec = exposed(DeploymentDriver.Exposure.PRIVATE);
+
+    List<String> argv = driver.buildCreateArgv(spec, "dev-qits-gateway", driver.collapse(spec));
+
+    assertEquals(List.of("10.231.0.5", "9.9.9.9", "1.1.1.1"), dnsArguments(argv, "--dns"));
+    assertEquals(1, cli.count(OVERLAY_LS), "the preferred edge was asked first");
+  }
+
+  @Test
+  void anOverlayEdgeThatCannotBeReadNeverFallsThroughToThePrivateEdge() {
+    // A passing failure must not hand a live service the fallback VIP: its drift would recreate it
+    // onto qits-edge-private now and back onto the overlay edge at the next deployment.
+    SwarmDeploymentDriver driver = driverWithUpstreams();
+    scriptLiveNetworks(PRIVATE_NET_ID + "\n");
+    cli.script(OVERLAY_LS, result(1, "Cannot connect to the Docker daemon"));
+    scriptPrivateEdge("10.231.0.5");
+    cli.script(
+        SwarmDeploymentDriver.SPEC_DNS_FORMAT,
+        result(0, "{\"Nameservers\":[\"10.231.0.8\",\"9.9.9.9\",\"1.1.1.1\"]}\n"));
+    DeploymentDriver.ServiceSpec spec = exposed(DeploymentDriver.Exposure.PRIVATE);
+
+    SwarmDeploymentDriver.Resolvers resolvers = driver.privateEdgeResolvers(spec);
+    assertFalse(resolvers.found());
+    assertTrue(resolvers.why().contains("Cannot connect"), resolvers.why());
+
+    driver.apply(spec);
+    assertTrue(cli.matching("service rm").isEmpty(), "no wanted list, so no resolver drift");
+
+    // Two overlay edges is no answer either.
+    SwarmDeploymentDriver twice = driverWithUpstreams();
+    cli.script(OVERLAY_LS, result(0, "overlaysvc0001\noverlaysvc0002\n"));
+    scriptPrivateEdge("10.231.0.5");
+    assertFalse(twice.privateEdgeResolvers(spec).found());
+  }
+
+  @Test
+  void theOverlayEdgesArrivalReappliesThePrivateServicesOntoItsVip() {
+    SwarmDeploymentDriver driver = driverWithUpstreams();
+    cli.script(OVERLAY_LS, result(0, ""));
+    // Its VIP, scripted ahead of the private edge's catch-all key; nobody asks until it is listed.
+    cli.script(" overlaysvc0001", result(0, PRIVATE_NET_ID + " 10.231.0.8/20\n"));
+    scriptPrivateEdge("10.231.0.5");
+    DeploymentDriver.ServiceSpec stt =
+        shaped("qits-stt", "dev-qits-stt", DeploymentDriver.Exposure.PRIVATE);
+    DeploymentDriver.ServiceSpec overlay =
+        shaped("qits-edge-overlay", "dev-qits-edge-overlay", DeploymentDriver.Exposure.PRIVATE);
+    cli.script("--format {{.ID}} dev-qits-stt", result(1, "no such service"));
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, driver.apply(stt).outcome());
+    assertEquals(
+        List.of("10.231.0.5", "9.9.9.9", "1.1.1.1"),
+        dnsArguments(cli.matching("--name dev-qits-stt"), "--dns"),
+        "before the overlay edge exists, the private edge's VIP");
+    cli.script("--format {{.ID}} dev-qits-edge-overlay", result(1, "no such service"));
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, driver.apply(overlay).outcome());
+    assertTrue(
+        dnsArguments(cli.matching("--name dev-qits-edge-overlay"), "--dns").isEmpty(),
+        "the overlay edge never resolves through an edge");
+
+    // The overlay edge is up: it now answers the preference walk first.
+    cli.script(OVERLAY_LS, result(0, "overlaysvc0001\n"));
+    cli.script("--format {{.ID}} dev-qits-stt", result(0, "svc-dev-qits-stt"));
+    cli.script(
+        SwarmDeploymentDriver.SPEC_DNS_FORMAT + " dev-qits-stt",
+        result(0, "{\"Nameservers\":[\"10.231.0.5\",\"9.9.9.9\",\"1.1.1.1\"]}\n"));
+    cli.script(
+        SwarmDeploymentDriver.UPDATE_STATUS_FORMAT + " dev-qits-edge-overlay",
+        result(0, "completed||"));
+    cli.calls.clear();
+
+    driver.awaitConverged("dev-qits-edge-overlay", Duration.ofSeconds(5));
+
+    assertEquals(1, cli.count("service rm dev-qits-stt"), cli.calls.toString());
+    assertEquals(
+        List.of("10.231.0.8", "9.9.9.9", "1.1.1.1"),
+        dnsArguments(cli.matching("--name dev-qits-stt"), "--dns"));
+  }
+
+  @Test
+  void aPrivateEdgeRecreateBehindAnOverlayEdgeReappliesNothing() {
+    // The tunnel edge's VIP moves, but nobody asks it first any more: the resolver VIP is the
+    // overlay edge's, before and after.
+    SwarmDeploymentDriver driver = driverWithUpstreams();
+    scriptOverlayEdge("10.231.0.8");
+    scriptPrivateEdge("10.231.0.5");
+    DeploymentDriver.ServiceSpec stt =
+        shaped("qits-stt", "dev-qits-stt", DeploymentDriver.Exposure.PRIVATE);
+    DeploymentDriver.ServiceSpec edge =
+        shaped("qits-edge-private", "dev-qits-edge-private", DeploymentDriver.Exposure.PRIVATE);
+    cli.script("--format {{.ID}} dev-qits-stt", result(1, "no such service"));
+    driver.apply(stt);
+    cli.script("--format {{.ID}} dev-qits-edge-private", result(1, "no such service"));
+    driver.apply(edge);
+    cli.script("Endpoint.VirtualIPs", result(0, PRIVATE_NET_ID + " 10.231.0.9/20\n"));
+    cli.script(
+        SwarmDeploymentDriver.UPDATE_STATUS_FORMAT + " dev-qits-edge-private",
+        result(0, "completed||"));
+    cli.calls.clear();
+
+    driver.awaitConverged("dev-qits-edge-private", Duration.ofSeconds(5));
+
+    assertEquals(0, cli.count("service rm"), cli.calls.toString());
+  }
+
+  @Test
+  void anEmptyPreferenceListIsThePrivateEdgeAlone() {
+    SwarmDeploymentDriver driver = driverWithUpstreams();
+    driver.resolverApplications = Optional.empty();
+    assertEquals(List.of("qits-edge-private"), driver.resolverApplications());
+    driver.resolverApplications = Optional.of(List.of(" qits-edge-overlay ", "", "qits-edge-private"));
+    assertEquals(List.of("qits-edge-overlay", "qits-edge-private"), driver.resolverApplications());
   }
 
   @Test

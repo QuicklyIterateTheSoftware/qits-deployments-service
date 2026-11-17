@@ -3,7 +3,7 @@ package eu.wohlben.qits.deployments.deployments.control;
 import java.util.OptionalLong;
 
 /**
- * The seam to the two edges' route-table door (epic qits-2174): {@code PUT /edge-route-table} and
+ * The seam to the three edges' route-table door (epic qits-2174): {@code PUT /edge-route-table} and
  * {@code GET /edge-route-table}, presented with this component's own {@code qits:system} bearer.
  * Its implementation is {@code edgehost/HttpEdgeRouteClient}; the suite installs {@code
  * FakeEdgeRouteClient}.
@@ -28,11 +28,12 @@ public interface EdgeRouteClient {
   /**
    * Push one table.
    *
-   * @param edge {@code public} or {@code private}
+   * @param edge the push target, {@code public}, {@code private} or {@code overlay} ({@link
+   *     EdgeRouteTables#TARGETS}) — {@code overlay} is sent the private table (qits-2304)
    * @param table the table's JSON, sent verbatim
    */
   Pushed push(String edge, String table);
 
-  /** The version the edge holds, or empty when it holds none yet. */
+  /** The version the target holds, or empty when it holds none yet. */
   OptionalLong held(String edge);
 }

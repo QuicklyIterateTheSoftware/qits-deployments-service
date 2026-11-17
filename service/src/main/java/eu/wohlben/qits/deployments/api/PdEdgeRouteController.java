@@ -40,9 +40,9 @@ public class PdEdgeRouteController {
   @APIResponse(responseCode = "404", description = "No edge of that name")
   @APIResponse(responseCode = "503", description = "No table has been built for that edge yet")
   public EdgeRouteTableDto get(@PathParam("edge") String edge) {
-    if (!EdgeRouteTables.EDGES.contains(edge)) {
+    if (!EdgeRouteTables.TABLES.contains(edge)) {
       throw new NotFoundException(
-          "No edge `" + edge + "`; the edges are " + String.join(" and ", EdgeRouteTables.EDGES));
+          "No edge `" + edge + "`; the edges are " + String.join(" and ", EdgeRouteTables.TABLES));
     }
     return patience
         .call("the " + edge + " route table", () -> tables.storedRow(edge))

@@ -404,8 +404,8 @@ qits-private` and `--network-rm qits-net`, never two with a bridged state betwee
 
 **The split is checked continuously, as the runtime and the public edge show it** (qits-2174, task
 qits-2215; `deployments/control/SplitCheck`). On the observation pass at most every
-`qits.deployments.split-check.every` (`10m`), and once after each deploy of `qits-edge` or
-`qits-edge-private` reaches healthy:
+`qits.deployments.split-check.every` (`10m`), and once after each deploy of `qits-edge`,
+`qits-edge-private` or `qits-edge-overlay` reaches healthy:
 
 - **Networks** (`NetworkCheck`): every labelled service's attached networks (all but `ingress`,
   read like the drift check), off the same `service ls` the route tables were just built from.
@@ -415,7 +415,7 @@ qits-2215; `deployments/control/SplitCheck`). On the observation pass at most ev
   but on [<nets>]`.
 - **The public edge** (`PublicEdgeProbe`, `edgehost/TlsPublicEdgeProbe`): every application in the
   private route table with a browser host must NOT be served there. The deployer is private and its
-  resolvers ask the private edge first, so a plain request would reach the private edge; the probe
+  resolvers ask a private-kind edge first, so a plain request would reach that edge; the probe
   resolves the apex `qits.<domain>` (only the public edge serves it), opens TLS to that address on
   443 with SNI and `Host` `<host>.qits.<domain>` and HTTPS hostname verification, and sends `GET
   <primary path>/q/health/ready` with the deployer's own `qits:system` bearer and `Connection:
@@ -447,8 +447,74 @@ route table, so a release that cannot load one must not stay:
   convergence timeout, the deployer re-applies the place's last `ACTIVE` deployment over it — the
   qits-2249 restore (`restoreLastActive`): that row's image under the failed spec's shape — marks the
   new deployment `FAILED` and logs ERROR `qits-edge-private <new> failed its health check; rolled
-  back to <prev>`. The previous row stays `ACTIVE`. Only the private edge; every other application
-  keeps the plain `FAILED`.
+  back to <prev>`. The previous row stays `ACTIVE`. Only the private-kind edges — `qits-edge-private`
+  and every application in `qits.deployments.swarm.private-edge.resolver-applications`, so
+  `qits-edge-overlay` too (qits-2304), whose loss would leave every overlay client with a dead first
+  resolver; every other application keeps the plain `FAILED`. The update path's monitor floor
+  covers the same set.
+
+## Three edges, two route tables, one resolver preference
+
+**There are three edges, all one image** (`qits/qits-edge`), each an application of its own:
+
+| application | variant | serves | networks | update |
+|---|---|---|---|---|
+| `qits-edge` | main | the public route table, to the internet | `qits-net`, ingress-published ports | start-first |
+| `qits-edge-private` | `private` | the private table, to WireGuard peers AND the overlay | `qits-private`, a host-mode UDP port | stop-first |
+| `qits-edge-overlay` | `overlay` (qits-2304) | the private table, to the overlay alone (HTTP + DNS) | `qits-private`, no host port | start-first |
+
+The tunnel edge's host-mode UDP port has one binder per node, so every redeploy of
+`qits-edge-private` (8x a day, 90–180 s) left the overlay's containers with no private-aware
+resolver: docker's resolver fell through to public DNS, which answers a private name with the
+unroutable `100.96.0.1`. `qits-edge-overlay` carries only the second job and publishes nothing, so
+it updates start-first and never leaves that gap. Tunnel peers keep using `qits-edge-private`.
+
+**Two tables are built and stored, three targets are pushed** (`EdgeRouteTables`, `EdgeRoutePusher`).
+A *table* is a `pd_edge_route_table` row (`public`, `private`) and the name `GET
+/deployments/api/edge-routes/{edge}` answers; a *push target* is an edge the table is carried to:
+
+| target | table it carries | url key (default) |
+|---|---|---|
+| `public` | `public` | `qits.deployments.edges.public-url` (`https://qits.<domain>`) |
+| `private` | `private` | `qits.deployments.edges.private-url` (`http://<env>-qits-edge-private:80`) |
+| `overlay` | `private` | `qits.deployments.edges.overlay-url` (`http://<env>-qits-edge-overlay:80`) |
+
+A new private version is pushed to both private-kind targets, the same body (`"edge":"private"`, the
+table the overlay edge holds); the observation pass asks each target what it holds and pushes when
+that is below the stored version, and a deploy of an edge reaching healthy pushes that edge alone.
+Each target fails on its own: the overlay edge before its first deployment is one WARN `route table
+push to overlay failed: …` per outage and costs the other two nothing. The overlay edge fetches
+`GET /deployments/api/edge-routes/private` at start like the tunnel edge. None of the three is ever
+in a table.
+
+**Whose VIP a private service asks first is a preference list** (qits-2117, qits-2304). A
+`private` service is created with `--dns <vip> --dns <upstream>...`: the VIP on `qits-private` of the
+first application in `qits.deployments.swarm.private-edge.resolver-applications`
+(`qits-edge-overlay,qits-edge-private`) that has exactly one swarm service with one, then this
+process's own upstreams. All or nothing, as before.
+
+- **Fallback.** An application with *no* swarm service is skipped, so until `qits-edge-overlay` is
+  deployed every private service keeps `qits-edge-private`'s VIP and nothing changes. **Any other
+  failure stops the walk with no VIP** — an inspect that does not answer, two services, no VIP on the
+  network — rather than falling through, because a hiccup that handed out the fallback would have the
+  resolver drift recreate each service onto it and back again. No VIP means no drift and a create
+  with no `--dns` and one WARN, the qits-2117 fail-safe.
+- **The move.** Once the overlay edge exists, a private service's live resolvers no longer match the
+  wanted list and its next deployment is a recreate onto the overlay VIP (the qits-2117 resolver
+  drift). The overlay edge's own deployment does it at once for every service this process deployed
+  since it started: before applying any resolver edge the deployer notes the resolver VIP, and when
+  that edge converges with a different one it re-applies those services. A `qits-edge-private`
+  recreate behind a live overlay edge moves nothing, since nobody asks it first. The deployer itself
+  is never recreated: its self-update `--dns-rm`s and `--dns-add`s the list and WARNs when the VIP is
+  not first afterwards. A retired overlay edge is not followed: services keep its dead VIP until their
+  next deployment drifts them back onto `qits-edge-private`'s.
+- **Identity is a separate key.** `qits.deployments.swarm.private-edge.application`
+  (`qits-edge-private`) still names the tunnel edge. Every application in either key is an edge:
+  never handed these resolvers, its VIP move re-applies the services behind it, its
+  `--update-monitor` is floored at its start period, and its failed recreate is rolled back.
+- **The other two readers must agree.** qits-containers' `PrivateEdgeResolver` (workspace
+  containers) and the runner's `PrivateEdge` (CI leases) look up the same VIP the same way, and must
+  walk the same preference with the same skip-only-when-absent rule.
 
 ## Self-update takes an orchestrator
 
