@@ -83,6 +83,7 @@ erDiagram
     text approved_by
     uuid causation_id
     instant created_at "not null"
+    text declared_variants
     instant declined_at
     text declined_by
     boolean deploy_hold "not null"
