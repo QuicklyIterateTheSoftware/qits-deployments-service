@@ -253,7 +253,10 @@ class PdDatabaseMoveRecoveryTest {
     String move = switched(live, interrupted, PdDatabaseMoveState.SWITCHED, null);
 
     deployService.sweepInFlight();
-    assertEquals(PdDeploymentStatus.SUPERSEDED, deployment(interrupted).status);
+    // V1 still runs under the name and is OLDER than the row's V2: the predecessor, not a successor
+    // (qits-2306), so the row is the interrupted FAILED — rolled back all the same.
+    assertEquals(PdDeploymentStatus.FAILED, deployment(interrupted).status);
+    assertTrue(deployment(interrupted).interrupted);
     databaseMoves.settleInterrupted(true);
     deployService.awaitIdle();
 

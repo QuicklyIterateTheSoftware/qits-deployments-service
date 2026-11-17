@@ -23,8 +23,8 @@ import org.junit.jupiter.api.Test;
  * itself died before it could record the outcome, so the next one asks what the service is running
  * and compares it with the row's own IMAGE TAG — the released version, and the commit sha behind
  * it on a row written before versions were the coordinate. Carrying that tag is this deployment
- * serving; carrying another is a rollback or a later deployment; nothing running at all is a row a
- * restart interrupted.
+ * serving; carrying a NEWER version is a later deployment; anything else under the name — an older
+ * version, a sha, nothing at all — is a row a restart interrupted (qits-2306).
  *
  * <p><b>Most rows here are written the LEGACY way, with a sha and no version</b>, and that is
  * deliberate: it is the arm that says a row predating the version column still adopts rather than
@@ -42,6 +42,9 @@ public class PdSweepAdoptionTest {
 
   /** What a release-era row records — and therefore what its image is tagged with. */
   private static final String VERSION = "2026.903.113443";
+
+  /** A release after {@link #VERSION} — and lexically BEFORE it ("1…" < "9…"), deliberately. */
+  private static final String NEWER = "2026.1001.10000";
 
   @Inject DeployService deployService;
   @Inject FakeDeploymentDriver driver;
@@ -78,6 +81,14 @@ public class PdSweepAdoptionTest {
               }
               deployments.persist(row);
             });
+    return id;
+  }
+
+  /** A release-era row: its version is its image tag, the commit sha beside it as ever. */
+  private String versioned(
+      String environmentId, PdDeploymentStatus status, String containerName, String version) {
+    String id = deployment("qits-platform-deployments", environmentId, status, containerName);
+    QuarkusTransaction.requiringNew().run(() -> deployments.findById(id).version = version);
     return id;
   }
 
@@ -165,28 +176,66 @@ public class PdSweepAdoptionTest {
   }
 
   @Test
-  public void aStartingRowWhoseServiceRunsAnotherShaIsSuperseded() {
-    // The rollback, which is the whole reason the image is the question: the service is there and
-    // healthy, and it is running what this deployment was replacing. Adopting it would record a
-    // succession that did not happen.
+  public void aStartingRowWhoseServiceRunsANewerVersionIsSuperseded() {
+    // A later deployment took the place while this one was in flight: the service is there and
+    // healthy, and it runs a version that orders AFTER this row's. Adopting it would record a
+    // succession that did not happen; re-driving this row would roll the place back.
     String superseded =
-        deployment(
-            "qits-platform-deployments", "env-sweep-rollback", PdDeploymentStatus.STARTING, "rolled-back");
-    driver.scriptRunningImage("rolled-back", image(OTHER_SHA));
+        versioned("env-sweep-superseded", PdDeploymentStatus.STARTING, "overtaken", VERSION);
+    driver.scriptRunningImage("overtaken", image(NEWER));
 
     deployService.sweepInFlight();
 
     assertEquals(
         "SUPERSEDED",
         statusOf(superseded),
-        "a newer sha is serving this place, which is the one interrupted row that is not a FAILED");
+        "a newer version is serving this place, which is the one interrupted row that is not a"
+            + " FAILED");
     String detail = detailOf(superseded);
     assertTrue(detail.contains("superseded"), detail);
-    assertTrue(detail.contains(OTHER_SHA), detail);
+    assertTrue(detail.contains(image(NEWER)), detail);
     assertFalse(
         interruptedOf(superseded),
         "something newer serves the place, which is a decision — the owed sweep must not re-drive"
             + " a release over it");
+  }
+
+  @Test
+  public void aStartingRowWhoseServiceStillRunsAnOlderVersionIsInterruptedNotSuperseded() {
+    // qits-2306, the live values: a swarm service keeps its name, so what runs under it after the
+    // dead process is the PREDECESSOR it never finished replacing. Lexically "7…" sorts after
+    // "1…", so only a numeric order reads 2026.1116.71506 as the older one.
+    String row =
+        versioned("env-sweep-predecessor", PdDeploymentStatus.STARTING, "dev-docs", "2026.1116.161443");
+    String predecessor = image("2026.1116.71506");
+    driver.scriptRunningImage("dev-docs", predecessor);
+
+    deployService.sweepInFlight();
+
+    assertEquals("FAILED", statusOf(row), "nothing newer serves the place; this deployment is owed");
+    assertTrue(
+        interruptedOf(row),
+        "the marker the owed sweep re-drives on — SUPERSEDED here stranded the release");
+    String detail = detailOf(row);
+    assertTrue(detail.contains(predecessor), detail);
+    assertFalse(detail.contains("superseded"), detail);
+  }
+
+  @Test
+  public void aShaRowWhoseServiceRunsAnotherShaCannotBeOrderedAndIsInterrupted() {
+    // A row written before versions were the coordinate has nothing to order against: another sha
+    // could be the predecessor as easily as a successor, so it is the interruption, which a
+    // re-drive resolves, and never the SUPERSEDED that settles the release for good.
+    String row =
+        deployment(
+            "qits-platform-deployments", "env-sweep-sha", PdDeploymentStatus.STARTING, "sha-place");
+    driver.scriptRunningImage("sha-place", image(OTHER_SHA));
+
+    deployService.sweepInFlight();
+
+    assertEquals("FAILED", statusOf(row));
+    assertTrue(interruptedOf(row));
+    assertTrue(detailOf(row).contains(OTHER_SHA), detailOf(row));
   }
 
   @Test

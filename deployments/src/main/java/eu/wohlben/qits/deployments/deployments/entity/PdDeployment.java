@@ -146,7 +146,8 @@ public class PdDeployment extends PanacheEntityBase implements CausedRow {
   /**
    * <b>True on a row a restart interrupted, and on no other</b> — set by {@code
    * DeployService.sweepInFlight} beside its {@code FAILED}, when the previous process left the row
-   * {@code QUEUED}, or {@code STARTING} with nothing running under its name (V16).
+   * {@code QUEUED}, or {@code STARTING} with nothing NEWER running under its name (V16; an older
+   * image there is the predecessor it never finished replacing, qits-2306).
    *
    * <p>It exists for one reader, {@code OwedReleaseSweep}: a release whose every deployment carries
    * it reached no outcome at all, so the obligation it was owed under is still owed, and re-driving

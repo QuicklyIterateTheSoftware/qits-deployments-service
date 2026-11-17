@@ -698,22 +698,36 @@ public class DeployService implements ReleaseAnnouncements {
    *       <td>{@code FAILED}: it was interrupted, or the orchestrator took it away</td></tr>
    *   <tr><td>{@code STARTING}</td><td>an image carrying this row's sha</td>
    *       <td>{@code ACTIVE}, prior actives of the place decommissioned</td></tr>
-   *   <tr><td>{@code STARTING}</td><td>an image carrying another sha</td>
-   *       <td>{@code SUPERSEDED}: a rollback, or a later deployment, took the place</td></tr>
+   *   <tr><td>{@code STARTING}</td><td>an image carrying a NEWER version than this row's</td>
+   *       <td>{@code SUPERSEDED}: a later deployment took the place</td></tr>
+   *   <tr><td>{@code STARTING}</td><td>an older or unorderable image — an older version, a sha,
+   *       no tag, or a row with no version of its own</td>
+   *       <td>{@code FAILED}: interrupted, and the release is re-driven</td></tr>
    * </table>
    *
-   * <p><b>The last two rows used to be one word, and telling them apart is the point.</b> An
-   * interrupted row with no evidence leaves nobody known to be serving, which is {@code FAILED};
-   * a row whose place a newer sha is already serving is {@code SUPERSEDED}, and nothing is owed
-   * about it. The sweep is the only writer of that word.
+   * <p><b>Interrupted and superseded used to be one word, and telling them apart is the
+   * point.</b> An interrupted row with no evidence leaves nobody known to be serving, which is
+   * {@code FAILED}; a row whose place a newer version is already serving is {@code SUPERSEDED},
+   * and nothing is owed about it. The sweep is the only writer of that word.
    *
-   * <p><b>The two {@code FAILED} rows are marked {@link PdDeployment#interrupted}, and the release
-   * behind them is re-driven because of it</b> (qits-1803). Nothing DECIDED those deployments — the
-   * queue that would have run or finished them died with the JVM — so the release they were for is
-   * still owed, and {@link OwedReleaseSweep} reads the flag to tell that apart from a release that
-   * was requested and then really failed. Without it the request row written at the start of {@link
-   * #deploy} answered "already requested" on its own, and a release interrupted by this
-   * component's own self-update was never deployed at all.
+   * <p><b>"Another image" is not evidence of a successor, and reading it as one stranded a
+   * release</b> (qits-2306). A swarm service keeps its name across updates, so the image still
+   * running under the row's name is as likely the PREDECESSOR the dead process never finished
+   * replacing: dev-qits-docs still ran {@code 2026.1116.71506} when the sweep settled {@code
+   * 2026.1116.161443} {@code SUPERSEDED}, nothing re-drove it, and the newer release never
+   * deployed. So the word is earned only by a version that orders after the row's own, compared
+   * numerically by {@link Versions} — lexically {@code 7…} sorts after {@code 1…} and that
+   * predecessor would have read as newer still. Anything that cannot be ordered against the row is
+   * an interruption: re-driving a release that turns out to be superseded is a no-op the owed
+   * sweep's tip check absorbs, while settling one that was not is a release nobody deploys.
+   *
+   * <p><b>The three {@code FAILED} rows are marked {@link PdDeployment#interrupted}, and the
+   * release behind them is re-driven because of it</b> (qits-1803). Nothing DECIDED those
+   * deployments — the queue that would have run or finished them died with the JVM — so the
+   * release they were for is still owed, and {@link OwedReleaseSweep} reads the flag to tell that
+   * apart from a release that was requested and then really failed. Without it the request row
+   * written at the start of {@link #deploy} answered "already requested" on its own, and a release
+   * interrupted by this component's own self-update was never deployed at all.
    *
    * <p><b>An adopted row is not a claim that the gate passed</b>, and it does not need to be: on
    * what carries the row's image is what is serving under the row's name, and a
@@ -770,7 +784,7 @@ public class DeployService implements ReleaseAnnouncements {
     if (settled > 0) {
       LOG.infof(
           "Settled %d deployment(s) left in flight by a previous shutdown — SUPERSEDED where a"
-              + " newer sha is serving the place, FAILED where nothing is",
+              + " newer version is serving the place, FAILED where nothing newer is",
           settled);
     }
     if (adopted > 0) {
@@ -805,6 +819,7 @@ public class DeployService implements ReleaseAnnouncements {
       PdDeploymentStatus status,
       String containerName,
       String imageTag,
+      String version,
       String commitSha,
       String runId,
       UUID causationId,
@@ -829,10 +844,12 @@ public class DeployService implements ReleaseAnnouncements {
     }
 
     /**
-     * The one answer that is NOT a decision: nothing ever ran, or nothing is running now, and the
-     * queue that would have finished the job did not survive the JVM. {@code FAILED} on the read
-     * doors, and {@link PdDeployment#interrupted} for {@code OwedReleaseSweep}, which re-drives a
-     * release whose every deployment says this rather than settling it as already requested.
+     * The one answer that is NOT a decision: nothing ever ran, or nothing NEWER is running now —
+     * no service at all, or the predecessor the dead process never finished replacing
+     * (qits-2306) — and the queue that would have finished the job did not survive the JVM.
+     * {@code FAILED} on the read doors, and {@link PdDeployment#interrupted} for {@code
+     * OwedReleaseSweep}, which re-drives a release whose every deployment says this rather than
+     * settling it as already requested.
      */
     static Verdict interruptedByRestart() {
       return new Verdict(PdDeploymentStatus.FAILED, INTERRUPTED, true);
@@ -858,6 +875,7 @@ public class DeployService implements ReleaseAnnouncements {
         row.status,
         row.containerName,
         row.imageTag(),
+        row.version,
         row.commitSha,
         row.runId,
         row.causationId,
@@ -955,6 +973,25 @@ public class DeployService implements ReleaseAnnouncements {
       return new Verdict(
           PdDeploymentStatus.ACTIVE,
           "[adopted at startup: " + row.containerName() + " is running this deployment]");
+    }
+    // Another image is a successor only when it is a NEWER version (qits-2306): a swarm service
+    // keeps its name, so the image there may be the predecessor this row was replacing.
+    String runningTag = ImageRefs.tagOf(running.imageRef());
+    boolean successor =
+        row.version() != null
+            && !row.version().isBlank()
+            && runningTag != null
+            && Versions.isNewerThan(runningTag, row.version().strip());
+    if (!successor) {
+      return new Verdict(
+          PdDeploymentStatus.FAILED,
+          INTERRUPTED.substring(0, INTERRUPTED.length() - 1)
+              + ": "
+              + row.containerName()
+              + " still runs "
+              + running.imageRef()
+              + ", which is not newer than this deployment; the release is re-driven]",
+          true);
     }
     return new Verdict(
         PdDeploymentStatus.SUPERSEDED,

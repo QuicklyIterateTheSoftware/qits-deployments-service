@@ -40,8 +40,24 @@ public final class ImageRefs {
    * resolved is dropped before the tag is read.
    */
   public static boolean carries(String imageRef, String tag) {
-    if (imageRef == null || tag == null || tag.isBlank()) {
+    if (tag == null || tag.isBlank()) {
       return false;
+    }
+    String carried = tagOf(imageRef);
+    return carried != null && carried.equalsIgnoreCase(tag.strip());
+  }
+
+  /**
+   * The tag a reference carries, or null when it carries none — {@link #carries}'s parse, exposed
+   * for the one caller that has to ORDER the tag rather than match it: the startup sweep, which
+   * may call a row superseded only by a version newer than its own (qits-2306).
+   *
+   * <p>The same rules: stripped, a {@code @sha256:…} digest dropped first, and the last colon a tag
+   * separator only when it comes after the last slash, so a registry port is never read as a tag.
+   */
+  public static String tagOf(String imageRef) {
+    if (imageRef == null) {
+      return null;
     }
     String reference = imageRef.strip();
     int digest = reference.indexOf('@');
@@ -50,8 +66,9 @@ public final class ImageRefs {
     }
     int colon = reference.lastIndexOf(':');
     if (colon < 0 || colon < reference.lastIndexOf('/')) {
-      return false; // no tag at all: `latest`, and this component never deploys one
+      return null; // no tag at all: `latest`, and this component never deploys one
     }
-    return reference.substring(colon + 1).equalsIgnoreCase(tag.strip());
+    String tag = reference.substring(colon + 1);
+    return tag.isEmpty() ? null : tag;
   }
 }

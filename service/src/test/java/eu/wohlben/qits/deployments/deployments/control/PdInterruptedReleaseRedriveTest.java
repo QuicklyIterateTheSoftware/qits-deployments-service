@@ -115,6 +115,21 @@ public class PdInterruptedReleaseRedriveTest {
     assertTheSuccessorDeploysIt("intr-vanished", PdDeploymentStatus.STARTING, "vanished-intr");
   }
 
+  @Test
+  public void aReleaseLeftStartingWhileItsServiceStillRunsTheOlderVersionIsDeployedByTheSuccessor() {
+    // THE MEASURED CASE of qits-2306: a swarm service keeps its name, so what still runs under the
+    // row's name after the dead process is the PREDECESSOR it never finished replacing. The sweep
+    // read "another image" as a successor and settled the row SUPERSEDED, which the owed sweep reads
+    // as decided — the newer release was never deployed. OLDER also sorts AFTER VERSION lexically
+    // ("9…" > "1…"), so only a numeric order tells the predecessor apart.
+    String tier = "intr-predecessor";
+    assertTheSuccessorDeploysIt(
+        tier,
+        PdDeploymentStatus.STARTING,
+        "predecessor-intr",
+        "registry.qits.dev.localhost:8080/qits/" + tier + "-app:" + OLDER);
+  }
+
   // --- what an interruption still must not cause -------------------------------------------------
 
   @Test
@@ -181,6 +196,18 @@ public class PdInterruptedReleaseRedriveTest {
 
   private void assertTheSuccessorDeploysIt(
       String tier, PdDeploymentStatus leftIn, String containerName) {
+    assertTheSuccessorDeploysIt(tier, leftIn, containerName, null);
+  }
+
+  /**
+   * @param runningImage what the runtime says still runs under {@code containerName}, or null for
+   *     no such service
+   */
+  private void assertTheSuccessorDeploysIt(
+      String tier, PdDeploymentStatus leftIn, String containerName, String runningImage) {
+    if (runningImage != null) {
+      driver.scriptRunningImage(containerName, runningImage);
+    }
     String environmentId = createEntryTier(tier);
     String application = tier + "-app";
     String leftBehind =

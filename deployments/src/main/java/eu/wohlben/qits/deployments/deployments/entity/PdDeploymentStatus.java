@@ -97,8 +97,10 @@ public enum PdDeploymentStatus {
   ROLLED_BACK,
   /**
    * An in-flight row a restart interrupted, whose place a <b>newer deployment took</b>. The startup
-   * sweep writes it when the service running under the row's name carries a different sha: this
+   * sweep writes it when the service running under the row's name carries a NEWER version: this
    * attempt's outcome is unknowable and no longer interesting, because something later is serving.
+   * An older or unorderable image is the predecessor, not a successor, and stays {@code FAILED}
+   * (qits-2306).
    *
    * <p>An interrupted row with no such evidence stays {@code FAILED} — nothing is known to serve
    * there, which is the whole difference between the two words.
