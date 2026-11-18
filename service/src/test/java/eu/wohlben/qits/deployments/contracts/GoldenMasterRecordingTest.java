@@ -178,6 +178,28 @@ class GoldenMasterRecordingTest {
               null,
               null,
               List.of()),
+          // qits-2315: one project's requests — every pending one plus the newest settled — as the
+          // landing app's project page reads them, and a project with none.
+          new Interaction(
+              ProviderStates.A_PROJECT_WITH_DEPLOYMENT_REQUESTS,
+              "listDeploymentRequests",
+              "GET",
+              "/deployments/api/deployment-requests",
+              Map.of("projectId", "{projectId}"),
+              200,
+              null,
+              null,
+              List.of()),
+          new Interaction(
+              ProviderStates.A_PROJECT_WITH_NO_DEPLOYMENT_REQUESTS,
+              "listDeploymentRequests",
+              "GET",
+              "/deployments/api/deployment-requests",
+              Map.of("projectId", "{projectId}"),
+              200,
+              null,
+              null,
+              List.of()),
           new Interaction(
               ProviderStates.THE_PLATFORM_ENVIRONMENT,
               "listEnvironments",

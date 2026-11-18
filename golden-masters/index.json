@@ -313,6 +313,69 @@
       ]
     },
     {
+      "name": "a project with deployment requests",
+      "slug": "a-project-with-deployment-requests",
+      "params": {
+        "projectId": "00000000-0000-4000-8000-000000000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listDeploymentRequests",
+          "method": "GET",
+          "path": "/deployments/api/deployment-requests",
+          "query": {
+            "projectId": "{projectId}"
+          },
+          "status": 200,
+          "file": "a-project-with-deployment-requests/listDeploymentRequests.json",
+          "frozen": {
+            "ids": [
+              "$.deploymentRequests[*].id",
+              "$.deploymentRequests[*].environmentId",
+              "$.deploymentRequests[*].projectId",
+              "$.deploymentRequests[*].deploymentId"
+            ],
+            "instants": [
+              "$.deploymentRequests[*].createdAt",
+              "$.deploymentRequests[*].gateSettledAt"
+            ],
+            "strings": [
+              "$.deploymentRequests[*].applicationName",
+              "$.deploymentRequests[*].repoId"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "a project with no deployment requests",
+      "slug": "a-project-with-no-deployment-requests",
+      "params": {
+        "projectId": "00000000-0000-4000-8000-000000000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listDeploymentRequests",
+          "method": "GET",
+          "path": "/deployments/api/deployment-requests",
+          "query": {
+            "projectId": "{projectId}"
+          },
+          "status": 200,
+          "file": "a-project-with-no-deployment-requests/listDeploymentRequests.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "a release with a variant deployed",
       "slug": "a-release-with-a-variant-deployed",
       "params": {

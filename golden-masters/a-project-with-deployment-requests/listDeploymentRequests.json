@@ -1,0 +1,52 @@
+{
+  "deploymentRequests": [
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "applicationName": "contract-app-00000001-held",
+      "variant": null,
+      "variants": [],
+      "version": "2026.101.120000",
+      "environmentId": "00000000-0000-4000-8000-000000000003",
+      "packageName": null,
+      "priority": null,
+      "repoId": "contract-app-00000001-held",
+      "projectId": "00000000-0000-4000-8000-000000000001",
+      "qualityGate": "UNMET",
+      "gateDetail": "held for manual approval on contract-app-rr-3",
+      "deploymentId": null,
+      "createdAt": "2026-01-01T00:00:00Z",
+      "gateSettledAt": null,
+      "deploymentStatus": null,
+      "deployHold": true,
+      "releaseRequestQualifiedId": "contract-app-rr-3",
+      "approvedBy": null,
+      "approvedAt": null,
+      "declinedBy": null,
+      "declinedAt": null
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000004",
+      "applicationName": "contract-app-00000001",
+      "variant": null,
+      "variants": [],
+      "version": "2026.101.120000",
+      "environmentId": "00000000-0000-4000-8000-000000000003",
+      "packageName": null,
+      "priority": "HIGH",
+      "repoId": "contract-app-00000001",
+      "projectId": "00000000-0000-4000-8000-000000000001",
+      "qualityGate": "MET",
+      "gateDetail": null,
+      "deploymentId": "00000000-0000-4000-8000-000000000005",
+      "createdAt": "2026-01-01T00:00:00Z",
+      "gateSettledAt": "2026-01-01T00:00:00Z",
+      "deploymentStatus": "ACTIVE",
+      "deployHold": false,
+      "releaseRequestQualifiedId": null,
+      "approvedBy": null,
+      "approvedAt": null,
+      "declinedBy": null,
+      "declinedAt": null
+    }
+  ]
+}

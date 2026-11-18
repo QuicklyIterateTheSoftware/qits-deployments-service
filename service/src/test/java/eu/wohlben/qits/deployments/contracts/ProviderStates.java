@@ -107,6 +107,23 @@ public class ProviderStates {
   public static final String A_RELEASE_WITH_A_VARIANT = "a release with a variant deployed";
 
   /**
+   * One project's releases (qits-2315), as the landing app's project page reads them through
+   * {@code ?projectId=}: one release deployed ACTIVE through a MET gate, announced with priority
+   * {@link #PROJECT_PRIORITY}, and a later one of another application HELD at the gate — {@code
+   * UNMET}, unsettled, no deployment. Both rows carry {@code projectId}, the state's one param.
+   * Newest-first, so the held request is listed first.
+   */
+  public static final String A_PROJECT_WITH_DEPLOYMENT_REQUESTS =
+      "a project with deployment requests";
+
+  /**
+   * A project no release of which was ever announced (qits-2315): {@code ?projectId=} answers an
+   * empty list, not a 404 — this component holds no project rows. Seeds nothing.
+   */
+  public static final String A_PROJECT_WITH_NO_DEPLOYMENT_REQUESTS =
+      "a project with no deployment requests";
+
+  /**
    * One application deployed ACTIVE whose spec declares a postgres resource {@code db}, its claim on
    * the public server, and both postgres servers running in its tier — what an operator's database
    * move (qits-2175) is asked of. Named by qits-platform-access-monorepo's {@code qits deployments
@@ -182,6 +199,12 @@ public class ProviderStates {
   /** The released version the decline state holds — distinct from {@link #VERSION}. */
   static final String DECLINE_VERSION = "2026.103.120000";
 
+  /** The priority the project state's deployed release was announced with. */
+  static final String PROJECT_PRIORITY = "HIGH";
+
+  /** The release request the project state's held release came from. */
+  static final String PROJECT_RELEASE_REQUEST = "contract-app-rr-3";
+
   /** The released version the deployed states ship. */
   static final String VERSION = "2026.101.120000";
 
@@ -250,6 +273,8 @@ public class ProviderStates {
     states.put(A_SERVICE_LINKED_INTO_AN_ENVIRONMENT, this::aServiceLinkedIntoAnEnvironment);
     states.put(AN_ENVIRONMENT_TO_TEAR_DOWN, this::anEnvironmentToTearDown);
     states.put(A_RELEASE_WITH_A_VARIANT, this::aReleaseWithAVariant);
+    states.put(A_PROJECT_WITH_DEPLOYMENT_REQUESTS, this::aProjectWithDeploymentRequests);
+    states.put(A_PROJECT_WITH_NO_DEPLOYMENT_REQUESTS, this::aProjectWithNoDeploymentRequests);
     states.put(AN_APPLICATION_HOLDING_A_DATABASE, this::anApplicationHoldingADatabase);
     states.put(A_FINISHED_DATABASE_MOVE, this::aFinishedDatabaseMove);
     states.put(A_RUNNING_DATABASE_MOVE, this::aRunningDatabaseMove);
@@ -451,6 +476,63 @@ public class ProviderStates {
     params.put("repoId", application);
     params.put("version", VERSION);
     return new Setup(params, List.of(token));
+  }
+
+  /**
+   * {@link #A_PROJECT_WITH_DEPLOYMENT_REQUESTS}: two repositories of one project announced into a
+   * designated environment — the first deployed ACTIVE at {@link #PROJECT_PRIORITY}, the second
+   * with {@code deployHold}, so it waits at the gate. The project id is a fresh UUID, so no other
+   * state's request is listed beside these.
+   */
+  private Setup aProjectWithDeploymentRequests() {
+    driver.reset();
+    String token = token();
+    String projectId = UUID.randomUUID().toString();
+    String environmentId = createEnvironment("contract-" + token, true);
+    String deployed = "contract-app-" + token;
+    String held = "contract-app-" + token + "-held";
+    announce(
+        Map.of(
+            "runId", "run-contract",
+            "repoId", deployed,
+            "projectId", projectId,
+            "version", VERSION,
+            "priority", PROJECT_PRIORITY));
+    settle(environmentId, 1);
+    announce(
+        Map.of(
+            "runId", "run-contract",
+            "repoId", held,
+            "projectId", projectId,
+            "version", VERSION,
+            "deployHold", true,
+            "releaseRequestQualifiedId", PROJECT_RELEASE_REQUEST));
+    awaitIdle();
+    List<String> gates =
+        given()
+            .header("Authorization", SuiteBearers.operator())
+            .queryParam("projectId", projectId)
+            .when()
+            .get("/deployments/api/deployment-requests")
+            .then()
+            .statusCode(200)
+            .extract()
+            .jsonPath()
+            .getList("deploymentRequests.qualityGate");
+    if (!gates.equals(List.of("UNMET", "MET"))) {
+      throw new IllegalStateException(
+          "expected a held and a deployed request in the project, got " + gates);
+    }
+    Map<String, String> params = new TreeMap<>();
+    params.put("projectId", projectId);
+    return new Setup(params, List.of(token));
+  }
+
+  /** {@link #A_PROJECT_WITH_NO_DEPLOYMENT_REQUESTS}: a project id nothing was ever announced in. */
+  private Setup aProjectWithNoDeploymentRequests() {
+    Map<String, String> params = new TreeMap<>();
+    params.put("projectId", UUID.randomUUID().toString());
+    return new Setup(params, List.of());
   }
 
   /**
@@ -966,6 +1048,18 @@ public class ProviderStates {
         .header("Authorization", SuiteBearers.platform())
         .contentType(ContentType.JSON)
         .body(Map.of("runId", "run-contract", "repoId", application, "version", version))
+        .when()
+        .post("/deployments/api/events/software-released")
+        .then()
+        .statusCode(202);
+  }
+
+  /** Announces one release with exactly this body. */
+  private static void announce(Map<String, Object> body) {
+    given()
+        .header("Authorization", SuiteBearers.platform())
+        .contentType(ContentType.JSON)
+        .body(body)
         .when()
         .post("/deployments/api/events/software-released")
         .then()
