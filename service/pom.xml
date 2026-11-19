@@ -317,6 +317,13 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- ConsumerPactVerificationTest: qits-landing-app's Deployments › Requests page (ticket
+                 qits-2315); the jar carries pacts/qits-landing-app_qits-deployments-service.json. -->
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-landing-app-pacts-qits-deployments-service</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <!-- The store every @QuarkusTest here boots against. Zonky spawns real postgres
                  binaries as a child process — a maven dependency rather than a container — which
                  is what keeps the clone-alone, docker-free rule true now that the component's

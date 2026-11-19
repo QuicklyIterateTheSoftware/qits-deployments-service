@@ -116,6 +116,9 @@
         <qits.orchestrator-service-pacts-qits-deployments-service.version>2026.1018.172917</qits.orchestrator-service-pacts-qits-deployments-service.version>
         <qits.projects-service-pacts-qits-deployments-service.version>2026.1117.95124</qits.projects-service-pacts-qits-deployments-service.version>
         <qits.platform-access-monorepo-pacts-qits-deployments-service.version>2026.1116.230905</qits.platform-access-monorepo-pacts-qits-deployments-service.version>
+        <!-- qits-landing-app's Deployments › Requests page (ticket qits-2315):
+             `pacts/qits-landing-app_qits-deployments-service.json`. -->
+        <qits.landing-app-pacts-qits-deployments-service.version>2026.1119.15430</qits.landing-app-pacts-qits-deployments-service.version>
         <!-- The one golden-master reader for Java consumers, from qits-integrations-quarkus. -->
         <qits.pact-consumer.version>2026.1106.507</qits.pact-consumer.version>
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
@@ -383,6 +386,12 @@
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-platform-access-monorepo-pacts-qits-deployments-service</artifactId>
                 <version>${qits.platform-access-monorepo-pacts-qits-deployments-service.version}</version>
+            </dependency>
+            <dependency>
+                <!-- The landing app's consumer pact (ticket qits-2315), verified by ConsumerPactVerificationTest. -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-landing-app-pacts-qits-deployments-service</artifactId>
+                <version>${qits.landing-app-pacts-qits-deployments-service.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
