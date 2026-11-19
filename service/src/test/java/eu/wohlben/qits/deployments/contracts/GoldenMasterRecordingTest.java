@@ -212,6 +212,18 @@ class GoldenMasterRecordingTest {
               null,
               null,
               List.of()),
+          // qits-2323: the landing app's by-release redirect, one release deployed through a MET
+          // gate — exactly one row, the main application only, no variants.
+          new Interaction(
+              ProviderStates.A_RELEASE_WITH_ONE_DEPLOYMENT_REQUEST,
+              "listDeploymentRequests",
+              "GET",
+              "/deployments/api/deployment-requests",
+              Map.of("repoId", "{repoId}", "version", "{version}", "includeVariants", "true"),
+              200,
+              null,
+              null,
+              List.of()),
           new Interaction(
               ProviderStates.THE_PLATFORM_ENVIRONMENT,
               "listEnvironments",

@@ -153,6 +153,11 @@ class ConsumerPactVerificationTest {
     return states.params(ProviderStates.A_RELEASE_WITH_NO_DEPLOYMENT_REQUESTS);
   }
 
+  @State(ProviderStates.A_RELEASE_WITH_ONE_DEPLOYMENT_REQUEST)
+  Map<String, String> aReleaseWithOneDeploymentRequest() {
+    return states.params(ProviderStates.A_RELEASE_WITH_ONE_DEPLOYMENT_REQUEST);
+  }
+
   @State(ProviderStates.THE_PLATFORM_ENVIRONMENT)
   Map<String, String> thePlatformEnvironment() {
     return states.params(ProviderStates.THE_PLATFORM_ENVIRONMENT);
