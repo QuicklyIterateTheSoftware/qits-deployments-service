@@ -446,6 +446,46 @@
       ]
     },
     {
+      "name": "a release with one deployment request",
+      "slug": "a-release-with-one-deployment-request",
+      "params": {
+        "deploymentRequestId": "00000000-0000-4000-8000-000000000001",
+        "repoId": "contract-app-00000001",
+        "version": "2026.101.120000"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listDeploymentRequests",
+          "method": "GET",
+          "path": "/deployments/api/deployment-requests",
+          "query": {
+            "includeVariants": "true",
+            "repoId": "{repoId}",
+            "version": "{version}"
+          },
+          "status": 200,
+          "file": "a-release-with-one-deployment-request/listDeploymentRequests.json",
+          "frozen": {
+            "ids": [
+              "$.deploymentRequests[*].id",
+              "$.deploymentRequests[*].environmentId",
+              "$.deploymentRequests[*].deploymentId"
+            ],
+            "instants": [
+              "$.deploymentRequests[*].createdAt",
+              "$.deploymentRequests[*].gateSettledAt"
+            ],
+            "strings": [
+              "$.deploymentRequests[*].applicationName",
+              "$.deploymentRequests[*].repoId"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "a released version of a deployable repository",
       "slug": "a-released-version-of-a-deployable-repository",
       "params": {

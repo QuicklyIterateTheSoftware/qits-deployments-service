@@ -132,6 +132,15 @@ public class ProviderStates {
       "a release with no deployment requests";
 
   /**
+   * One release deployed ACTIVE through a MET gate, the main application only — no variant
+   * (qits-2323): {@code ?repoId=&version=&includeVariants=true} answers exactly one row, the
+   * landing app's by-release redirect. Reuses {@link #aDeploymentRequest()}'s own seeding;
+   * {@code deploymentRequestId} is the request that deployed it.
+   */
+  public static final String A_RELEASE_WITH_ONE_DEPLOYMENT_REQUEST =
+      "a release with one deployment request";
+
+  /**
    * One application deployed ACTIVE whose spec declares a postgres resource {@code db}, its claim on
    * the public server, and both postgres servers running in its tier — what an operator's database
    * move (qits-2175) is asked of. Named by qits-platform-access-monorepo's {@code qits deployments
@@ -290,6 +299,7 @@ public class ProviderStates {
     states.put(A_PROJECT_WITH_DEPLOYMENT_REQUESTS, this::aProjectWithDeploymentRequests);
     states.put(A_PROJECT_WITH_NO_DEPLOYMENT_REQUESTS, this::aProjectWithNoDeploymentRequests);
     states.put(A_RELEASE_WITH_NO_DEPLOYMENT_REQUESTS, this::aReleaseWithNoDeploymentRequests);
+    states.put(A_RELEASE_WITH_ONE_DEPLOYMENT_REQUEST, this::aReleaseWithOneDeploymentRequest);
     states.put(AN_APPLICATION_HOLDING_A_DATABASE, this::anApplicationHoldingADatabase);
     states.put(A_FINISHED_DATABASE_MOVE, this::aFinishedDatabaseMove);
     states.put(A_RUNNING_DATABASE_MOVE, this::aRunningDatabaseMove);
@@ -560,6 +570,19 @@ public class ProviderStates {
     params.put("repoId", NO_DEPLOYMENT_REQUESTS_REPO_ID);
     params.put("version", NO_DEPLOYMENT_REQUESTS_VERSION);
     return new Setup(params, List.of());
+  }
+
+  /**
+   * {@link #A_RELEASE_WITH_ONE_DEPLOYMENT_REQUEST}: {@link #aDeploymentRequest()}'s own seeding —
+   * one release deployed and settled ACTIVE, its gate MET — renamed onto this state's params.
+   */
+  private Setup aReleaseWithOneDeploymentRequest() {
+    Setup deployed = aDeploymentRequest();
+    Map<String, String> params = new TreeMap<>();
+    params.put("repoId", deployed.params().get("applicationName"));
+    params.put("version", VERSION);
+    params.put("deploymentRequestId", deployed.params().get("id"));
+    return new Setup(params, deployed.uniqueTokens());
   }
 
   /**
