@@ -124,6 +124,14 @@ public class ProviderStates {
       "a project with no deployment requests";
 
   /**
+   * A repoId/version pair nothing in the database carries (qits-2323): the landing app's
+   * by-release page, empty state. Seeds nothing; {@code ?repoId=&version=&includeVariants=true}
+   * answers an empty list.
+   */
+  public static final String A_RELEASE_WITH_NO_DEPLOYMENT_REQUESTS =
+      "a release with no deployment requests";
+
+  /**
    * One application deployed ACTIVE whose spec declares a postgres resource {@code db}, its claim on
    * the public server, and both postgres servers running in its tier — what an operator's database
    * move (qits-2175) is asked of. Named by qits-platform-access-monorepo's {@code qits deployments
@@ -198,6 +206,12 @@ public class ProviderStates {
 
   /** The released version the decline state holds — distinct from {@link #VERSION}. */
   static final String DECLINE_VERSION = "2026.103.120000";
+
+  /** {@link #A_RELEASE_WITH_NO_DEPLOYMENT_REQUESTS}'s {@code repoId} — nothing in the database carries it. */
+  static final String NO_DEPLOYMENT_REQUESTS_REPO_ID = "contract-app-no-requests";
+
+  /** {@link #A_RELEASE_WITH_NO_DEPLOYMENT_REQUESTS}'s {@code version} — nothing in the database carries it. */
+  static final String NO_DEPLOYMENT_REQUESTS_VERSION = "2026.104.120000";
 
   /** The priority the project state's deployed release was announced with. */
   static final String PROJECT_PRIORITY = "HIGH";
@@ -275,6 +289,7 @@ public class ProviderStates {
     states.put(A_RELEASE_WITH_A_VARIANT, this::aReleaseWithAVariant);
     states.put(A_PROJECT_WITH_DEPLOYMENT_REQUESTS, this::aProjectWithDeploymentRequests);
     states.put(A_PROJECT_WITH_NO_DEPLOYMENT_REQUESTS, this::aProjectWithNoDeploymentRequests);
+    states.put(A_RELEASE_WITH_NO_DEPLOYMENT_REQUESTS, this::aReleaseWithNoDeploymentRequests);
     states.put(AN_APPLICATION_HOLDING_A_DATABASE, this::anApplicationHoldingADatabase);
     states.put(A_FINISHED_DATABASE_MOVE, this::aFinishedDatabaseMove);
     states.put(A_RUNNING_DATABASE_MOVE, this::aRunningDatabaseMove);
@@ -532,6 +547,18 @@ public class ProviderStates {
   private Setup aProjectWithNoDeploymentRequests() {
     Map<String, String> params = new TreeMap<>();
     params.put("projectId", UUID.randomUUID().toString());
+    return new Setup(params, List.of());
+  }
+
+  /**
+   * {@link #A_RELEASE_WITH_NO_DEPLOYMENT_REQUESTS}: a repoId/version pair nothing was ever
+   * announced for. Fixed rather than tokened, like {@link #VERSION} and its siblings — nothing
+   * seeds a row under either value, so no suite run can make one collide.
+   */
+  private Setup aReleaseWithNoDeploymentRequests() {
+    Map<String, String> params = new TreeMap<>();
+    params.put("repoId", NO_DEPLOYMENT_REQUESTS_REPO_ID);
+    params.put("version", NO_DEPLOYMENT_REQUESTS_VERSION);
     return new Setup(params, List.of());
   }
 

@@ -417,6 +417,35 @@
       ]
     },
     {
+      "name": "a release with no deployment requests",
+      "slug": "a-release-with-no-deployment-requests",
+      "params": {
+        "repoId": "contract-app-no-requests",
+        "version": "2026.104.120000"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "listDeploymentRequests",
+          "method": "GET",
+          "path": "/deployments/api/deployment-requests",
+          "query": {
+            "includeVariants": "true",
+            "repoId": "{repoId}",
+            "version": "{version}"
+          },
+          "status": 200,
+          "file": "a-release-with-no-deployment-requests/listDeploymentRequests.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "a released version of a deployable repository",
       "slug": "a-released-version-of-a-deployable-repository",
       "params": {

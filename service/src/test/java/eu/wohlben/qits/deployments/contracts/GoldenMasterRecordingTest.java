@@ -200,6 +200,18 @@ class GoldenMasterRecordingTest {
               null,
               null,
               List.of()),
+          // qits-2323: the landing app's by-release page, empty state — a repoId/version pair
+          // nothing in the database carries.
+          new Interaction(
+              ProviderStates.A_RELEASE_WITH_NO_DEPLOYMENT_REQUESTS,
+              "listDeploymentRequests",
+              "GET",
+              "/deployments/api/deployment-requests",
+              Map.of("repoId", "{repoId}", "version", "{version}", "includeVariants", "true"),
+              200,
+              null,
+              null,
+              List.of()),
           new Interaction(
               ProviderStates.THE_PLATFORM_ENVIRONMENT,
               "listEnvironments",
