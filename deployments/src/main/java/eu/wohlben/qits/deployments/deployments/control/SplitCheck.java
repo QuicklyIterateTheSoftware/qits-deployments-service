@@ -48,6 +48,20 @@ public class SplitCheck {
   /** The probed path under an application's primary route: its readiness, which every app has. */
   static final String PROBE_SUFFIX = "/q/health/ready";
 
+  /**
+   * The subdomain prefixed onto the domain to reach a host only the public edge serves. {@code
+   * qits.<domain>} is the landing app's door and, since qits-2360, {@code exposure: private} —
+   * answered publicly by the private tunnel address, not the public edge — so the probe dials
+   * {@code idp.qits.<domain>} instead: qits-idp stays public, and the edge answers {@code
+   * /edge-route-table} on every vhost regardless of which application it names.
+   */
+  static final String PUBLIC_EDGE_SUBDOMAIN = "idp.qits.";
+
+  /** The public edge's apex for this domain: a name only the public edge serves. */
+  static String publicEdgeApex(String domain) {
+    return PUBLIC_EDGE_SUBDOMAIN + domain;
+  }
+
   @Inject EdgeRouteTables tables;
 
   @Inject DeploymentDriver driver;
@@ -191,7 +205,7 @@ public class SplitCheck {
       }
       String path = primaryPath(application) + PROBE_SUFFIX;
       try {
-        int status = probe.status("qits." + domain, host + ".qits." + domain, path);
+        int status = probe.status(publicEdgeApex(domain), host + ".qits." + domain, path);
         if (!notServed(status)) {
           LOG.errorf("private app %s answers %d on the public edge", application.application(), status);
         }

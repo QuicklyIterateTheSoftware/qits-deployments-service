@@ -475,7 +475,7 @@ A *table* is a `pd_edge_route_table` row (`public`, `private`) and the name `GET
 
 | target | table it carries | url key (default) |
 |---|---|---|
-| `public` | `public` | `qits.deployments.edges.public-url` (`https://qits.<domain>`) |
+| `public` | `public` | `qits.deployments.edges.public-url` (`https://idp.qits.<domain>` — not the bare `qits.<domain>` apex, which is the landing app's door and, since qits-2360, private) |
 | `private` | `private` | `qits.deployments.edges.private-url` (`http://<env>-qits-edge-private:80`) |
 | `overlay` | `private` | `qits.deployments.edges.overlay-url` (`http://<env>-qits-edge-overlay:80`) |
 

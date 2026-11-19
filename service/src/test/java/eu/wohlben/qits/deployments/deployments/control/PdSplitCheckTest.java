@@ -102,9 +102,9 @@ class PdSplitCheckTest {
     assertEquals(
         List.of(
             new FakePublicEdgeProbe.Probe(
-                "qits." + DOMAIN, "sc-docs.qits." + DOMAIN, "/sc-docs/q/health/ready"),
+                "idp.qits." + DOMAIN, "sc-docs.qits." + DOMAIN, "/sc-docs/q/health/ready"),
             new FakePublicEdgeProbe.Probe(
-                "qits." + DOMAIN, "sc-stt.qits." + DOMAIN, "/sc-stt/q/health/ready")),
+                "idp.qits." + DOMAIN, "sc-stt.qits." + DOMAIN, "/sc-stt/q/health/ready")),
         probe.probes(),
         "the private table's apps only, never the public one");
     assertEquals(

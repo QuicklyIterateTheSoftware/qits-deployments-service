@@ -24,8 +24,13 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * SSLSocket} — no new dependency, and nothing in between that would resolve the name itself:
  *
  * <ol>
- *   <li>the apex {@code qits.<domain>}, which only the public edge serves, is resolved with {@link
- *       InetAddress#getAllByName}; each address is tried in turn until one answers;
+ *   <li>the apex {@code idp.qits.<domain>}, which only the public edge serves, is resolved with
+ *       {@link InetAddress#getAllByName}; each address is tried in turn until one answers. Not the
+ *       bare {@code qits.<domain>} apex — that is the landing app's own door and, since qits-2360,
+ *       {@code exposure: private}, so public DNS answers it with the private tunnel address rather
+ *       than the public edge. qits-idp stays public, and the edge answers {@code
+ *       /edge-route-table} on every vhost regardless of which application it names, so this is a
+ *       host only the public edge can be reached at;
  *   <li>a TLS socket to that address on 443 (or the apex's own port), with SNI {@code
  *       <host>.qits.<domain>} and endpoint identification {@code HTTPS}, so the certificate must be
  *       the private name's — a probe that reached the wrong server fails its handshake rather than

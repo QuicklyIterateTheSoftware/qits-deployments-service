@@ -10,15 +10,17 @@ import java.io.IOException;
  * <p><b>Why not a plain request.</b> The deployer is private, and its resolvers ask a private-kind
  * edge first (qits-2117; the overlay edge since qits-2304), so {@code https://stt.qits.<domain>}
  * from here reaches that edge, which serves it. The probe has to enter where the internet enters: it connects to the address the
- * apex {@code qits.<domain>} resolves to — a name only the public edge serves — and asks for the
- * private host by SNI and {@code Host}.
+ * apex {@code idp.qits.<domain>} resolves to — a name only the public edge serves — and asks for the
+ * private host by SNI and {@code Host}. It is not the bare {@code qits.<domain>} apex: that is the
+ * landing app's own door and, since qits-2360, {@code exposure: private}, so public DNS answers it
+ * with the private tunnel address rather than the public edge.
  */
 public interface PublicEdgeProbe {
 
   /**
    * The status line's code the public edge answers for {@code GET <path>} on {@code serverName}.
    *
-   * @param apex {@code qits.<domain>}, possibly with a {@code :port}: where the connection goes
+   * @param apex {@code idp.qits.<domain>}, possibly with a {@code :port}: where the connection goes
    * @param serverName {@code <host>.qits.<domain>}, possibly with a {@code :port}: SNI, the
    *     certificate's expected name and the {@code Host} header
    * @param path the request target, e.g. {@code /stt/q/health/ready}
