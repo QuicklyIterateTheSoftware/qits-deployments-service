@@ -491,10 +491,11 @@ in a table.
 `private` service is created with `--dns <vip> --dns <upstream>...`: the VIP on `qits-private` of the
 first application in `qits.deployments.swarm.private-edge.resolver-applications`
 (`qits-edge-overlay,qits-edge-private`) that has exactly one swarm service with one, then this
-process's own upstreams — or, when its resolv.conf names none besides the VIP,
-`qits.deployments.swarm.private-edge.fallback-upstreams` (`QITS_DEPLOYMENTS_SWARM_PRIVATE_EDGE_FALLBACK_UPSTREAMS`,
-empty shipped). All or nothing, as before — except that a VIP with no upstream now REFUSES a private
-create or recreate, leaving the live service untouched (qits-2586).
+process's own upstreams — or, when its resolv.conf names none besides the VIP, the upstreams
+derived from a running resolver edge's own `/etc/resolv.conf` (read with `docker cp`; no edge is
+handed `--dns`, so it holds what the daemon gives a container), cached for a minute per VIP. All or
+nothing, as before — except that a VIP with no upstream from either now REFUSES a private create or
+recreate, leaving the live service untouched (qits-2586).
 
 - **Fallback.** An application with *no* swarm service is skipped, so until `qits-edge-overlay` is
   deployed every private service keeps `qits-edge-private`'s VIP and nothing changes. **Any other

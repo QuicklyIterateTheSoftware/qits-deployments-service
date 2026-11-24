@@ -137,8 +137,6 @@ class SwarmDeploymentDriverTest {
     // every lookup falls through to qits-edge-private exactly as before.
     driver.resolverApplications = Optional.of(List.of("qits-edge-overlay", "qits-edge-private"));
     driver.resolvConf = resolvConf("nameserver 127.0.0.11\n").toString();
-    // The shipped fallback (qits-2586): empty, which SmallRye reads as absent.
-    driver.fallbackUpstreams = Optional.empty();
     cli = new ScriptedCli();
     driver.scriptCli(cli);
     return driver;
@@ -5037,7 +5035,7 @@ class SwarmDeploymentDriverTest {
     assertTrue(cli.matching("--network-add").isEmpty(), "only the deployer moves in place");
   }
 
-  // --- qits-2586: a minimal resolver delta, a fallback upstream, no private create without one ---
+  // --- qits-2586: a minimal resolver delta, a derived upstream, no private create without one --
 
   @Test
   void aSelfUpdateRemovesOnlyTheUnwantedResolverAndAddsOnlyTheMissingOne() {
@@ -5080,15 +5078,28 @@ class SwarmDeploymentDriverTest {
     assertEquals(List.of(), dnsArguments(update, "--dns-add"));
   }
 
+  /** A VIP-only resolv.conf of the deployer's own: the state that has no upstream to hand on. */
+  private static String vipOnlyResolvConf() {
+    return resolvConf("nameserver 127.0.0.11\n# ExtServers: [10.231.0.5]\n").toString();
+  }
+
+  private static final String EDGE_TASKS = "status=running";
+
+  private static final String EDGE_RESOLV =
+      "nameserver 127.0.0.11\n# ExtServers: [host(127.0.0.53) 192.168.188.1]\n";
+
+  /** The private edge's one running task here, whose resolv.conf {@code docker cp} hands back. */
+  private void scriptEdgeTask(String resolvConfText) {
+    cli.script(EDGE_TASKS, result(0, "edgecontainer01\n"));
+    cli.cpWrites = resolvConfText;
+  }
+
   @Test
-  void aResolvConfNamingOnlyTheVipFallsBackToTheConfiguredUpstreams() {
+  void aVipOnlyResolvConfDerivesTheUpstreamFromTheEdgesOwnResolvConf() {
     SwarmDeploymentDriver driver = driver();
-    driver.resolvConf =
-        resolvConf("nameserver 127.0.0.11\n# ExtServers: [10.231.0.5]\n").toString();
-    driver.fallbackUpstreams =
-        Optional.of(
-            List.of(" 192.168.188.1 ", "127.0.0.1", "10.231.0.5", "", "192.168.188.1", "dns.x"));
+    driver.resolvConf = vipOnlyResolvConf();
     scriptPrivateEdge("10.231.0.5");
+    scriptEdgeTask(EDGE_RESOLV);
     DeploymentDriver.ServiceSpec spec = exposed(DeploymentDriver.Exposure.PRIVATE);
 
     List<String> argv = driver.buildCreateArgv(spec, "dev-qits-gateway", driver.collapse(spec));
@@ -5096,51 +5107,84 @@ class SwarmDeploymentDriverTest {
     assertEquals(
         List.of("10.231.0.5", "192.168.188.1"),
         dnsArguments(argv, "--dns"),
-        "the VIP, then the fallback without loopback, the VIP, blanks, repeats or names: " + argv);
+        "the VIP, then the edge's upstream; host(127.0.0.53) is loopback and dropped: " + argv);
+    assertEquals(
+        List.of(
+            "docker",
+            "ps",
+            "--filter",
+            "label=com.docker.swarm.service.id=edgesvc0001",
+            "--filter",
+            "status=running",
+            "--format",
+            "{{.ID}}"),
+        cli.matching(EDGE_TASKS));
+    List<String> copied = cli.matching("docker cp");
+    assertEquals("edgecontainer01:/etc/resolv.conf", copied.get(2), copied.toString());
+    assertFalse(Files.exists(Path.of(copied.get(3))), "the temp file is deleted afterwards");
 
-    // ...and the deployer's own update adds the fallback alone to a VIP-only live list.
-    SwarmDeploymentDriver self = selfOn(driver(), PRIVATE_NET_ID + "\n");
-    self.resolvConf = driver.resolvConf;
-    self.fallbackUpstreams = Optional.of(List.of("192.168.188.1"));
+    // A burst of applies reuses the answer for the same VIP.
+    driver.buildCreateArgv(spec, "dev-qits-gateway", driver.collapse(spec));
+    assertEquals(1, cli.count("docker cp"), cli.calls.toString());
+  }
+
+  @Test
+  void theEdgeIsNotAskedWhenTheResolvConfNamesAnUpstream() {
+    SwarmDeploymentDriver driver = driverWithUpstreams();
     scriptPrivateEdge("10.231.0.5");
+    scriptEdgeTask(EDGE_RESOLV);
+    DeploymentDriver.ServiceSpec spec = exposed(DeploymentDriver.Exposure.PRIVATE);
+
+    List<String> argv = driver.buildCreateArgv(spec, "dev-qits-gateway", driver.collapse(spec));
+
+    assertEquals(List.of("10.231.0.5", "9.9.9.9", "1.1.1.1"), dnsArguments(argv, "--dns"));
+    assertEquals(0, cli.count(EDGE_TASKS), cli.calls.toString());
+    assertEquals(0, cli.count("docker cp"), cli.calls.toString());
+  }
+
+  @Test
+  void aSelfUpdateWithAVipOnlyResolvConfAddsTheDerivedUpstreamAlone() {
+    SwarmDeploymentDriver driver = selfOn(driver(), PRIVATE_NET_ID + "\n");
+    driver.resolvConf = vipOnlyResolvConf();
+    scriptPrivateEdge("10.231.0.5");
+    scriptEdgeTask(EDGE_RESOLV);
     cli.script(
         SwarmDeploymentDriver.SPEC_DNS_FORMAT, result(0, "{\"Nameservers\":[\"10.231.0.5\"]}\n"));
 
-    self.apply(spec);
+    DeploymentDriver.ApplyResult applied = driver.apply(exposed(DeploymentDriver.Exposure.PRIVATE));
 
+    assertEquals(DeploymentDriver.ApplyOutcome.HANDED_OFF, applied.outcome());
     List<String> update = cli.matching("service update");
     assertEquals(List.of("192.168.188.1"), dnsArguments(update, "--dns-add"), update.toString());
     assertEquals(List.of(), dnsArguments(update, "--dns-rm"), update.toString());
   }
 
   @Test
-  void theFallbackIsIgnoredWhenTheResolvConfNamesAnUpstream() {
-    SwarmDeploymentDriver driver = driverWithUpstreams();
-    driver.fallbackUpstreams = Optional.of(List.of("192.168.188.1"));
-    scriptPrivateEdge("10.231.0.5");
-    DeploymentDriver.ServiceSpec spec = exposed(DeploymentDriver.Exposure.PRIVATE);
-
-    List<String> argv = driver.buildCreateArgv(spec, "dev-qits-gateway", driver.collapse(spec));
-
-    assertEquals(List.of("10.231.0.5", "9.9.9.9", "1.1.1.1"), dnsArguments(argv, "--dns"));
-  }
-
-  @Test
-  void aPrivateRecreateWithTheEdgeAndNoUpstreamIsRefusedAndTheLiveServiceKept() {
+  void aPrivateRecreateWhoseUpstreamCannotBeDerivedIsRefusedAndTheLiveServiceKept() {
     // Network drift would recreate it, and the create would carry no --dns: refused before the
-    // service is removed, so what works keeps working.
-    SwarmDeploymentDriver driver = driver();
-    scriptLiveNetworks("flatnetid0000000000000001\n");
-    scriptPrivateEdge("10.231.0.5");
+    // service is removed, so what works keeps working. Three ways the derivation comes up empty.
+    for (String failure : List.of("no running task", "cp refused", "loopback only")) {
+      SwarmDeploymentDriver driver = driver();
+      driver.resolvConf = vipOnlyResolvConf();
+      scriptLiveNetworks("flatnetid0000000000000001\n");
+      scriptPrivateEdge("10.231.0.5");
+      switch (failure) {
+        case "cp refused" -> {
+          cli.script("docker cp", result(1, "Error: No such container"));
+          scriptEdgeTask(EDGE_RESOLV);
+        }
+        case "loopback only" -> scriptEdgeTask("nameserver 127.0.0.11\n");
+        default -> {}
+      }
 
-    DeploymentDriver.ApplyResult applied = driver.apply(exposed(DeploymentDriver.Exposure.PRIVATE));
+      DeploymentDriver.ApplyResult applied =
+          driver.apply(exposed(DeploymentDriver.Exposure.PRIVATE));
 
-    assertEquals(DeploymentDriver.ApplyOutcome.REFUSED, applied.outcome());
-    assertTrue(
-        applied.detail().contains("qits.deployments.swarm.private-edge.fallback-upstreams"),
-        applied.detail());
-    assertEquals(0, cli.count("service rm"), cli.calls.toString());
-    assertEquals(0, cli.count("service create"), cli.calls.toString());
+      assertEquals(DeploymentDriver.ApplyOutcome.REFUSED, applied.outcome(), failure);
+      assertTrue(applied.detail().contains("resolver edge's resolv.conf"), applied.detail());
+      assertEquals(0, cli.count("service rm"), failure + ": " + cli.calls);
+      assertEquals(0, cli.count("service create"), failure + ": " + cli.calls);
+    }
 
     // A first create in the same state is refused the same way.
     SwarmDeploymentDriver fresh = driver();
@@ -5638,6 +5682,9 @@ class SwarmDeploymentDriverTest {
     final List<List<String>> calls = Collections.synchronizedList(new ArrayList<>());
     private final Map<String, Deque<ContainerProcess.Result>> scripted = new LinkedHashMap<>();
 
+    /** What a successful {@code docker cp} writes to its destination, the argv's last element. */
+    String cpWrites;
+
     void script(String argvContains, ContainerProcess.Result... answers) {
       scripted.put(argvContains, new ArrayDeque<>(List.of(answers)));
     }
@@ -5646,13 +5693,22 @@ class SwarmDeploymentDriverTest {
     public ContainerProcess.Result run(List<String> argv, Duration timeout) {
       calls.add(List.copyOf(argv));
       String joined = String.join(" ", argv);
+      ContainerProcess.Result answer = result(0, "");
       for (Map.Entry<String, Deque<ContainerProcess.Result>> entry : scripted.entrySet()) {
         if (joined.contains(entry.getKey())) {
           Deque<ContainerProcess.Result> answers = entry.getValue();
-          return answers.size() == 1 ? answers.peek() : answers.poll();
+          answer = answers.size() == 1 ? answers.peek() : answers.poll();
+          break;
         }
       }
-      return result(0, "");
+      if (argv.size() > 1 && argv.get(1).equals("cp") && answer.exitCode() == 0 && cpWrites != null) {
+        try {
+          Files.writeString(Path.of(argv.get(argv.size() - 1)), cpWrites);
+        } catch (IOException e) {
+          throw new IllegalStateException(e);
+        }
+      }
+      return answer;
     }
 
     /** The one call whose argv contains this, failing loudly when there is none. */

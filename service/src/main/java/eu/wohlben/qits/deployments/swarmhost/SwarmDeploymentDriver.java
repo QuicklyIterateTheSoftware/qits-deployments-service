@@ -621,15 +621,21 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   String resolvConf;
 
   /**
-   * The upstreams a private service's {@code --dns} list falls back to when {@link #resolvConf}
-   * names none besides the edge's VIP (qits-2586) — which is exactly the deployer's own state once
-   * it resolves through the private edge and docker wrote only the VIP into its {@code ExtServers}.
-   * Address literals only; loopback, the VIP, blanks and repeats are dropped. Shipped empty, which
-   * SmallRye reads as absent: no fallback, and a private create or recreate that finds the edge and
-   * no upstream is then REFUSED rather than issued with no {@code --dns}.
+   * How long a {@link #derivedUpstreams} answer is reused (qits-2586): a burst of applies costs the
+   * three docker calls once, and a moved VIP or a minute is enough to ask again.
    */
-  @ConfigProperty(name = "qits.deployments.swarm.private-edge.fallback-upstreams")
-  Optional<List<String>> fallbackUpstreams;
+  static final Duration DERIVED_UPSTREAMS_TTL = Duration.ofSeconds(60);
+
+  /** A resolver edge's resolv.conf, read inside its task container. */
+  static final String EDGE_RESOLV_CONF = "/etc/resolv.conf";
+
+  /**
+   * The last successful {@link #derivedUpstreams} answer, with the VIP it was derived for and when.
+   * Never a failure: a miss asks again on the next apply.
+   */
+  private volatile DerivedUpstreams derivedUpstreams;
+
+  private record DerivedUpstreams(String vip, String edgeService, List<String> servers, Instant at) {}
 
   /**
    * The platform's one domain, handed to every container as {@link #DOMAIN_VARIABLE}. See that
@@ -2298,7 +2304,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * {@link #NOT_ASKED} is the answer for every service the rule does not cover (public, or an edge).
    *
    * <p>{@code upstreamMissing} says WHICH half (qits-2586): the edge's VIP was found and no upstream
-   * could be worked out, neither from {@link #resolvConf} nor from {@link #fallbackUpstreams}. That
+   * could be worked out, neither from {@link #resolvConf} nor from a resolver edge's own resolv.conf
+   * ({@link #derivedUpstreams}). That
    * is the one state in which {@link #apply} refuses a create or recreate; an edge that is missing
    * or absent is the bootstrap, and leaves it false.
    */
@@ -2330,10 +2337,14 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * reason is only that no swarm service carries the application, the one answer {@link
    * #resolverVip} walks past to the next preference.
    */
-  record EdgeVip(String vip, String why, boolean absent) {
+  record EdgeVip(String vip, String why, boolean absent, String application) {
+
+    EdgeVip(String vip, String why, boolean absent) {
+      this(vip, why, absent, null);
+    }
 
     EdgeVip(String vip, String why) {
-      this(vip, why, false);
+      this(vip, why, false, null);
     }
   }
 
@@ -2393,7 +2404,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * it, so a VIP-only list would have docker's embedded resolver answer every public name with the
    * edge's REFUSED; and upstreams alone would put back exactly the resolution that answers a
    * private app's name with the public wildcard, which is why this exists. The upstreams are
-   * {@link #resolvConf}'s, or {@link #fallbackUpstreams} when it names none besides the VIP
+   * {@link #resolvConf}'s, or — when it names none besides the VIP, which is the deployer's own state
+   * once it resolves through the edge — {@link #derivedUpstreams}, read off a resolver edge's task
    * (qits-2586); with neither the answer is {@code upstreamMissing}. Never throws.
    */
   Resolvers privateEdgeResolvers(ServiceSpec spec) {
@@ -2407,22 +2419,17 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       }
       List<String> upstreams = upstreamsBesides(edge.vip());
       if (upstreams.isEmpty()) {
-        upstreams = fallbackUpstreamsBesides(edge.vip());
-        if (!upstreams.isEmpty()) {
-          LOG.debugf(
-              "%s names no upstream besides %s: falling back to"
-                  + " qits.deployments.swarm.private-edge.fallback-upstreams %s",
-              resolvConf, edge.vip(), upstreams);
-        }
+        upstreams = derivedUpstreams(edge);
       }
       if (upstreams.isEmpty()) {
         return new Resolvers(
             List.of(),
-            resolvConf
-                + " names no upstream resolver besides the private edge's VIP "
+            "no upstream resolver besides the private edge's VIP "
                 + edge.vip()
-                + " and qits.deployments.swarm.private-edge.fallback-upstreams is unset, and a"
-                + " resolver list holding only the VIP would answer every public name REFUSED",
+                + " is named, neither by "
+                + resolvConf
+                + " nor by any resolver edge's resolv.conf, and a resolver list holding only the"
+                + " VIP would answer every public name REFUSED",
             true);
       }
       List<String> servers = new ArrayList<>();
@@ -2527,7 +2534,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
           "the service " + service + " has no single virtual IP on " + network + " (" + networkId
               + ")");
     }
-    return new EdgeVip(vip.get(), null);
+    return new EdgeVip(vip.get(), null, false, application);
   }
 
   /**
@@ -2559,23 +2566,123 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   }
 
   /**
-   * {@link #fallbackUpstreams} as servers (qits-2586): address literals only, without loopback,
-   * {@code vip}, blanks or repeats, in order. Null or absent is none, like {@link
-   * #resolverApplications()}.
+   * The upstreams a resolver edge's own task resolves through (qits-2586), for when {@link
+   * #resolvConf} names none besides {@code edge}'s VIP — the deployer's own state once it resolves
+   * through the private edge and docker wrote only the VIP into its {@code ExtServers}. No edge is
+   * ever handed {@code --dns}, so each one's {@code /etc/resolv.conf} holds exactly what the daemon
+   * gives a container: the host's upstreams. Asked of the edge whose VIP was chosen first, then the
+   * other {@link #resolverApplications}, then {@link #PUBLIC_EDGE_APPLICATION}; the first that
+   * names one wins. Per edge: its one swarm service ({@code service ls -q --filter
+   * label=<APP_NAME_LABEL>=<app>}), a running task container of it on this node ({@code ps --filter
+   * label=com.docker.swarm.service.id=<id> --filter status=running}, first line), and its
+   * resolv.conf ({@link #edgeResolvConf}), parsed by {@link #upstreams} without loopback or the VIP.
+   *
+   * <p>A success is reused for {@link #DERIVED_UPSTREAMS_TTL} while the VIP is the same, and logged
+   * once at INFO when it is derived; a failure is never cached and is a DEBUG line. Never throws.
    */
-  List<String> fallbackUpstreamsBesides(String vip) {
-    List<String> configured =
-        fallbackUpstreams == null ? List.of() : fallbackUpstreams.orElse(List.of());
-    List<String> servers = new ArrayList<>();
-    for (String candidate : configured) {
-      if (candidate == null || candidate.isBlank()) {
-        continue;
-      }
-      dnsServer(candidate.strip())
-          .filter(server -> !loopback(server) && !server.equals(vip) && !servers.contains(server))
-          .ifPresent(servers::add);
+  List<String> derivedUpstreams(EdgeVip edge) {
+    String vip = edge.vip();
+    DerivedUpstreams cached = derivedUpstreams;
+    Instant now = clock.instant();
+    if (cached != null
+        && cached.vip().equals(vip)
+        && now.isBefore(cached.at().plus(DERIVED_UPSTREAMS_TTL))) {
+      return cached.servers();
     }
-    return List.copyOf(servers);
+    List<String> applications = new ArrayList<>();
+    if (edge.application() != null) {
+      applications.add(edge.application());
+    }
+    for (String application : resolverApplications()) {
+      if (!applications.contains(application)) {
+        applications.add(application);
+      }
+    }
+    if (!applications.contains(PUBLIC_EDGE_APPLICATION)) {
+      applications.add(PUBLIC_EDGE_APPLICATION);
+    }
+    List<String> misses = new ArrayList<>();
+    for (String application : applications) {
+      try {
+        ContainerProcess.Result listed =
+            run(
+                SwarmArgv.serviceLsQuiet(
+                    runtime, List.of(SwarmArgv.labelFilter(APP_NAME_LABEL, application))),
+                INSPECT_TIMEOUT);
+        List<String> services = listed.exitCode() == 0 ? lines(listed.output()) : List.of();
+        if (services.size() != 1 || !DOCKER_ID.matcher(services.get(0)).matches()) {
+          misses.add(application + ": " + services.size() + " service(s)");
+          continue;
+        }
+        String service = services.get(0);
+        ContainerProcess.Result tasks =
+            run(
+                DockerArgv.ps(
+                    runtime,
+                    false,
+                    List.of("label=com.docker.swarm.service.id=" + service, "status=running"),
+                    "{{.ID}}"),
+                INSPECT_TIMEOUT);
+        List<String> containers = tasks.exitCode() == 0 ? lines(tasks.output()) : List.of();
+        if (containers.isEmpty() || !DOCKER_ID.matcher(containers.get(0)).matches()) {
+          misses.add(application + ": no running task on this node");
+          continue;
+        }
+        Optional<String> text = edgeResolvConf(containers.get(0));
+        if (text.isEmpty()) {
+          misses.add(application + ": its resolv.conf could not be read");
+          continue;
+        }
+        List<String> servers =
+            upstreams(text.get()).stream().filter(server -> !server.equals(vip)).toList();
+        if (servers.isEmpty()) {
+          misses.add(application + ": its resolv.conf names no upstream");
+          continue;
+        }
+        derivedUpstreams = new DerivedUpstreams(vip, application, servers, now);
+        LOG.infof(
+            "%s names no upstream besides %s: using %s's %s", resolvConf, vip, application, servers);
+        return servers;
+      } catch (RuntimeException e) {
+        misses.add(application + ": " + e.getMessage());
+      }
+    }
+    LOG.debugf("No resolver edge names an upstream besides %s: %s", vip, misses);
+    return List.of();
+  }
+
+  /**
+   * The text of {@link #EDGE_RESOLV_CONF} inside this container, or empty: {@code docker cp} into a
+   * temp file here — the CLI runs against the host's daemon, so this needs no tool inside the edge's
+   * image — read, and the file deleted. Package-private for the suite.
+   */
+  Optional<String> edgeResolvConf(String containerId) {
+    Path file = null;
+    try {
+      file = Files.createTempFile("qits-edge-resolv", ".conf");
+      ContainerProcess.Result copied =
+          run(
+              DockerArgv.cpOut(runtime, containerId, EDGE_RESOLV_CONF, file.toString()),
+              INSPECT_TIMEOUT);
+      if (copied.exitCode() != 0 || copied.timedOut()) {
+        LOG.debugf(
+            "Could not copy %s out of %s: %s",
+            EDGE_RESOLV_CONF, containerId, safe(copied.output()).strip());
+        return Optional.empty();
+      }
+      return Optional.of(Files.readString(file, StandardCharsets.UTF_8));
+    } catch (Exception e) {
+      LOG.debugf("Could not read %s of %s: %s", EDGE_RESOLV_CONF, containerId, e.toString());
+      return Optional.empty();
+    } finally {
+      if (file != null) {
+        try {
+          Files.deleteIfExists(file);
+        } catch (Exception e) {
+          LOG.debugf("Could not delete %s: %s", file, e.toString());
+        }
+      }
+    }
   }
 
   /**
