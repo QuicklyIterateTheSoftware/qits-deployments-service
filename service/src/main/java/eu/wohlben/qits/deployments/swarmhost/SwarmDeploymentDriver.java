@@ -331,6 +331,15 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   static final String VIPS_FORMAT =
       "{{range .Endpoint.VirtualIPs}}{{.NetworkID}} {{.Addr}}{{\"\\n\"}}{{end}}";
 
+  /**
+   * A service's name, off {@code service inspect} — what {@link #derivedUpstreams} asks for right
+   * after {@code service ls -q} answers a service's id (qits-2586). {@code service ls -q} TRUNCATES
+   * that id to 12 characters, while the {@code com.docker.swarm.service.name} label swarm puts on
+   * every task container carries it in full, so filtering a task lookup on the truncated id never
+   * matches: the name is what both sides can agree on.
+   */
+  static final String SERVICE_NAME_FORMAT = "{{.Spec.Name}}";
+
   /** The comment line docker writes into a container's resolv.conf naming its upstream servers. */
   static final String EXT_SERVERS = "# ExtServers:";
 
@@ -2590,9 +2599,14 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * gives a container: the host's upstreams. Asked of the edge whose VIP was chosen first, then the
    * other {@link #resolverApplications}, then {@link #PUBLIC_EDGE_APPLICATION}; the first that
    * names one wins. Per edge: its one swarm service ({@code service ls -q --filter
-   * label=<APP_NAME_LABEL>=<app>}), a running task container of it on this node ({@code ps --filter
-   * label=com.docker.swarm.service.id=<id> --filter status=running}, first line), and its
-   * resolv.conf ({@link #edgeResolvConf}), parsed by {@link #upstreams} without loopback or the VIP.
+   * label=<APP_NAME_LABEL>=<app>}), that service's NAME ({@code service inspect --format
+   * {{.Spec.Name}}}, {@link #SERVICE_NAME_FORMAT}) — {@code service ls -q} answers a TRUNCATED
+   * 12-character id, while the {@code com.docker.swarm.service.name} label swarm puts on every task
+   * container carries the service's name in full, so a task lookup filtered on the truncated id
+   * never matched a thing (qits-2586) — a running task container of it on this node ({@code ps
+   * --filter label=com.docker.swarm.service.name=<name> --filter status=running}, first line), and
+   * its resolv.conf ({@link #edgeResolvConf}), parsed by {@link #upstreams} without loopback or the
+   * VIP.
    *
    * <p>A success is reused for {@link #DERIVED_UPSTREAMS_TTL} while the VIP is the same, and logged
    * once at INFO when it is derived; a failure is never cached and is a WARN naming every resolver
@@ -2635,12 +2649,22 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
           continue;
         }
         String service = services.get(0);
+        ContainerProcess.Result inspected =
+            run(SwarmArgv.serviceInspect(runtime, service, SERVICE_NAME_FORMAT), INSPECT_TIMEOUT);
+        String name = inspected.exitCode() == 0 ? safe(inspected.output()).strip() : "";
+        if (name.isBlank()) {
+          misses.add(
+              application
+                  + ": its service name could not be read: "
+                  + truncated(inspected.output()));
+          continue;
+        }
         ContainerProcess.Result tasks =
             run(
                 DockerArgv.ps(
                     runtime,
                     false,
-                    List.of("label=com.docker.swarm.service.id=" + service, "status=running"),
+                    List.of(SwarmArgv.labelFilter(SWARM_SERVICE_LABEL, name), "status=running"),
                     "{{.ID}}"),
                 INSPECT_TIMEOUT);
         List<String> containers = tasks.exitCode() == 0 ? lines(tasks.output()) : List.of();

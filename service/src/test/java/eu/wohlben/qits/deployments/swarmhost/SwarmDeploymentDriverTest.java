@@ -4331,13 +4331,19 @@ class SwarmDeploymentDriverTest {
     }
   }
 
+  /** The 12-character, truncated id {@code service ls -q} answers for {@code edgesvc0001}. */
+  private static final String PRIVATE_EDGE_SHORT_ID = "edgesvc0001";
+
   /** The private overlay, exactly one qits-edge-private service, and its VIP on the overlay. */
   private void scriptPrivateEdge(String vip) {
     cli.script(
         "network inspect --format {{.Id}} qits-private", result(0, PRIVATE_NET_ID + "\n"));
     cli.script(
         "service ls -q --filter label=qits.platform.deployments.app-name=qits-edge-private",
-        result(0, "edgesvc0001\n"));
+        result(0, PRIVATE_EDGE_SHORT_ID + "\n"));
+    cli.script(
+        SwarmDeploymentDriver.SERVICE_NAME_FORMAT + " " + PRIVATE_EDGE_SHORT_ID,
+        result(0, "dev-qits-edge-private\n"));
     cli.script(
         "Endpoint.VirtualIPs",
         result(0, "flatnetid0000000000000001 10.0.1.4/24\n" + PRIVATE_NET_ID + " " + vip + "/20\n"));
@@ -4636,7 +4642,7 @@ class SwarmDeploymentDriverTest {
     driver.resolvConf = resolvConf("nameserver 127.0.0.11\n").toString();
     scriptPrivateEdge("10.231.0.5");
     cli.script(
-        "label=com.docker.swarm.service.id=edgesvc0001", result(0, "container0001\n"));
+        "label=com.docker.swarm.service.name=dev-qits-edge-private", result(0, "container0001\n"));
     cli.script("cp container0001:", result(1, "Error: No such container: container0001"));
     DeploymentDriver.ServiceSpec spec = exposed(DeploymentDriver.Exposure.PRIVATE);
 
@@ -4645,6 +4651,35 @@ class SwarmDeploymentDriverTest {
     assertTrue(why.contains("resolver edges:"), why);
     assertTrue(why.contains("qits-edge-private"), why);
     assertTrue(why.contains("No such container"), why);
+  }
+
+  @Test
+  void theTruncatedServiceLsIdIsResolvedToTheFullServiceNameBeforeTheTaskIsLookedUp() {
+    // qits-2586: `service ls -q` answers a TRUNCATED 12-character id, while the task container's
+    // own `com.docker.swarm.service.name` label carries the service's name in full — a filter
+    // naming the truncated id never matches, so the driver reads the name off `service inspect`
+    // first and filters the task lookup on that instead.
+    SwarmDeploymentDriver driver = driver();
+    driver.resolvConf = resolvConf("nameserver 127.0.0.11\n").toString();
+    cli.script(
+        "service ls -q --filter label=qits.platform.deployments.app-name=qits-edge-overlay",
+        result(0, "abcd12345678\n"));
+    cli.script(
+        SwarmDeploymentDriver.SERVICE_NAME_FORMAT + " abcd12345678",
+        result(0, "dev-qits-edge-overlay\n"));
+    // The task lookup is answered only when it is filtered by the NAME; the truncated id would
+    // never match a thing on a real daemon, and nothing here scripts that filter either.
+    cli.script(
+        "label=com.docker.swarm.service.name=dev-qits-edge-overlay", result(0, "overlaytask01\n"));
+    cli.cpWrites = EDGE_RESOLV;
+
+    SwarmDeploymentDriver.UpstreamDerivation derived =
+        driver.derivedUpstreams(
+            new SwarmDeploymentDriver.EdgeVip("10.231.0.5", null, false, "qits-edge-overlay"));
+
+    assertEquals(List.of("192.168.188.1"), derived.servers(), derived.toString());
+    assertEquals(List.of(), derived.misses(), derived.misses().toString());
+    assertEquals(0, cli.count("service.id="), cli.calls.toString());
   }
 
   @Test
@@ -5134,7 +5169,7 @@ class SwarmDeploymentDriverTest {
             "docker",
             "ps",
             "--filter",
-            "label=com.docker.swarm.service.id=edgesvc0001",
+            "label=com.docker.swarm.service.name=dev-qits-edge-private",
             "--filter",
             "status=running",
             "--format",
