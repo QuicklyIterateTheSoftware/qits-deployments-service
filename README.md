@@ -497,6 +497,15 @@ handed `--dns`, so it holds what the daemon gives a container), cached for a min
 nothing, as before — except that a VIP with no upstream from either now REFUSES a private create or
 recreate, leaving the live service untouched (qits-2586).
 
+The deployer's own resolvers change by `service update`, never by a recreate, and docker's CLI
+applies `--dns-add`, then `--dns-rm` (a removal wins), then sorts the list. So its self-update
+states only the difference: `--dns-rm` for a live server that is not wanted, `--dns-add` for a
+wanted one that is not live, nothing when the sets match. Naming a shared upstream on both sides is
+what once left it with the VIP alone (qits-2586). The edge's task is found by
+`com.docker.swarm.service.name`, because `service ls -q` prints a truncated id while the task label
+holds the full one. When no upstream can be found, one WARN names each resolver edge with the
+reason it gave nothing: `gets no private-edge resolver: …; resolver edges: [<edge>: <why>, …]`.
+
 - **Fallback.** An application with *no* swarm service is skipped, so until `qits-edge-overlay` is
   deployed every private service keeps `qits-edge-private`'s VIP and nothing changes. **Any other
   failure stops the walk with no VIP** — an inspect that does not answer, two services, no VIP on the
