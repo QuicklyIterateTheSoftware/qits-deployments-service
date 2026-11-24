@@ -1,6 +1,6 @@
 [submodule "qits-deployments-frontend"]
 	path = service/src/main/webui
-	url = https://github.com/QuicklyIterateTheSoftware/qits-deployments-frontend.git
+	url = ../qits-deployments-frontend.git
 	ignore = all
 	update = merge
 	branch = main
