@@ -841,6 +841,16 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       LOG.warnf("Refusing to deploy %s: %s", name, resolvers.why());
       return new ApplyResult(ApplyOutcome.REFUSED, resolvers.why());
     }
+    if (updating
+        && !self
+        && wantsPrivateEdgeResolvers(spec)
+        && !resolvers.found()
+        && resolvers != NOT_ASKED) {
+      // The create and self-update paths already log this through dnsFlags/buildSelfUpdateArgv; an
+      // ordinary update never calls either, so without this an operator watching a live private
+      // service's log has no clue it is resolving with no --dns at all (qits-2586).
+      LOG.warnf("%s gets no private-edge resolver: %s", target, resolvers.why());
+    }
     List<String> argv;
     try {
       if (!updating) {
@@ -2406,7 +2416,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * private app's name with the public wildcard, which is why this exists. The upstreams are
    * {@link #resolvConf}'s, or — when it names none besides the VIP, which is the deployer's own state
    * once it resolves through the edge — {@link #derivedUpstreams}, read off a resolver edge's task
-   * (qits-2586); with neither the answer is {@code upstreamMissing}. Never throws.
+   * (qits-2586); with neither the answer is {@code upstreamMissing}, and {@code why} carries every
+   * resolver edge's own miss so a production log need not be set to DEBUG to learn which one.
+   * Never throws.
    */
   Resolvers privateEdgeResolvers(ServiceSpec spec) {
     if (!wantsPrivateEdgeResolvers(spec)) {
@@ -2418,19 +2430,24 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
         return new Resolvers(List.of(), edge.why());
       }
       List<String> upstreams = upstreamsBesides(edge.vip());
+      List<String> misses = List.of();
       if (upstreams.isEmpty()) {
-        upstreams = derivedUpstreams(edge);
+        UpstreamDerivation derived = derivedUpstreams(edge);
+        upstreams = derived.servers();
+        misses = derived.misses();
       }
       if (upstreams.isEmpty()) {
-        return new Resolvers(
-            List.of(),
+        String why =
             "no upstream resolver besides the private edge's VIP "
                 + edge.vip()
                 + " is named, neither by "
                 + resolvConf
                 + " nor by any resolver edge's resolv.conf, and a resolver list holding only the"
-                + " VIP would answer every public name REFUSED",
-            true);
+                + " VIP would answer every public name REFUSED";
+        if (!misses.isEmpty()) {
+          why += "; resolver edges: " + misses;
+        }
+        return new Resolvers(List.of(), why, true);
       }
       List<String> servers = new ArrayList<>();
       servers.add(edge.vip());
@@ -2578,16 +2595,18 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * resolv.conf ({@link #edgeResolvConf}), parsed by {@link #upstreams} without loopback or the VIP.
    *
    * <p>A success is reused for {@link #DERIVED_UPSTREAMS_TTL} while the VIP is the same, and logged
-   * once at INFO when it is derived; a failure is never cached and is a DEBUG line. Never throws.
+   * once at INFO when it is derived; a failure is never cached and is a WARN naming every resolver
+   * edge's own miss (qits-2586) — the only place production ever learns why, on the path {@link
+   * #apply} takes for everything but a create or a self-update. Never throws.
    */
-  List<String> derivedUpstreams(EdgeVip edge) {
+  UpstreamDerivation derivedUpstreams(EdgeVip edge) {
     String vip = edge.vip();
     DerivedUpstreams cached = derivedUpstreams;
     Instant now = clock.instant();
     if (cached != null
         && cached.vip().equals(vip)
         && now.isBefore(cached.at().plus(DERIVED_UPSTREAMS_TTL))) {
-      return cached.servers();
+      return new UpstreamDerivation(cached.servers(), List.of());
     }
     List<String> applications = new ArrayList<>();
     if (edge.application() != null) {
@@ -2611,7 +2630,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
                 INSPECT_TIMEOUT);
         List<String> services = listed.exitCode() == 0 ? lines(listed.output()) : List.of();
         if (services.size() != 1 || !DOCKER_ID.matcher(services.get(0)).matches()) {
-          misses.add(application + ": " + services.size() + " service(s)");
+          misses.add(
+              application + ": " + services.size() + " service(s)" + bracketed(listed.output()));
           continue;
         }
         String service = services.get(0);
@@ -2625,38 +2645,49 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
                 INSPECT_TIMEOUT);
         List<String> containers = tasks.exitCode() == 0 ? lines(tasks.output()) : List.of();
         if (containers.isEmpty() || !DOCKER_ID.matcher(containers.get(0)).matches()) {
-          misses.add(application + ": no running task on this node");
+          misses.add(application + ": no running task on this node" + bracketed(tasks.output()));
           continue;
         }
-        Optional<String> text = edgeResolvConf(containers.get(0));
-        if (text.isEmpty()) {
-          misses.add(application + ": its resolv.conf could not be read");
+        ResolvConfRead read = edgeResolvConf(containers.get(0));
+        if (read.text() == null) {
+          misses.add(
+              application + ": its resolv.conf could not be read" + bracketed(read.error()));
           continue;
         }
         List<String> servers =
-            upstreams(text.get()).stream().filter(server -> !server.equals(vip)).toList();
+            upstreams(read.text()).stream().filter(server -> !server.equals(vip)).toList();
         if (servers.isEmpty()) {
-          misses.add(application + ": its resolv.conf names no upstream");
+          misses.add(
+              application + ": its resolv.conf names no upstream" + bracketed(flattened(read.text())));
           continue;
         }
         derivedUpstreams = new DerivedUpstreams(vip, application, servers, now);
         LOG.infof(
             "%s names no upstream besides %s: using %s's %s", resolvConf, vip, application, servers);
-        return servers;
+        return new UpstreamDerivation(servers, List.of());
       } catch (RuntimeException e) {
         misses.add(application + ": " + e.getMessage());
       }
     }
-    LOG.debugf("No resolver edge names an upstream besides %s: %s", vip, misses);
-    return List.of();
+    LOG.warnf("No resolver edge names an upstream besides %s: %s", vip, misses);
+    return new UpstreamDerivation(List.of(), List.copyOf(misses));
   }
 
   /**
-   * The text of {@link #EDGE_RESOLV_CONF} inside this container, or empty: {@code docker cp} into a
-   * temp file here — the CLI runs against the host's daemon, so this needs no tool inside the edge's
-   * image — read, and the file deleted. Package-private for the suite.
+   * {@code servers} plus every resolver edge's own miss (qits-2586): empty on a cache hit or a
+   * success, since nothing failed to explain.
    */
-  Optional<String> edgeResolvConf(String containerId) {
+  record UpstreamDerivation(List<String> servers, List<String> misses) {}
+
+  /**
+   * {@link #EDGE_RESOLV_CONF} inside this container, or the reason it could not be read: {@code
+   * docker cp} into a temp file here — the CLI runs against the host's daemon, so this needs no
+   * tool inside the edge's image — read, and the file deleted. Exactly one of {@code text}/{@code
+   * error} is non-null. Package-private for the suite.
+   */
+  record ResolvConfRead(String text, String error) {}
+
+  ResolvConfRead edgeResolvConf(String containerId) {
     Path file = null;
     try {
       file = Files.createTempFile("qits-edge-resolv", ".conf");
@@ -2665,15 +2696,19 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
               DockerArgv.cpOut(runtime, containerId, EDGE_RESOLV_CONF, file.toString()),
               INSPECT_TIMEOUT);
       if (copied.exitCode() != 0 || copied.timedOut()) {
+        String reason =
+            copied.timedOut() ? "docker cp timed out" : "docker cp exited " + copied.exitCode();
+        String output = truncated(copied.output());
+        String error = output.isEmpty() ? reason : reason + ": " + output;
         LOG.debugf(
             "Could not copy %s out of %s: %s",
             EDGE_RESOLV_CONF, containerId, safe(copied.output()).strip());
-        return Optional.empty();
+        return new ResolvConfRead(null, error);
       }
-      return Optional.of(Files.readString(file, StandardCharsets.UTF_8));
+      return new ResolvConfRead(Files.readString(file, StandardCharsets.UTF_8), null);
     } catch (Exception e) {
       LOG.debugf("Could not read %s of %s: %s", EDGE_RESOLV_CONF, containerId, e.toString());
-      return Optional.empty();
+      return new ResolvConfRead(null, e.toString());
     } finally {
       if (file != null) {
         try {
@@ -4770,5 +4805,26 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
 
   private static String safe(String value) {
     return value == null ? "" : value;
+  }
+
+  /** {@code text}, stripped and cut to 300 characters — a command's output, bounded for a log line. */
+  private static String truncated(String text) {
+    String stripped = safe(text).strip();
+    return stripped.length() > 300 ? stripped.substring(0, 300) : stripped;
+  }
+
+  /** {@code " (" + truncated(text) + ")"}, or {@code ""} when there is nothing to show. */
+  private static String bracketed(String text) {
+    String value = truncated(text);
+    return value.isEmpty() ? "" : " (" + value + ")";
+  }
+
+  /**
+   * {@code text} with every line break replaced by {@code " | "}, cut to 300 characters — what a
+   * resolver edge's own resolv.conf wrote, flattened onto one log line.
+   */
+  private static String flattened(String text) {
+    String flat = safe(text).replaceAll("\\R", " | ");
+    return flat.length() > 300 ? flat.substring(0, 300) : flat;
   }
 }

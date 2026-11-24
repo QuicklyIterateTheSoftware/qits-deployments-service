@@ -4627,6 +4627,27 @@ class SwarmDeploymentDriverTest {
   }
 
   @Test
+  void aFailedDerivationNamesTheEdgeApplicationAndTheCpFailureOutput() {
+    // qits-2586: the private edge answers, this process's own resolv.conf names nothing besides
+    // its VIP, and the resolver edge's own resolv.conf cannot even be read — `docker cp` fails. The
+    // why() a production WARN now carries has to name which edge and what docker said, not just
+    // "no upstream".
+    SwarmDeploymentDriver driver = driver();
+    driver.resolvConf = resolvConf("nameserver 127.0.0.11\n").toString();
+    scriptPrivateEdge("10.231.0.5");
+    cli.script(
+        "label=com.docker.swarm.service.id=edgesvc0001", result(0, "container0001\n"));
+    cli.script("cp container0001:", result(1, "Error: No such container: container0001"));
+    DeploymentDriver.ServiceSpec spec = exposed(DeploymentDriver.Exposure.PRIVATE);
+
+    String why = driver.privateEdgeResolvers(spec).why();
+
+    assertTrue(why.contains("resolver edges:"), why);
+    assertTrue(why.contains("qits-edge-private"), why);
+    assertTrue(why.contains("No such container"), why);
+  }
+
+  @Test
   void aLiveResolverListThatDiffersIsARecreate() {
     SwarmDeploymentDriver driver = driverWithUpstreams();
     scriptLiveNetworks(PRIVATE_NET_ID + "\n");
