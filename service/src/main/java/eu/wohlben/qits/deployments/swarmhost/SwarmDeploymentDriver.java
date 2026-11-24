@@ -621,6 +621,17 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   String resolvConf;
 
   /**
+   * The upstreams a private service's {@code --dns} list falls back to when {@link #resolvConf}
+   * names none besides the edge's VIP (qits-2586) — which is exactly the deployer's own state once
+   * it resolves through the private edge and docker wrote only the VIP into its {@code ExtServers}.
+   * Address literals only; loopback, the VIP, blanks and repeats are dropped. Shipped empty, which
+   * SmallRye reads as absent: no fallback, and a private create or recreate that finds the edge and
+   * no upstream is then REFUSED rather than issued with no {@code --dns}.
+   */
+  @ConfigProperty(name = "qits.deployments.swarm.private-edge.fallback-upstreams")
+  Optional<List<String>> fallbackUpstreams;
+
+  /**
    * The platform's one domain, handed to every container as {@link #DOMAIN_VARIABLE}. See that
    * constant for why it is one value rather than five composed spellings.
    *
@@ -814,6 +825,16 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       // An update of either, or a recreate of the one nobody asks first, keeps it.
       edgeVipsBefore.put(target, Optional.ofNullable(resolverVip().vip()).orElse(""));
     }
+    if (!updating && !self && resolvers.upstreamMissing()) {
+      // A create — a first one, or a recreate about to remove the live service — for a private
+      // service whose edge answered and whose upstreams nobody could work out (qits-2586). Issued
+      // anyway it would carry no --dns, and its private names would resolve to the public wildcard:
+      // the outage this rule exists to prevent, bought by removing a service that worked. Refused
+      // before anything below removes, reaps or runs, so the live service is untouched. A missing
+      // edge is not this: that is the bootstrap, and it still creates with no --dns and one WARN.
+      LOG.warnf("Refusing to deploy %s: %s", name, resolvers.why());
+      return new ApplyResult(ApplyOutcome.REFUSED, resolvers.why());
+    }
     List<String> argv;
     try {
       if (!updating) {
@@ -857,8 +878,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
                 + " layer goes with it. It recreates once: afterwards the networks match.",
             target, drift);
       } else if (resolverDrift != null) {
-        // The CLI's --dns-add does not promise to keep the order, and the order is the point — the
-        // private edge's VIP has to be asked first — so drift recreates rather than updating.
+        // An update cannot state the order: the CLI applies --dns-add, then --dns-rm (a removal
+        // wins), and then SORTS the list by address. The order is the point — the private edge's
+        // VIP has to be asked first — so drift recreates rather than updating; a create keeps the
+        // --dns order it is given.
         LOG.warnf(
             "Recreating service %s: its resolvers are %s and should be %s",
             target, resolverDrift, resolvers.servers());
@@ -2273,11 +2296,20 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * The resolvers a service on the private overlay is handed, in order — the private edge's VIP,
    * then this process's own upstreams — or none, with {@code why} saying which half was missing.
    * {@link #NOT_ASKED} is the answer for every service the rule does not cover (public, or an edge).
+   *
+   * <p>{@code upstreamMissing} says WHICH half (qits-2586): the edge's VIP was found and no upstream
+   * could be worked out, neither from {@link #resolvConf} nor from {@link #fallbackUpstreams}. That
+   * is the one state in which {@link #apply} refuses a create or recreate; an edge that is missing
+   * or absent is the bootstrap, and leaves it false.
    */
-  record Resolvers(List<String> servers, String why) {
+  record Resolvers(List<String> servers, String why, boolean upstreamMissing) {
 
     Resolvers {
       servers = servers == null ? List.of() : List.copyOf(servers);
+    }
+
+    Resolvers(List<String> servers, String why) {
+      this(servers, why, false);
     }
 
     boolean found() {
@@ -2360,7 +2392,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * at least one upstream make a list. {@code --dns} REPLACES the upstream rather than prepending to
    * it, so a VIP-only list would have docker's embedded resolver answer every public name with the
    * edge's REFUSED; and upstreams alone would put back exactly the resolution that answers a
-   * private app's name with the public wildcard, which is why this exists. Never throws.
+   * private app's name with the public wildcard, which is why this exists. The upstreams are
+   * {@link #resolvConf}'s, or {@link #fallbackUpstreams} when it names none besides the VIP
+   * (qits-2586); with neither the answer is {@code upstreamMissing}. Never throws.
    */
   Resolvers privateEdgeResolvers(ServiceSpec spec) {
     if (!wantsPrivateEdgeResolvers(spec)) {
@@ -2373,11 +2407,23 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       }
       List<String> upstreams = upstreamsBesides(edge.vip());
       if (upstreams.isEmpty()) {
+        upstreams = fallbackUpstreamsBesides(edge.vip());
+        if (!upstreams.isEmpty()) {
+          LOG.debugf(
+              "%s names no upstream besides %s: falling back to"
+                  + " qits.deployments.swarm.private-edge.fallback-upstreams %s",
+              resolvConf, edge.vip(), upstreams);
+        }
+      }
+      if (upstreams.isEmpty()) {
         return new Resolvers(
             List.of(),
             resolvConf
-                + " names no upstream resolver, and a resolver list holding only the private"
-                + " edge's VIP would answer every public name REFUSED");
+                + " names no upstream resolver besides the private edge's VIP "
+                + edge.vip()
+                + " and qits.deployments.swarm.private-edge.fallback-upstreams is unset, and a"
+                + " resolver list holding only the VIP would answer every public name REFUSED",
+            true);
       }
       List<String> servers = new ArrayList<>();
       servers.add(edge.vip());
@@ -2510,6 +2556,26 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       return List.of();
     }
     return upstreams(text).stream().filter(server -> !server.equals(vip)).toList();
+  }
+
+  /**
+   * {@link #fallbackUpstreams} as servers (qits-2586): address literals only, without loopback,
+   * {@code vip}, blanks or repeats, in order. Null or absent is none, like {@link
+   * #resolverApplications()}.
+   */
+  List<String> fallbackUpstreamsBesides(String vip) {
+    List<String> configured =
+        fallbackUpstreams == null ? List.of() : fallbackUpstreams.orElse(List.of());
+    List<String> servers = new ArrayList<>();
+    for (String candidate : configured) {
+      if (candidate == null || candidate.isBlank()) {
+        continue;
+      }
+      dnsServer(candidate.strip())
+          .filter(server -> !loopback(server) && !server.equals(vip) && !servers.contains(server))
+          .ifPresent(servers::add);
+    }
+    return List.copyOf(servers);
   }
 
   /**
@@ -2665,11 +2731,14 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    *       cannot be read moves nothing — {@link #networkDrift}'s fail-safe.
    *   <li><b>Its labels</b>: the placement and routing labels every service carries (qits-2174),
    *       as {@code --label-add}.
-   *   <li><b>Its resolvers</b>, when it is {@code private} and the private edge
-   *       answered: {@code --dns-rm} each live one and {@code --dns-add} each wanted one, when they
-   *       differ. The CLI does not promise to keep the order, and that is accepted for this one
-   *       service — its own lookups of private names are its FQDN client calls — and checked after
-   *       the hand-off ({@link #checkSelfResolverOrder}).
+   *   <li><b>Its resolvers</b>, when it is {@code private} and the private edge answered: the
+   *       minimal delta (qits-2586) — {@code --dns-rm} each live server that is not wanted, {@code
+   *       --dns-add} each wanted server that is not live, and nothing when the two are the same SET.
+   *       The CLI applies the additions, then the removals — a removal wins, so a server named by
+   *       both would be lost — and then sorts the list by address. The order is therefore not
+   *       stateable here, and that is accepted for this one service — its own lookups of private
+   *       names are its FQDN client calls — and checked after the hand-off ({@link
+   *       #checkSelfResolverOrder}).
    * </ul>
    *
    * Package-private for the argv test.
@@ -2696,11 +2765,22 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     }
     if (resolvers.found()) {
       Optional<List<String>> liveDns = liveNameservers(name);
-      if (liveDns.isPresent() && !liveDns.get().equals(resolvers.servers())) {
-        delta.dnsRemovals(liveDns.get());
-        delta.dnsAdditions(resolvers.servers());
-        LOG.infof(
-            "%s resolves through the private edge: resolvers %s", name, resolvers.servers());
+      if (liveDns.isPresent()) {
+        List<String> wanted = resolvers.servers();
+        List<String> removals =
+            liveDns.get().stream().filter(server -> !wanted.contains(server)).distinct().toList();
+        List<String> additions =
+            wanted.stream().filter(server -> !liveDns.get().contains(server)).toList();
+        if (!removals.isEmpty()) {
+          delta.dnsRemovals(removals);
+        }
+        if (!additions.isEmpty()) {
+          delta.dnsAdditions(additions);
+        }
+        if (!removals.isEmpty() || !additions.isEmpty()) {
+          LOG.infof(
+              "%s resolves through the private edge: resolvers %s", name, resolvers.servers());
+        }
       }
     } else if (wantsPrivateEdgeResolvers(spec)) {
       LOG.warnf("%s gets no private-edge resolver: %s", name, resolvers.why());
@@ -2717,7 +2797,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
 
   /**
    * After the self-update is handed off, whether the spec swarm now holds asks the private edge
-   * first — the order {@code --dns-add} does not promise. A WARN when it does not; this process is
+   * first — the order an update cannot state, since the CLI sorts the list by address after the
+   * additions and removals. A WARN when it does not; this process is
    * being replaced, so there is nothing else to do about it here, and the next self-deploy asks
    * again.
    */

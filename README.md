@@ -491,7 +491,10 @@ in a table.
 `private` service is created with `--dns <vip> --dns <upstream>...`: the VIP on `qits-private` of the
 first application in `qits.deployments.swarm.private-edge.resolver-applications`
 (`qits-edge-overlay,qits-edge-private`) that has exactly one swarm service with one, then this
-process's own upstreams. All or nothing, as before.
+process's own upstreams — or, when its resolv.conf names none besides the VIP,
+`qits.deployments.swarm.private-edge.fallback-upstreams` (`QITS_DEPLOYMENTS_SWARM_PRIVATE_EDGE_FALLBACK_UPSTREAMS`,
+empty shipped). All or nothing, as before — except that a VIP with no upstream now REFUSES a private
+create or recreate, leaving the live service untouched (qits-2586).
 
 - **Fallback.** An application with *no* swarm service is skipped, so until `qits-edge-overlay` is
   deployed every private service keeps `qits-edge-private`'s VIP and nothing changes. **Any other
@@ -505,8 +508,9 @@ process's own upstreams. All or nothing, as before.
   since it started: before applying any resolver edge the deployer notes the resolver VIP, and when
   that edge converges with a different one it re-applies those services. A `qits-edge-private`
   recreate behind a live overlay edge moves nothing, since nobody asks it first. The deployer itself
-  is never recreated: its self-update `--dns-rm`s and `--dns-add`s the list and WARNs when the VIP is
-  not first afterwards. A retired overlay edge is not followed: services keep its dead VIP until their
+  is never recreated: its self-update `--dns-rm`s only the live servers not wanted and `--dns-add`s
+  only the wanted ones not live (docker applies the additions, then the removals, then sorts), and
+  WARNs when the VIP is not first afterwards. A retired overlay edge is not followed: services keep its dead VIP until their
   next deployment drifts them back onto `qits-edge-private`'s.
 - **Identity is a separate key.** `qits.deployments.swarm.private-edge.application`
   (`qits-edge-private`) still names the tunnel edge. Every application in either key is an edge:

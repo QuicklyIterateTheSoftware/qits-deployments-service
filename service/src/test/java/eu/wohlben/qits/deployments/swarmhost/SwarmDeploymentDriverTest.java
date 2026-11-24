@@ -137,6 +137,8 @@ class SwarmDeploymentDriverTest {
     // every lookup falls through to qits-edge-private exactly as before.
     driver.resolverApplications = Optional.of(List.of("qits-edge-overlay", "qits-edge-private"));
     driver.resolvConf = resolvConf("nameserver 127.0.0.11\n").toString();
+    // The shipped fallback (qits-2586): empty, which SmallRye reads as absent.
+    driver.fallbackUpstreams = Optional.empty();
     cli = new ScriptedCli();
     driver.scriptCli(cli);
     return driver;
@@ -5033,6 +5035,158 @@ class SwarmDeploymentDriverTest {
 
     assertEquals(List.of("docker", "service", "rm", "dev-qits-gateway"), cli.matching("service rm"));
     assertTrue(cli.matching("--network-add").isEmpty(), "only the deployer moves in place");
+  }
+
+  // --- qits-2586: a minimal resolver delta, a fallback upstream, no private create without one ---
+
+  @Test
+  void aSelfUpdateRemovesOnlyTheUnwantedResolverAndAddsOnlyTheMissingOne() {
+    // docker applies --dns-add, then --dns-rm (a removal wins), then sorts: a server named by both
+    // lists is lost. Live [old VIP, upstream] to wanted [new VIP, upstream] once lost the upstream
+    // and left the deployer resolving through the VIP alone.
+    SwarmDeploymentDriver driver = selfOn(driver(), PRIVATE_NET_ID + "\n");
+    driver.resolvConf =
+        resolvConf("nameserver 127.0.0.11\n# ExtServers: [10.231.0.5 192.168.188.1]\n").toString();
+    scriptPrivateEdge("10.231.0.5");
+    cli.script(
+        SwarmDeploymentDriver.SPEC_DNS_FORMAT,
+        result(0, "{\"Nameservers\":[\"10.231.0.8\",\"192.168.188.1\"]}\n"));
+
+    DeploymentDriver.ApplyResult applied = driver.apply(exposed(DeploymentDriver.Exposure.PRIVATE));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.HANDED_OFF, applied.outcome());
+    List<String> update = cli.matching("service update");
+    assertEquals(List.of("10.231.0.8"), dnsArguments(update, "--dns-rm"), update.toString());
+    assertEquals(List.of("10.231.0.5"), dnsArguments(update, "--dns-add"), update.toString());
+  }
+
+  @Test
+  void aSelfUpdateWhoseResolversAreTheSameSetInAnotherOrderStatesNone() {
+    // The CLI sorts the list anyway, so a delta could not restore the order; the order is
+    // checkSelfResolverOrder's to report.
+    SwarmDeploymentDriver driver = selfOn(driver(), PRIVATE_NET_ID + "\n");
+    driver.resolvConf =
+        resolvConf("nameserver 127.0.0.11\n# ExtServers: [192.168.188.1]\n").toString();
+    scriptPrivateEdge("10.231.0.5");
+    cli.script(
+        SwarmDeploymentDriver.SPEC_DNS_FORMAT,
+        result(0, "{\"Nameservers\":[\"192.168.188.1\",\"10.231.0.5\"]}\n"));
+
+    driver.apply(exposed(DeploymentDriver.Exposure.PRIVATE));
+
+    List<String> update = cli.matching("service update");
+    assertFalse(update.isEmpty(), cli.calls.toString());
+    assertEquals(List.of(), dnsArguments(update, "--dns-rm"));
+    assertEquals(List.of(), dnsArguments(update, "--dns-add"));
+  }
+
+  @Test
+  void aResolvConfNamingOnlyTheVipFallsBackToTheConfiguredUpstreams() {
+    SwarmDeploymentDriver driver = driver();
+    driver.resolvConf =
+        resolvConf("nameserver 127.0.0.11\n# ExtServers: [10.231.0.5]\n").toString();
+    driver.fallbackUpstreams =
+        Optional.of(
+            List.of(" 192.168.188.1 ", "127.0.0.1", "10.231.0.5", "", "192.168.188.1", "dns.x"));
+    scriptPrivateEdge("10.231.0.5");
+    DeploymentDriver.ServiceSpec spec = exposed(DeploymentDriver.Exposure.PRIVATE);
+
+    List<String> argv = driver.buildCreateArgv(spec, "dev-qits-gateway", driver.collapse(spec));
+
+    assertEquals(
+        List.of("10.231.0.5", "192.168.188.1"),
+        dnsArguments(argv, "--dns"),
+        "the VIP, then the fallback without loopback, the VIP, blanks, repeats or names: " + argv);
+
+    // ...and the deployer's own update adds the fallback alone to a VIP-only live list.
+    SwarmDeploymentDriver self = selfOn(driver(), PRIVATE_NET_ID + "\n");
+    self.resolvConf = driver.resolvConf;
+    self.fallbackUpstreams = Optional.of(List.of("192.168.188.1"));
+    scriptPrivateEdge("10.231.0.5");
+    cli.script(
+        SwarmDeploymentDriver.SPEC_DNS_FORMAT, result(0, "{\"Nameservers\":[\"10.231.0.5\"]}\n"));
+
+    self.apply(spec);
+
+    List<String> update = cli.matching("service update");
+    assertEquals(List.of("192.168.188.1"), dnsArguments(update, "--dns-add"), update.toString());
+    assertEquals(List.of(), dnsArguments(update, "--dns-rm"), update.toString());
+  }
+
+  @Test
+  void theFallbackIsIgnoredWhenTheResolvConfNamesAnUpstream() {
+    SwarmDeploymentDriver driver = driverWithUpstreams();
+    driver.fallbackUpstreams = Optional.of(List.of("192.168.188.1"));
+    scriptPrivateEdge("10.231.0.5");
+    DeploymentDriver.ServiceSpec spec = exposed(DeploymentDriver.Exposure.PRIVATE);
+
+    List<String> argv = driver.buildCreateArgv(spec, "dev-qits-gateway", driver.collapse(spec));
+
+    assertEquals(List.of("10.231.0.5", "9.9.9.9", "1.1.1.1"), dnsArguments(argv, "--dns"));
+  }
+
+  @Test
+  void aPrivateRecreateWithTheEdgeAndNoUpstreamIsRefusedAndTheLiveServiceKept() {
+    // Network drift would recreate it, and the create would carry no --dns: refused before the
+    // service is removed, so what works keeps working.
+    SwarmDeploymentDriver driver = driver();
+    scriptLiveNetworks("flatnetid0000000000000001\n");
+    scriptPrivateEdge("10.231.0.5");
+
+    DeploymentDriver.ApplyResult applied = driver.apply(exposed(DeploymentDriver.Exposure.PRIVATE));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.REFUSED, applied.outcome());
+    assertTrue(
+        applied.detail().contains("qits.deployments.swarm.private-edge.fallback-upstreams"),
+        applied.detail());
+    assertEquals(0, cli.count("service rm"), cli.calls.toString());
+    assertEquals(0, cli.count("service create"), cli.calls.toString());
+
+    // A first create in the same state is refused the same way.
+    SwarmDeploymentDriver fresh = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(1, "no such service"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    scriptPrivateEdge("10.231.0.5");
+    assertEquals(
+        DeploymentDriver.ApplyOutcome.REFUSED,
+        fresh.apply(exposed(DeploymentDriver.Exposure.PRIVATE)).outcome());
+    assertEquals(0, cli.count("service create"), cli.calls.toString());
+  }
+
+  @Test
+  void aMissingEdgeStillCreatesAPrivateServiceWithNoResolver() {
+    // The bootstrap: no edge yet, so no VIP — today's WARN and a create with no --dns.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(1, "no such service"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    scriptPrivateEdge("10.231.0.5");
+    cli.script(
+        "service ls -q --filter label=qits.platform.deployments.app-name=qits-edge-private",
+        result(0, ""));
+
+    DeploymentDriver.ApplyResult applied = driver.apply(exposed(DeploymentDriver.Exposure.PRIVATE));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, applied.outcome());
+    List<String> create = cli.matching("service create");
+    assertFalse(create.isEmpty(), cli.calls.toString());
+    assertEquals(List.of(), dnsArguments(create, "--dns"));
+  }
+
+  @Test
+  void aSelfUpdateWithTheEdgeAndNoUpstreamIsNotRefusedAndStatesNoResolvers() {
+    // The deployer must still be able to ship its own fix.
+    SwarmDeploymentDriver driver = selfOn(driver(), PRIVATE_NET_ID + "\n");
+    scriptPrivateEdge("10.231.0.5");
+    cli.script(
+        SwarmDeploymentDriver.SPEC_DNS_FORMAT, result(0, "{\"Nameservers\":[\"10.231.0.5\"]}\n"));
+
+    DeploymentDriver.ApplyResult applied = driver.apply(exposed(DeploymentDriver.Exposure.PRIVATE));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.HANDED_OFF, applied.outcome());
+    List<String> update = cli.matching("service update");
+    assertFalse(update.isEmpty(), cli.calls.toString());
+    assertEquals(List.of(), dnsArguments(update, "--dns-rm"));
+    assertEquals(List.of(), dnsArguments(update, "--dns-add"));
   }
 
   // --- placement by label (qits-2174) ------------------------------------------------------------
