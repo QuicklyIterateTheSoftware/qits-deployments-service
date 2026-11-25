@@ -41,6 +41,12 @@ import org.jboss.logging.Logger;
  *       (a version released before this, a variant, a release still being read) grants nothing.
  *   <li><b>A refused declaration grants nothing and is listed</b> under {@code refused}, once per
  *       (application, version) however many tiers run it.
+ *   <li><b>The projects' routes join them</b> (qits-2659): what {@link ProjectEgressGrants} last
+ *       read from each project's wrapper, as {@code principal: "project:<projectId>"} with no
+ *       application and no environment, at the wrapper's {@code main} commit. A refused project
+ *       file is listed under {@code refused} with its principal.
+ *   <li><b>Every route and refusal names its principal</b>: {@code application:<app>} or {@code
+ *       project:<projectId>}. Routes sort by environment (none first), principal and name.
  * </ul>
  *
  * <p><b>The version moves only when the content does</b>, {@link EdgeRouteTables#nextVersion}'s
@@ -60,6 +66,8 @@ public class EgressGrantTables {
   @Inject PdDeploymentRepository deployments;
 
   @Inject EnvironmentService environments;
+
+  @Inject ProjectEgressGrants projects;
 
   /** What the table holds, without its version: what the content hash is over. */
   public record Content(
@@ -82,7 +90,8 @@ public class EgressGrantTables {
             () -> {
               List<PdDeployment> active = deployments.listByStatus(PdDeploymentStatus.ACTIVE);
               Map<String, PdEgressDeclaration> declarations = declarationsOf(active);
-              Content content = contentOf(active, declarations, environmentNames());
+              Content content =
+                  contentOf(active, declarations, environmentNames(), projects.current());
               return store(content, builtAt);
             });
   }
@@ -156,6 +165,18 @@ public class EgressGrantTables {
       List<PdDeployment> active,
       Map<String, PdEgressDeclaration> declarations,
       Map<String, String> environmentNames) {
+    return contentOf(active, declarations, environmentNames, List.of());
+  }
+
+  /**
+   * {@link #contentOf(List, Map, Map)} with the projects' grants (qits-2659) beside the
+   * applications'.
+   */
+  public static Content contentOf(
+      List<PdDeployment> active,
+      Map<String, PdEgressDeclaration> declarations,
+      Map<String, String> environmentNames,
+      java.util.Collection<ProjectEgressGrants.Grants> projectGrants) {
     Map<String, PdDeployment> newestPerPlace = new LinkedHashMap<>();
     for (PdDeployment row : active) {
       String place = row.environmentId + "\n" + row.applicationName;
@@ -179,7 +200,10 @@ public class EgressGrantTables {
         refused.putIfAbsent(
             declaration.id,
             new EgressGrantTableDto.Refused(
-                row.applicationName, row.version, declaration.refused));
+                EgressGrantTableDto.applicationPrincipal(row.applicationName),
+                row.applicationName,
+                row.version,
+                declaration.refused));
         continue;
       }
       String environment =
@@ -187,6 +211,7 @@ public class EgressGrantTables {
       for (EgressDeclarationParser.Route route : EgressDeclarations.routesOf(declaration)) {
         routes.add(
             new EgressGrantTableDto.Route(
+                EgressGrantTableDto.applicationPrincipal(row.applicationName),
                 row.applicationName,
                 environment,
                 row.version,
@@ -197,16 +222,37 @@ public class EgressGrantTables {
                 route.methods()));
       }
     }
-    routes.sort(
-        Comparator.comparing(
-                EgressGrantTableDto.Route::environment,
-                Comparator.nullsFirst(Comparator.<String>naturalOrder()))
-            .thenComparing(EgressGrantTableDto.Route::application)
-            .thenComparing(EgressGrantTableDto.Route::name));
     List<EgressGrantTableDto.Refused> refusals = new ArrayList<>(refused.values());
+    for (ProjectEgressGrants.Grants project : projectGrants) {
+      String principal = EgressGrantTableDto.projectPrincipal(project.projectId());
+      if (project.refused() != null) {
+        refusals.add(
+            new EgressGrantTableDto.Refused(
+                principal, null, project.deployedVersion(), project.refused()));
+        continue;
+      }
+      for (EgressDeclarationParser.Route route : project.routes()) {
+        routes.add(
+            new EgressGrantTableDto.Route(
+                principal,
+                null,
+                null,
+                project.deployedVersion(),
+                route.name(),
+                route.target(),
+                route.secret(),
+                route.inject(),
+                route.methods()));
+      }
+    }
+    Comparator<String> nullsFirst = Comparator.nullsFirst(Comparator.<String>naturalOrder());
+    routes.sort(
+        Comparator.comparing(EgressGrantTableDto.Route::environment, nullsFirst)
+            .thenComparing(EgressGrantTableDto.Route::principal)
+            .thenComparing(EgressGrantTableDto.Route::name));
     refusals.sort(
-        Comparator.comparing(EgressGrantTableDto.Refused::application)
-            .thenComparing(EgressGrantTableDto.Refused::deployedVersion));
+        Comparator.comparing(EgressGrantTableDto.Refused::principal)
+            .thenComparing(EgressGrantTableDto.Refused::deployedVersion, nullsFirst));
     return new Content(List.copyOf(routes), List.copyOf(refusals));
   }
 

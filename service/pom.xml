@@ -296,6 +296,12 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- qits-projects' golden masters, for the project and wrapper reads (qits-2659). -->
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-projects-golden-masters</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <!-- The consumer pacts ConsumerPactVerificationTest verifies: each jar carries one
                  `pacts/<consumer>_qits-deployments-service.json`, read off the classpath. The
                  pinned jar IS the source of the pact; nothing is copied into this tree. -->

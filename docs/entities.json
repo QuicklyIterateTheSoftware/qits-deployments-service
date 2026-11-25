@@ -262,13 +262,13 @@
           "type" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto$Refused",
           "kind" : "mapper",
           "via" : null,
-          "site" : "EgressGrantTables.contentOf(List, Map, Map)"
+          "site" : "EgressGrantTables.contentOf(List, Map, Map, Collection)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto$Route",
           "kind" : "mapper",
           "via" : null,
-          "site" : "EgressGrantTables.contentOf(List, Map, Map)"
+          "site" : "EgressGrantTables.contentOf(List, Map, Map, Collection)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
@@ -610,13 +610,13 @@
           "type" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto$Refused",
           "kind" : "mapper",
           "via" : null,
-          "site" : "EgressGrantTables.contentOf(List, Map, Map)"
+          "site" : "EgressGrantTables.contentOf(List, Map, Map, Collection)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto$Route",
           "kind" : "mapper",
           "via" : null,
-          "site" : "EgressGrantTables.contentOf(List, Map, Map)"
+          "site" : "EgressGrantTables.contentOf(List, Map, Map, Collection)"
         }
       ],
       "operations" : [

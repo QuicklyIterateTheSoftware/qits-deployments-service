@@ -97,6 +97,31 @@ public interface SpecSource {
   Optional<String> readText(RepositoryRef repository, String rev, String path);
 
   /**
+   * A file's text and the commit the rev resolved to (qits-2659): the project grants read a
+   * wrapper's {@code egress.yml} at {@code refs/heads/main}, and the commit is the version its
+   * routes are granted at.
+   *
+   * @param commitSha the git host's {@code Git-Commit-Sha}; null when the answer carried none
+   */
+  record TextRead(String text, String commitSha) {}
+
+  /**
+   * {@link #readText}, with the commit the rev resolved to. The default knows no commit; the git
+   * host adapter answers the one its blob read carries.
+   *
+   * @return empty when the repository carries no such file at that rev (the git host's 404)
+   * @throws SpecException as {@link #readText}
+   */
+  default Optional<TextRead> readTextAt(RepositoryRef repository, String rev, String path) {
+    return readText(repository, rev, path).map(text -> new TextRead(text, null));
+  }
+
+  /** The rev of a branch's tip, fully qualified as {@link #tagRev} qualifies a tag. */
+  static String branchRev(String branch) {
+    return "refs/heads/" + branch;
+  }
+
+  /**
    * A spec, and the commit the rev it was read at resolved to.
    *
    * <p><b>The commit comes back because the read already knows it and nothing else does.</b> A

@@ -21,7 +21,7 @@ import java.util.regex.Pattern;
  *   - name: hetzner                       # [a-z][a-z0-9-]{0,62}; the first path segment at the gateway
  *     target: https://api.hetzner.cloud   # https://&lt;host&gt;[:port][/base path], or platform:&lt;host label&gt;
  *     secret: HETZNER_DNS                 # [A-Z][A-Z0-9_]{0,63}; omitted for a platform target
- *     inject: bearer                      # bearer | header:&lt;Header-Name&gt;; omitted for a platform target
+ *     inject: bearer                      # bearer | header:&lt;Header-Name&gt; | cookie:&lt;name&gt;; omitted for a platform target
  *     methods: [GET, POST, PUT, DELETE]   # HTTP methods; CONNECT allowed too
  * </pre>
  *
@@ -47,7 +47,20 @@ import java.util.regex.Pattern;
  *       the token-exchange bearer. An {@code https://} route needs both.
  *   <li>{@code methods} is a non-empty list of upper-case HTTP methods out of {@link #METHODS}, none
  *       twice; it is answered sorted.
+ *   <li>{@code inject} is {@code bearer}, {@code header:<Header-Name>} or {@code cookie:<name>}
+ *       (qits-2659: sends {@code Cookie: <name>=<secret>}, the name an RFC 6265 token of at most 64
+ *       characters).
  * </ul>
+ *
+ * <p><b>Two owners, one grammar</b> (qits-2659). An APPLICATION's file ({@link #parse}) may not
+ * name a secret starting {@value #PROJECT_SECRET_PREFIX}: that namespace is the projects', and
+ * without the refusal any application's file could grant itself a project's credential. A
+ * PROJECT's file — its wrapper's {@code .config/qits/egress.yml} at {@code main} — is read by
+ * {@link #parseProject}: every {@code secret: X} is answered RESOLVED, as {@code
+ * PROJECT_<SLUG>_X} (the slug upper-cased, {@code -} → {@code _}), so the table names the settings
+ * key qits-egress reads ({@code QITS_EGRESS_SECRET_PROJECT_<SLUG>_X}) and qits-egress needs no
+ * slug. A project file grants no {@code platform:} target: an agent already holds its own bearer
+ * for the platform, and the token-exchange answer is an application's.
  */
 public final class EgressDeclarationParser {
 
@@ -68,10 +81,19 @@ public final class EgressDeclarationParser {
   /** The prefix of a named-header injection, {@code header:<Header-Name>}. */
   public static final String HEADER_PREFIX = "header:";
 
+  /** The prefix of a cookie injection, {@code cookie:<name>}: {@code Cookie: <name>=<secret>}. */
+  public static final String COOKIE_PREFIX = "cookie:";
+
+  /** The secret namespace of the projects' routes; an application's file may not name it. */
+  public static final String PROJECT_SECRET_PREFIX = "PROJECT_";
+
   private static final Pattern NAME = Pattern.compile("[a-z][a-z0-9-]{0,62}");
   private static final Pattern SECRET = Pattern.compile("[A-Z][A-Z0-9_]{0,63}");
   private static final Pattern HEADER = Pattern.compile("[A-Za-z][A-Za-z0-9-]{0,63}");
   private static final Pattern HOST_LABEL = Pattern.compile("[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?");
+  /** An RFC 6265 cookie name: an RFC 7230 token, at most 64 characters. */
+  private static final Pattern COOKIE = Pattern.compile("[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}");
+  private static final Pattern PROJECT_SLUG = Pattern.compile("[a-z0-9][a-z0-9-]{0,62}");
 
   private static final Set<String> TOP_KEYS = Set.of("version", "routes");
   private static final Set<String> ROUTE_KEYS =
@@ -81,7 +103,8 @@ public final class EgressDeclarationParser {
    * One route as the file grants it.
    *
    * @param secret the settings key whose VALUE the gateway injects; null for a platform target
-   * @param inject {@code bearer} or {@code header:<Header-Name>}; null for a platform target
+   * @param inject {@code bearer}, {@code header:<Header-Name>} or {@code cookie:<name>}; null for
+   *     a platform target
    * @param methods sorted, never empty
    */
   public record Route(
@@ -95,12 +118,47 @@ public final class EgressDeclarationParser {
   private EgressDeclarationParser() {}
 
   /**
+   * An APPLICATION's file: a secret in the {@value #PROJECT_SECRET_PREFIX} namespace is refused.
+   *
    * @param source how the file is named back to a reader, in every refusal
    * @return the routes in file order — empty for {@code routes: []}, an absent {@code routes} or an
    *     empty file is refused for its missing {@code version}
    * @throws SpecException naming the file and, where there is one, the line
    */
   public static List<Route> parse(String yaml, String source) {
+    return parse(yaml, source, null);
+  }
+
+  /**
+   * A PROJECT's file (qits-2659), its wrapper's {@code egress.yml}: the same grammar, no {@code
+   * platform:} target, and every secret answered resolved as {@link #projectSecret}.
+   *
+   * @param projectSlug the project's slug, {@code [a-z0-9][a-z0-9-]{0,62}}
+   * @throws SpecException naming the file and, where there is one, the line
+   */
+  public static List<Route> parseProject(String yaml, String source, String projectSlug) {
+    if (projectSlug == null || !PROJECT_SLUG.matcher(projectSlug).matches()) {
+      throw new SpecException(
+          source + ": the project's slug cannot name a secret namespace: " + projectSlug);
+    }
+    return parse(yaml, source, projectSlug);
+  }
+
+  /**
+   * The settings name a project route's {@code secret: <name>} resolves to: {@code
+   * PROJECT_<SLUG>_<name>}, the slug upper-cased and {@code -} → {@code _}. For project {@code qits}
+   * and {@code GITHUB_READ}: {@code PROJECT_QITS_GITHUB_READ}, read by qits-egress as {@code
+   * QITS_EGRESS_SECRET_PROJECT_QITS_GITHUB_READ}.
+   */
+  public static String projectSecret(String projectSlug, String secret) {
+    return PROJECT_SECRET_PREFIX
+        + projectSlug.toUpperCase(Locale.ROOT).replace('-', '_')
+        + "_"
+        + secret;
+  }
+
+  /** @param projectSlug null for an application's file */
+  private static List<Route> parse(String yaml, String source, String projectSlug) {
     String version = null;
     boolean routesSeen = false;
     boolean routesClosed = false;
@@ -122,7 +180,7 @@ public final class EgressDeclarationParser {
 
       if (indent == 0) {
         if (current != null) {
-          routes.add(current.build(source, names));
+          routes.add(current.build(source, names, projectSlug));
           current = null;
         }
         if (routesSeen && !routesClosed) {
@@ -175,7 +233,7 @@ public final class EgressDeclarationParser {
           throw error(source, lineNumber, "a route entry must line up with the first one");
         }
         if (current != null) {
-          routes.add(current.build(source, names));
+          routes.add(current.build(source, names, projectSlug));
         }
         String rest = content.substring(1);
         String key = rest.strip();
@@ -195,7 +253,7 @@ public final class EgressDeclarationParser {
       current.key(keyValue(content, source, lineNumber), source, lineNumber);
     }
     if (current != null) {
-      routes.add(current.build(source, names));
+      routes.add(current.build(source, names, projectSlug));
     }
     if (version == null) {
       throw new SpecException(source + ": `version: 1` is required");
@@ -291,7 +349,7 @@ public final class EgressDeclarationParser {
       methods.add(method);
     }
 
-    Route build(String source, Set<String> names) {
+    Route build(String source, Set<String> names, String projectSlug) {
       String where = source + ": the route at line " + line;
       if (name == null || name.isEmpty()) {
         throw new SpecException(where + " has no `name`");
@@ -311,6 +369,12 @@ public final class EgressDeclarationParser {
         throw new SpecException(where + " grants no `methods` — list at least one");
       }
       if (target.startsWith(PLATFORM_PREFIX)) {
+        if (projectSlug != null) {
+          throw new SpecException(
+              where
+                  + ": a project's file grants no `platform:` target — an agent reaches the"
+                  + " platform on its own bearer");
+        }
         String label = target.substring(PLATFORM_PREFIX.length());
         if (!HOST_LABEL.matcher(label).matches()) {
           throw new SpecException(
@@ -334,12 +398,26 @@ public final class EgressDeclarationParser {
         }
         if (!inject.equals(BEARER)
             && !(inject.startsWith(HEADER_PREFIX)
-                && HEADER.matcher(inject.substring(HEADER_PREFIX.length())).matches())) {
+                && HEADER.matcher(inject.substring(HEADER_PREFIX.length())).matches())
+            && !(inject.startsWith(COOKIE_PREFIX)
+                && COOKIE.matcher(inject.substring(COOKIE_PREFIX.length())).matches())) {
           throw new SpecException(
-              where + ": `inject` is `bearer` or `header:<Header-Name>`, got: " + inject);
+              where
+                  + ": `inject` is `bearer`, `header:<Header-Name>` or `cookie:<name>`, got: "
+                  + inject);
+        }
+        if (projectSlug == null && secret.startsWith(PROJECT_SECRET_PREFIX)) {
+          throw new SpecException(
+              where
+                  + ": `secret` may not start with `"
+                  + PROJECT_SECRET_PREFIX
+                  + "` — that namespace is the projects' (their wrapper's egress.yml), got: "
+                  + secret);
         }
       }
-      return new Route(name, target, secret, inject, List.copyOf(new TreeSet<>(methods)));
+      String granted =
+          projectSlug == null || secret == null ? secret : projectSecret(projectSlug, secret);
+      return new Route(name, target, granted, inject, List.copyOf(new TreeSet<>(methods)));
     }
   }
 

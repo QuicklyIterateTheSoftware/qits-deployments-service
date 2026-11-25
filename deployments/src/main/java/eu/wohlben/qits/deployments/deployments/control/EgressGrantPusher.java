@@ -36,6 +36,8 @@ public class EgressGrantPusher {
 
   @Inject EgressSecretHandOvers handOvers;
 
+  @Inject ProjectEgressGrants projects;
+
   /** Whether the last read or push failed: an outage already WARNed about. */
   private final AtomicBoolean failing = new AtomicBoolean();
 
@@ -45,11 +47,22 @@ public class EgressGrantPusher {
   }
 
   /**
-   * Build the table in force, read what qits-egress holds, and push when the versions differ; then
-   * run the secret hand-overs the table triggers ({@link EgressSecretHandOvers}), whatever the push
-   * answered. Whether qits-egress now holds this table (or a newer one). Never throws.
+   * Re-read the projects' wrapper files when the poll interval has passed ({@link
+   * ProjectEgressGrants#refreshIfDue}, qits-2659), build the table in force, read what qits-egress
+   * holds, and push when the versions differ; then run the secret hand-overs the table triggers
+   * ({@link EgressSecretHandOvers}), whatever the push answered. Whether qits-egress now holds this
+   * table (or a newer one). Never throws.
+   *
+   * <p><b>No push before the project listing has answered once</b>: a fresh process that could not
+   * reach qits-projects would otherwise push a table without any project's routes, and revoke every
+   * agent's grants on an outage. The hand-overs still run.
    */
   public boolean reconcile() {
+    try {
+      projects.refreshIfDue();
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "Could not re-read the projects' egress grants; the next pass tries again");
+    }
     EgressGrantTableDto table;
     String body;
     try {
@@ -59,7 +72,15 @@ public class EgressGrantPusher {
       LOG.warnf(e, "Could not build the egress grant table; the next pass tries again");
       return false;
     }
-    boolean held = push(table, body);
+    boolean held;
+    if (projects.answered()) {
+      held = push(table, body);
+    } else {
+      held = false;
+      LOG.debugf(
+          "egress grant table %d not pushed: the projects' grants were never read yet",
+          table.version());
+    }
     try {
       handOvers.apply(table);
     } catch (RuntimeException e) {

@@ -180,6 +180,16 @@ public class GitHostSpecSource implements SpecSource {
    */
   @Override
   public Optional<String> readText(RepositoryRef repository, String rev, String path) {
+    return readTextAt(repository, rev, path).map(TextRead::text);
+  }
+
+  /**
+   * {@link #readText} with the commit the rev resolved to, from the same answer's {@code
+   * Git-Commit-Sha} — the project egress grants' read of a wrapper's file at {@code
+   * refs/heads/main} (qits-2659), whose commit is the version the routes are granted at.
+   */
+  @Override
+  public Optional<TextRead> readTextAt(RepositoryRef repository, String rev, String path) {
     String url = blobUrl(address(repository), rev, path);
     HttpResponse<String> response = get(url);
     if (response.statusCode() == 404) {
@@ -188,7 +198,8 @@ public class GitHostSpecSource implements SpecSource {
     if (response.statusCode() != 200) {
       throw statusFailure(url, response.statusCode());
     }
-    return Optional.of(response.body() == null ? "" : response.body());
+    return Optional.of(
+        new TextRead(response.body() == null ? "" : response.body(), commitShaOf(response)));
   }
 
   /**

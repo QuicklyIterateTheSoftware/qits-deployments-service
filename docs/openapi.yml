@@ -633,6 +633,8 @@ components:
     Refused:
       type: object
       properties:
+        principal:
+          type: string
         application:
           type: string
         deployedVersion:
@@ -676,6 +678,8 @@ components:
     Route:
       type: object
       properties:
+        principal:
+          type: string
         application:
           type: string
         environment:
