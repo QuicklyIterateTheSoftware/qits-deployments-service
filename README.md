@@ -595,7 +595,7 @@ Two more things such a move does once, neither of them an error:
 | `GET /pins` | qits-platform-artifacts' OCI garbage collector, fail-closed |
 | `POST /events/build-succeeded` | qits-ci, fire-and-forget; the manual and bootstrap door |
 | `GET /split-check` | a person or an agent: the last split check (see *Split check*) |
-| `GET /egress-grants` | qits-egress (`qits:system`), a person or an agent: the egress grant table (see *Egress grants*) |
+| `GET /egress-grants` | a person, an agent or a machine client (`qits:system`): the egress grant table, which is pushed to qits-egress (see *Egress grants*) |
 
 All under `/deployments/api`. The client is served at `/` — this service has a host of its own,
 `deployments.<env>.<domain>`, and the segment is the wire surface alone. Health is at
@@ -665,6 +665,23 @@ in force — the routes of each application's `ACTIVE` deployment:
 
 The version follows the edge route tables' rule — it moves only when the content does, to
 `max(stored + 1, epoch millis now)` — and is kept in `pd_egress_grant_table`.
+
+**The table is PUSHED to qits-egress, never pulled by it.** qits-egress is a public service (on
+qits-net, beside its first caller, qits-edge) and this one is private, and a public service cannot
+reach a private one. So this service carries the table across, the way it carries the route tables
+to the edges: `PUT https://egress.qits.<domain>/egress/api/grant-table` with exactly the body above,
+presenting its own `qits` client bearer — the one caller that door admits — and `GET` of the same
+path for the version qits-egress holds (`404` when it holds none). The address is
+`qits.deployments.egress.url` (`QITS_PLATFORM_DEPLOYMENTS_EGRESS_URL`, default
+`https://egress.qits.${QITS_DOMAIN}/egress/api`; timeout `QITS_PLATFORM_DEPLOYMENTS_EGRESS_TIMEOUT_SECONDS`,
+5).
+
+It is reconciled at boot, on every observation pass and right after a deployment reaches `ACTIVE`
+(a cutover or a rollback's restore): build the table in force, read the version held, push when they
+differ. A `409` means qits-egress holds a newer version — nothing to do. Any failure (unreachable, a
+`5xx`, a `401`/`403`) is one WARN per outage naming the status, and the next pass retries. A push
+never fails a deployment. `GET /deployments/api/egress-grants` stays the source of truth and the
+CLI's door.
 
 ## Addressing: every peer through the edge, one exception
 

@@ -14,8 +14,9 @@ platform's postgres), `FakeIdpClientProvisioner` behind `IdpClientProvisioner` (
 service-client API), `FakeArtifactPurge` behind `ArtifactPurge` (qits-artifacts' purge door,
 qits-1941) and `FakeDatabaseContainers` behind `DatabaseContainers` (the database move's and the
 private postgres' one-shot containers, qits-2175), `FakeEdgeRouteClient` behind `EdgeRouteClient`
-(the three edges' route-table door, qits-2174, qits-2304) and `FakePublicEdgeProbe` behind `PublicEdgeProbe` (the
-split check's TLS probe of the public edge, qits-2215). **Eight fakes** — the ancestor's stub HTTP server for the topology dissolved
+(the three edges' route-table door, qits-2174, qits-2304), `FakePublicEdgeProbe` behind `PublicEdgeProbe` (the
+split check's TLS probe of the public edge, qits-2215) and `FakeEgressGrantClient` behind
+`EgressGrantClient` (qits-egress's grant-table door, qits-2523). **Nine fakes** — the ancestor's stub HTTP server for the topology dissolved
 when the topology became a repository query, and `FakeDeclarationSeed` went with qits-configuration
 (qits-1393).
 
@@ -1861,7 +1862,7 @@ refuses unknown keys, and a spec is read at the released tag.
 
 ### `.config/qits/egress.yml` and the egress grant table (qits-2523)
 
-README's *Egress grants* has the file and the door's shape. Seven things about it, each easy to undo
+README's *Egress grants* has the file and the door's shape. Eight things about it, each easy to undo
 by accident:
 
 - **It is a second FILE, never a key of `deployments.yml`.** `SpecSource.readText(ref, rev,
@@ -1898,6 +1899,24 @@ by accident:
   version is that instant's millis and no other suite's rows can add a route.
   `PdEgressGrantApiTest` holds the shape, the roles, the version rule and a malformed file that
   still deploys; `EgressDeclarationParserTest` holds every rule.
+- **The table is PUSHED to qits-egress; qits-egress never pulls it.** qits-egress is public (on
+  qits-net, so qits-edge can call it) and this service is private, and a public service cannot reach
+  a private one — `exposure: both` is refused (qits-2174), and the dossier's original pull design was
+  corrected on the thread on 2026-11-25 for exactly that. So the shape is the edge route tables':
+  `EgressGrantClient` the seam, `egresshost/HttpEgressGrantClient` the copy of
+  `HttpEdgeRouteClient` (`PUT`/`GET <qits.deployments.egress.url>/grant-table`, the `GitHostBearer`
+  `qits` client bearer, `Contracts.EGRESS` its pact rows against `qits-egress-golden-masters`),
+  `EgressGrantPusher` the reconcile. The reconcile runs on the deploy worker at boot, on every
+  observation pass and after every `ACTIVE` (the cutover's tail and the rollback restore, beside
+  `edgeRoutes.afterDeploy`): `EgressGrantTables.current()`, `heldVersion()` (`404` → none), push
+  when the two differ. The body is `EgressGrantTables.json(table)` — the stored and served bytes, so
+  qits-egress holds exactly what `GET /deployments/api/egress-grants` answers. `409` (it holds a
+  newer one) is DEBUG and nothing to do; every failure is one WARN per outage, the next pass retries,
+  and nothing throws out of the tick or fails a deployment. Because a cutover now builds the table,
+  a test that pins a version with `current(instant)` must clear the table AFTER the deployment it
+  makes, or assert the version moved rather than its value (`theVersionMovesOnlyWhenTheContentDoes`).
+  The story profile points the URL at the same closed loopback port as the edges, so no story
+  diagram gained an edge.
 
 ### `replicas:` — more than one task, for an application that can run twice (qits-2523)
 
