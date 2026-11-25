@@ -34,6 +34,8 @@ public class EgressGrantPusher {
 
   @Inject EgressGrantClient client;
 
+  @Inject EgressSecretHandOvers handOvers;
+
   /** Whether the last read or push failed: an outage already WARNed about. */
   private final AtomicBoolean failing = new AtomicBoolean();
 
@@ -43,8 +45,9 @@ public class EgressGrantPusher {
   }
 
   /**
-   * Build the table in force, read what qits-egress holds, and push when the versions differ.
-   * Whether qits-egress now holds this table (or a newer one). Never throws.
+   * Build the table in force, read what qits-egress holds, and push when the versions differ; then
+   * run the secret hand-overs the table triggers ({@link EgressSecretHandOvers}), whatever the push
+   * answered. Whether qits-egress now holds this table (or a newer one). Never throws.
    */
   public boolean reconcile() {
     EgressGrantTableDto table;
@@ -56,6 +59,16 @@ public class EgressGrantPusher {
       LOG.warnf(e, "Could not build the egress grant table; the next pass tries again");
       return false;
     }
+    boolean held = push(table, body);
+    try {
+      handOvers.apply(table);
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "The egress secret hand-overs failed; the next pass tries again");
+    }
+    return held;
+  }
+
+  private boolean push(EgressGrantTableDto table, String body) {
     OptionalLong held;
     try {
       held = client.heldVersion();

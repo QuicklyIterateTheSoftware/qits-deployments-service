@@ -2443,6 +2443,25 @@ public class DatabaseMoves {
   }
 
   /**
+   * Queue a redeploy of the version serving {@code application} in {@code tier} — found the way
+   * the move door finds it ({@link #live}) — through {@link DeployService#redeploy}, the manual
+   * door's semantics, behind whatever the worker already holds. The egress secret hand-over's
+   * second step ({@link EgressSecretHandOvers}, qits-2523): the next update {@code --env-rm}s a
+   * setting the store no longer holds. A place with nothing serving is a {@link ConflictException}.
+   *
+   * @return the version queued
+   */
+  String queueRedeployOfLive(String application, PdEnvironment tier, String description) {
+    Live live = live(application, tier);
+    worker.enqueueOperation(
+        description + ": redeploying " + application + "@" + live.version(),
+        () ->
+            worker.redeploy(
+                live.repository(), live.releasedName(), live.version(), live.packageName()));
+    return live.version();
+  }
+
+  /**
    * Drop every kept copy whose retention is over — and, when no claim on that server still uses it,
    * the role that owned it — and stamp {@code dropped_at}. A failure is a WARN and the next tick
    * tries again; nothing is stamped that was not dropped.
