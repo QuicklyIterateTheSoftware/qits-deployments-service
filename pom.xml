@@ -103,7 +103,7 @@
         <pact.version>4.7.5</pact.version>
         <!-- THE PROVIDERS' GOLDEN MASTERS, test scope: what each provider records for its states,
              read by the consumer pacts. Moves like every internal pin. -->
-        <qits.idp-golden-masters.version>2026.1123.194348</qits.idp-golden-masters.version>
+        <qits.idp-golden-masters.version>2026.1125.71255</qits.idp-golden-masters.version>
         <qits.githost-golden-masters.version>2026.1109.41303</qits.githost-golden-masters.version>
         <qits.artifacts-golden-masters.version>2026.1124.154841</qits.artifacts-golden-masters.version>
         <qits.edge-golden-masters.version>2026.1115.212737</qits.edge-golden-masters.version>
