@@ -1,6 +1,7 @@
 package eu.wohlben.qits.deployments.api;
 
 import static io.restassured.RestAssured.given;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasSize;
@@ -156,6 +157,27 @@ class PdSettingApiTest {
           .then()
           .statusCode(400);
     }
+  }
+
+  @Test
+  void theTrustAnchorsAreTheDeployersOwnAndNoSettingMayStateThem() {
+    // qits-2633: QITS_TRUST_ANCHORS is the CA bundle the deployer writes into every service. A row
+    // would be appended after it on the argv and win, so the write is refused — and nothing stored.
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .contentType(ContentType.JSON)
+        .body(Map.of("value", "-----BEGIN CERTIFICATE-----", "secret", false))
+        .when()
+        .put(SETTINGS + "/set-anchors/set-dev/QITS_TRUST_ANCHORS")
+        .then()
+        .statusCode(400)
+        .body(containsString("QITS_TRUST_ANCHORS"));
+    given()
+        .header("Authorization", SuiteBearers.operator())
+        .when()
+        .delete(SETTINGS + "/set-anchors/set-dev/QITS_TRUST_ANCHORS")
+        .then()
+        .statusCode(404);
   }
 
   @Test

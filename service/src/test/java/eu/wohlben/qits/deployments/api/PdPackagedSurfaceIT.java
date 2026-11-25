@@ -132,7 +132,10 @@ public class PdPackagedSurfaceIT {
           // The platform's domain, which the prod profile's peer addresses are expressions over
           // (https://<host>.qits.${QITS_DOMAIN}, epic qits-428) and which has no default there: a
           // packaged process without it refuses to start naming the key.
-          "QITS_DOMAIN", "dev.localhost:8080");
+          "QITS_DOMAIN", "dev.localhost:8080",
+          // The packaged process is the prod profile, where qits-trust-core polls qits-certificates
+          // at https://certificates.qits.${QITS_DOMAIN} (qits-2633): dark here, like %test.
+          "qits.trust.enabled", "false");
     }
 
     /**

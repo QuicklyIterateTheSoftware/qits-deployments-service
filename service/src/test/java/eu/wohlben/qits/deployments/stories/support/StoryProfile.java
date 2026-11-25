@@ -113,6 +113,9 @@ public class StoryProfile extends PdPackagedSurfaceIT.PackagedUnderTarget {
     // never wired up.
     overrides.put("quarkus.otel.sdk.disabled", "true");
     overrides.put("qits.eventstream.enabled", "false");
+    // ...and the trust anchors (qits-2633): no qits-certificates in a step container, and a held
+    // bundle would put QITS_TRUST_ANCHORS on every recorded argv.
+    overrides.put("qits.trust.enabled", "false");
 
     // The orchestrator: a recording executable rather than a daemon this container cannot reach.
     overrides.put("qits.deployments.container-runtime", runtime);

@@ -23,6 +23,7 @@ import eu.wohlben.qits.deployments.deployments.control.SelfMove;
 import eu.wohlben.qits.deployments.deployments.control.ServiceExtras;
 import eu.wohlben.qits.deployments.environments.control.PdIdentifiers;
 import eu.wohlben.qits.deployments.environments.control.PdNetworks;
+import eu.wohlben.qits.trust.TrustAnchors;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.InetAddress;
@@ -765,6 +766,14 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * production ({@code SettingsExtrasSource}); the suite states a snapshot in a lambda.
    */
   @Inject DeploymentExtrasSource extrasSource;
+
+  /**
+   * The platform's CA bundle (qits-trust-core, epic qits-2524), written as {@link
+   * DeploymentDriver#TRUST_ANCHORS_VARIABLE} into every service once one is held — see {@link
+   * #environment}. Read on every argv, never compared with anything: a new bundle reaches a service
+   * on its next deployment and rolls nothing by itself (qits-2633).
+   */
+  @Inject TrustAnchors trustAnchors;
 
   /**
    * The docker socket THIS process has mounted, whose group a declared socket bind earns — see
@@ -3725,7 +3734,6 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     if (inspected.exitCode() != 0) {
       return Optional.empty();
     }
-    List<String> variables = new ArrayList<>();
     String output = safe(inspected.output());
     // The template's own println ends the last variable with a line break, and the docker CLI adds
     // one more after the whole template; take off both, so the last value is not read as ending in
@@ -3733,14 +3741,41 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     for (int breaks = 0; breaks < 2 && output.endsWith("\n"); breaks++) {
       output = output.substring(0, output.length() - 1);
     }
-    for (String line : output.split("\n", -1)) {
-      if (line.indexOf('=') > 0) {
-        variables.add(line);
-      } else if (!variables.isEmpty()) {
+    return Optional.of(specEnvEntries(output.split("\n", -1)));
+  }
+
+  /**
+   * {@link #SPEC_ENV_FORMAT}'s output as one {@code KEY=VALUE} entry per variable, a multi-line
+   * value joined back with its line breaks. A line with no {@code =} continues the value before it;
+   * so does EVERY line inside a PEM block (from a {@code -----BEGIN } line to its {@code -----END }
+   * line), because base64 ends in {@code =} padding and a line like {@code mQ==} would otherwise be
+   * read as a variable named {@code mQ} — which the update diff would {@code --env-rm}, and an
+   * {@code --env-rm} of a name that does not exist is a deployment refused by the CLI. {@link
+   * DeploymentDriver#TRUST_ANCHORS_VARIABLE} (qits-2633) is the value that made this necessary.
+   * Leading lines that continue nothing are dropped.
+   */
+  static List<String> specEnvEntries(String[] lines) {
+    List<String> variables = new ArrayList<>();
+    boolean insidePem = false;
+    for (String line : lines) {
+      int equals = line.indexOf('=');
+      String text;
+      if (!variables.isEmpty() && (insidePem || equals <= 0)) {
         variables.set(variables.size() - 1, variables.get(variables.size() - 1) + "\n" + line);
+        text = line;
+      } else if (equals > 0) {
+        variables.add(line);
+        text = line.substring(equals + 1);
+      } else {
+        continue;
+      }
+      if (text.startsWith("-----BEGIN ")) {
+        insidePem = true;
+      } else if (text.startsWith("-----END ")) {
+        insidePem = false;
       }
     }
-    return Optional.of(List.copyOf(variables));
+    return List.copyOf(variables);
   }
 
   /**
@@ -3785,6 +3820,19 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     platformDomain
         .filter(domain -> !domain.isBlank())
         .ifPresent(domain -> variables.add(DOMAIN_VARIABLE + "=" + domain.trim()));
+    // QITS_TRUST_ANCHORS right after the domain, for every service, variants and this deployer
+    // included (qits-2633): the PEM bundle of the platform CA, so a container trusts what the
+    // platform's own CA signed. Left out — never written empty — until TrustAnchors holds a bundle;
+    // the container then starts with the public trust it always had. It is a member of
+    // DEPLOYER_OWN_VARIABLES, so an update with no bundle in hand keeps the one the service already
+    // carries rather than removing it. The value spans lines; the argv is a list handed to the CLI
+    // without a shell, and no log line here prints an environment value.
+    if (trustAnchors != null) {
+      trustAnchors
+          .envEntry()
+          .filter(entry -> entry.getValue() != null && !entry.getValue().isBlank())
+          .ifPresent(entry -> variables.add(TRUST_ANCHORS_VARIABLE + "=" + entry.getValue()));
+    }
     String identity =
         DeployedIdentity.resourceAttributes(
             spec.commitSha(), spec.environmentName(), spec.wireAlias());
@@ -4017,15 +4065,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       return List.of();
     }
     List<String> keys = new ArrayList<>();
-    for (String line : safe(inspected.output()).split("\n")) {
-      // A variable's VALUE may hold anything, newlines included, so a line with no `=` in it is a
-      // continuation rather than a key. Skipping it is what keeps a wrapped value from being read
-      // as a variable nobody set — and an --env-rm of a name that does not exist is not free: it
-      // is a whole deployment refused by the CLI.
-      int equals = line.indexOf('=');
-      if (equals > 0) {
-        keys.add(line.substring(0, equals).strip());
-      }
+    // A variable's VALUE may hold anything, newlines included, so a line with no `=` in it — or any
+    // line of a PEM block, `=` padding and all (qits-2633) — is a continuation rather than a key.
+    // Skipping it is what keeps a wrapped value from being read as a variable nobody set — and an
+    // --env-rm of a name that does not exist is not free: it is a whole deployment refused by the
+    // CLI. See specEnvEntries.
+    for (String variable : specEnvEntries(safe(inspected.output()).split("\n"))) {
+      keys.add(variable.substring(0, variable.indexOf('=')).strip());
     }
     return keys;
   }

@@ -87,6 +87,12 @@
              qits-containers-javalib; no Quarkus and no CDI in it, so it is native-image neutral. -->
         <qits.containers-driver.version>2026.1121.232208</qits.containers-driver.version>
         <qits.telemetry-core.version>2026.1106.507</qits.telemetry-core.version>
+        <!-- qits-trust-core (epic qits-2524, qits-2633): TrustAnchors polls qits-certificates for the
+             platform CA bundle, which every swarm service this deployer creates or updates receives
+             as QITS_TRUST_ANCHORS. Published by qits-integrations-quarkus with qits-http-core linked;
+             this repo keeps its own qits-http-core pin above. First adoption: no maintenance bump
+             added it. -->
+        <qits.trust-core.version>2026.1125.110206</qits.trust-core.version>
         <!-- The user-story framework (test scope): this repo's story catalogue is written as
              @UserStory methods, so a `mvn verify -DskipITs=false` also regenerates
              service/target/userstories/ — the story logs and their network diagrams, which are
@@ -295,6 +301,12 @@
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-telemetry-core</artifactId>
                 <version>${qits.telemetry-core.version}</version>
+            </dependency>
+            <dependency>
+                <!-- TrustAnchors: the CA bundle handed to every swarm service (qits-2633). -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-trust-core</artifactId>
+                <version>${qits.trust-core.version}</version>
             </dependency>
             <dependency>
                 <!-- The userflow framework. Test scope, in `service/` only: the story runs against

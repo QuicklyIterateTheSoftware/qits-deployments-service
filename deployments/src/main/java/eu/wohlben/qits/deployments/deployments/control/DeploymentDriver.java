@@ -117,6 +117,21 @@ public interface DeploymentDriver {
   String DOMAIN_VARIABLE = "QITS_DOMAIN";
 
   /**
+   * The platform's CA bundle, PEM, as qits-trust-core's {@code TrustAnchors} last fetched it from
+   * qits-certificates (epic qits-2524, qits-2633) — written beside {@link #DOMAIN_VARIABLE} into
+   * every service, variants included, once a bundle is held, and left out until then.
+   *
+   * <p>A member of {@link #DEPLOYER_OWN_VARIABLES}: an update never {@code --env-rm}s it (a deployer
+   * that has not fetched a bundle yet keeps the one the service already carries), and {@code
+   * Settings} refuses it as a settings key, so no row can override what the CA publishes.
+   *
+   * <p><b>A new bundle alone never rolls a service</b>: nothing here compares the live environment
+   * with the wanted one to decide on a deployment. The value is restated on the next deployment
+   * that happens anyway, and a container created afterwards gets it.
+   */
+  String TRUST_ANCHORS_VARIABLE = "QITS_TRUST_ANCHORS";
+
+  /**
    * What {@code ResourceProvisioning} injects, as the generic contract: {@code
    * QITS_RESOURCE_<NAME>_URL} and its two siblings. Config states none of them — the registry row
    * is the single authority for the credential — so the update diff must not be able to remove one.
@@ -169,6 +184,7 @@ public interface DeploymentDriver {
           APPLICATION_VARIABLE,
           VARIANT_VARIABLE,
           DOMAIN_VARIABLE,
+          TRUST_ANCHORS_VARIABLE,
           DeployedIdentity.OTEL_VARIABLE,
           DeployedIdentity.QUARKUS_OTEL_VARIABLE,
           DeployedIdentity.OTEL_SERVICE_NAME_VARIABLE,

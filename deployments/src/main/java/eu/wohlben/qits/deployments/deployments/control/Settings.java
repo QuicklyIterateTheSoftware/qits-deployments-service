@@ -64,7 +64,7 @@ public class Settings {
       String actor) {
     String app = PdIdentifiers.requireName(application, "application");
     String env = PdIdentifiers.requireName(environment, "environment");
-    String settingKey = requireKey(key);
+    String settingKey = requireWritableKey(key);
     if (value == null) {
       throw new BadRequestException("value is required");
     }
@@ -301,6 +301,24 @@ public class Settings {
               + " characters");
     }
     return key;
+  }
+
+  /**
+   * {@link #requireKey}, and not a key only the deployer states (qits-2633): {@link
+   * DeploymentDriver#TRUST_ANCHORS_VARIABLE} is the CA bundle qits-certificates publishes, and a row
+   * would be appended after it on the argv and win. Only a write refuses it — a delete still takes
+   * any well-formed key.
+   */
+  static String requireWritableKey(String key) {
+    String settingKey = requireKey(key);
+    if (DeploymentDriver.TRUST_ANCHORS_VARIABLE.equals(settingKey)) {
+      throw new BadRequestException(
+          "'"
+              + settingKey
+              + "' is written by the deployer itself (the platform's CA bundle from"
+              + " qits-certificates) and cannot be a setting");
+    }
+    return settingKey;
   }
 
   private static String optionalName(String name, String what) {

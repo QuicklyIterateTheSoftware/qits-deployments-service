@@ -77,6 +77,12 @@
             <artifactId>qits-telemetry-core</artifactId>
         </dependency>
         <dependency>
+            <!-- TrustAnchors (epic qits-2524, qits-2633): the platform CA bundle, written into every
+                 swarm service's environment as QITS_TRUST_ANCHORS once it is held. -->
+            <groupId>${project.groupId}</groupId>
+            <artifactId>qits-trust-core</artifactId>
+        </dependency>
+        <dependency>
             <!-- SecurityIdentity + the HttpAuthenticationMechanism SPI. Named here rather than
                  taken transitively from qits-auth-core, because this module's own code reads a
                  SecurityIdentity. -->

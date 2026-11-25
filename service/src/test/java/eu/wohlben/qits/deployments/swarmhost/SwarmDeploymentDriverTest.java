@@ -17,6 +17,7 @@ import eu.wohlben.qits.deployments.deployments.control.ServiceExtras;
 import eu.wohlben.qits.deployments.deployments.control.SettingsExtrasSource;
 import eu.wohlben.qits.deployments.deployments.entity.PdSetting;
 import eu.wohlben.qits.deployments.environments.error.BadRequestException;
+import eu.wohlben.qits.trust.TrustAnchors;
 import io.smallrye.config.PropertiesConfigSource;
 import io.smallrye.config.SmallRyeConfigBuilder;
 import java.io.IOException;
@@ -37,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import org.eclipse.microprofile.config.Config;
 import org.junit.jupiter.api.Test;
 
@@ -457,6 +459,172 @@ class SwarmDeploymentDriverTest {
       assertTrue(argv.contains("QITS_ENVIRONMENT=dev"), argv.toString());
       assertTrue(argv.contains("QITS_APPLICATION=qits-gateway"), argv.toString());
     }
+  }
+
+  // --- QITS_TRUST_ANCHORS (epic qits-2524, qits-2633) ----------------------------------------------
+
+  /** Two certificates as the CA publishes them, with base64 `=` padding on a line of its own. */
+  private static final String BUNDLE =
+      "-----BEGIN CERTIFICATE-----\n"
+          + "MIIBszCCAVmgAwIBAgIUQ\n"
+          + "mQ==\n"
+          + "-----END CERTIFICATE-----\n"
+          + "-----BEGIN CERTIFICATE-----\n"
+          + "Zm9vYmFy\n"
+          + "YQ=\n"
+          + "-----END CERTIFICATE-----\n";
+
+  private static final String ROTATED =
+      "-----BEGIN CERTIFICATE-----\n" + "cm90YXRlZA==\n" + "-----END CERTIFICATE-----\n";
+
+  /** A TrustAnchors holding whatever {@code held} holds — empty is "no bundle yet". */
+  private static TrustAnchors anchors(AtomicReference<String> held) {
+    return new TrustAnchors() {
+      @Override
+      public Optional<String> pem() {
+        return Optional.ofNullable(held.get());
+      }
+    };
+  }
+
+  @Test
+  void theVariableNameIsTheLibrarysAndTheDeployerOwnsIt() {
+    assertEquals(TrustAnchors.ENV, DeploymentDriver.TRUST_ANCHORS_VARIABLE);
+    assertTrue(DeploymentDriver.DEPLOYER_OWN_VARIABLES.contains("QITS_TRUST_ANCHORS"));
+    assertTrue(driver().keptWhenUnstated("QITS_TRUST_ANCHORS"));
+  }
+
+  @Test
+  void everyServiceIsHandedTheTrustAnchorsRightAfterTheDomainWhenABundleIsHeld() {
+    SwarmDeploymentDriver driver = driver();
+    driver.platformDomain = Optional.of("wohlben.eu");
+    driver.trustAnchors = anchors(new AtomicReference<>(BUNDLE));
+
+    // The create: one --env, the whole multi-line PEM as ONE argv element, right after the domain.
+    List<String> create = driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
+    int domain = create.indexOf("QITS_DOMAIN=wohlben.eu");
+    assertTrue(domain > 0, create.toString());
+    assertEquals("--env", create.get(domain + 1), create.toString());
+    assertEquals("QITS_TRUST_ANCHORS=" + BUNDLE, create.get(domain + 2), create.toString());
+    assertEquals(1, create.stream().filter(a -> a.startsWith("QITS_TRUST_ANCHORS=")).count());
+
+    // The update restates it, so a service created before the bundle existed gets it on its next
+    // deployment.
+    List<String> update = driver.buildUpdateArgv(spec(), "dev-qits-gateway");
+    assertTrue(
+        update.containsAll(List.of("--env-add", "QITS_TRUST_ANCHORS=" + BUNDLE)), update.toString());
+
+    // A variant, and the deployer's own self-update, the same.
+    List<String> variant =
+        driver.buildCreateArgv(
+            variantSpec("qits-edge-private", "private"), "dev-qits-edge-private", List.of("qits-net"));
+    assertTrue(variant.contains("QITS_TRUST_ANCHORS=" + BUNDLE), variant.toString());
+    List<String> self =
+        driver.buildSelfUpdateArgv(
+            spec(), "dev-qits-gateway", List.of("qits-net"), SwarmDeploymentDriver.NOT_ASKED);
+    assertTrue(
+        self.containsAll(List.of("--env-add", "QITS_TRUST_ANCHORS=" + BUNDLE)), self.toString());
+
+    // ...and the staged environment the settings preview reads says the same.
+    assertTrue(
+        driver.stagedEnvironment(spec(), false).contains("QITS_TRUST_ANCHORS=" + BUNDLE));
+  }
+
+  @Test
+  void noBundleHeldMeansNoVariableAndNotAnEmptyOne() {
+    for (TrustAnchors none :
+        List.of(anchors(new AtomicReference<>()), anchors(new AtomicReference<>("  ")))) {
+      SwarmDeploymentDriver driver = driver();
+      driver.platformDomain = Optional.of("wohlben.eu");
+      driver.trustAnchors = none;
+
+      List<String> create = driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
+      List<String> update = driver.buildUpdateArgv(spec(), "dev-qits-gateway");
+
+      assertTrue(
+          create.stream().noneMatch(a -> a.startsWith("QITS_TRUST_ANCHORS")), create.toString());
+      assertTrue(
+          update.stream().noneMatch(a -> a.contains("QITS_TRUST_ANCHORS")), update.toString());
+      assertTrue(create.contains("QITS_DOMAIN=wohlben.eu"), create.toString());
+    }
+  }
+
+  @Test
+  void aNewBundleAloneRollsNothing() {
+    // The rule (qits-2633): a change of the bundle alone never recreates or rolls a running service.
+    // The deployer has no loop that compares a live environment with a wanted one: a bundle that
+    // moves issues no CLI call at all, and the next deployment that happens anyway restates it.
+    AtomicReference<String> held = new AtomicReference<>(BUNDLE);
+    SwarmDeploymentDriver driver = driver();
+    driver.trustAnchors = anchors(held);
+
+    held.set(ROTATED);
+
+    assertTrue(cli.calls.isEmpty(), cli.calls.toString());
+  }
+
+  @Test
+  void aServiceCarryingAnOlderBundleIsUpdatedInPlaceNeverRecreatedAndLosesNoFragmentOfIt() {
+    // The live service carries the bundle it was created with; the deployer now holds another. The
+    // deployment is an ordinary `service update` — the anchors decide no recreate — and its env diff
+    // reads the multi-line PEM as ONE variable: a padding line like `mQ==` read as a variable
+    // `mQ` would be --env-rm'd, and an --env-rm of a name that does not exist is a deployment the
+    // CLI refuses.
+    SwarmDeploymentDriver driver = driver();
+    driver.trustAnchors = anchors(new AtomicReference<>(ROTATED));
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    cli.script(
+        SwarmDeploymentDriver.SPEC_ENV_FORMAT,
+        result(
+            0,
+            "QITS_ENVIRONMENT=dev\n"
+                + "QITS_TRUST_ANCHORS="
+                + BUNDLE
+                + "\n"
+                + "QITS_APPLICATION=qits-gateway\n"
+                + "\n"));
+
+    DeploymentDriver.ApplyResult applied = driver.apply(spec());
+
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, applied.outcome(), applied.toString());
+    assertTrue(cli.matching("service create").isEmpty(), "updated in place, not recreated");
+    assertTrue(cli.matching("service rm").isEmpty(), "nothing removed");
+    List<String> update = cli.matching("service update");
+    assertTrue(
+        update.containsAll(List.of("--env-add", "QITS_TRUST_ANCHORS=" + ROTATED)), update.toString());
+    assertFalse(update.contains("--env-rm"), update.toString());
+
+    // ...and a deployer that holds no bundle yet (a fresh boot before its first fetch) keeps the
+    // live one rather than removing it.
+    SwarmDeploymentDriver fresh = driver();
+    fresh.trustAnchors = anchors(new AtomicReference<>());
+    cli.script(
+        SwarmDeploymentDriver.SPEC_ENV_FORMAT,
+        result(0, "QITS_ENVIRONMENT=dev\nQITS_TRUST_ANCHORS=" + BUNDLE + "\n"));
+    List<String> keeping = fresh.buildUpdateArgv(spec(), "dev-qits-gateway");
+    assertFalse(keeping.contains("--env-rm"), keeping.toString());
+  }
+
+  @Test
+  void theLiveEnvironmentReadsAPemBundleAsOneVariable() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script(
+        SwarmDeploymentDriver.SPEC_ENV_FORMAT,
+        result(
+            0,
+            "QITS_ENVIRONMENT=dev\nQITS_TRUST_ANCHORS="
+                + BUNDLE
+                + "\nQITS_APPLICATION=qits-gateway\n\n"));
+
+    List<String> live = driver.liveEnvironment("dev-qits-gateway").orElseThrow();
+
+    assertEquals(
+        List.of(
+            "QITS_ENVIRONMENT=dev",
+            "QITS_TRUST_ANCHORS=" + BUNDLE,
+            "QITS_APPLICATION=qits-gateway"),
+        live);
   }
 
   /** {@link #spec()} deployed as the variant {@code variant} (qits-1976). */
