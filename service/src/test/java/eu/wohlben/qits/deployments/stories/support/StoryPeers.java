@@ -81,6 +81,12 @@ public final class StoryPeers {
   /** Where the spec of one repository lives, at one commit — the path qits-ci reads a pipeline at. */
   public static final String SPEC_PATH = ".config/qits/deployments.yml";
 
+  /**
+   * The egress declaration (epic qits-2523): read beside the spec at the same tag, and answered 404
+   * here — no story repository declares routes, so every release is one more read than it was.
+   */
+  public static final String EGRESS_PATH = ".config/qits/egress.yml";
+
   private static final String PORT_PROPERTY = "qits.test.story-peers.port";
 
   private static final String SOURCE_ID = "story-peers";
@@ -253,6 +259,20 @@ public final class StoryPeers {
       NetworkCapture.source(SOURCE_ID, StoryPeers::edges);
       registered = true;
     }
+  }
+
+  /** The label of the egress declaration's read: a 404, since no story repository has one. */
+  public static String egressLabel(String repository, String version) {
+    return Labels.scrub(
+        "GET /git/"
+            + StoryTarget.PROJECT
+            + "/"
+            + repository
+            + "/blob/refs%2Ftags%2F"
+            + version
+            + "/"
+            + EGRESS_PATH
+            + " -> 404");
   }
 
   /** The label an answered spec read renders as — what an assertion has to spell. */

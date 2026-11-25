@@ -403,19 +403,21 @@ public class BuildDeploymentIT {
     }
     intake(CREATED_SLUG);
     peer(CREATED_SLUG, StoryPeers.GIT_HOST, StoryPeers.specLabel(WEB, FIRST_VERSION, 200));
+    peer(CREATED_SLUG, StoryPeers.GIT_HOST, StoryPeers.egressLabel(WEB, FIRST_VERSION));
     for (String call : StorySwarm.createCalls(WEB_SERVICE, WEB, FIRST_VERSION)) {
       swarm(CREATED_SLUG, call);
     }
     operatorRead(CREATED_SLUG);
     ReportAssertions.assertDeclaredEdge(
         CATEGORY, CREATED_SLUG, NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
-    // One event in, one peer read — the git host, once — eight questions to the orchestrator, one
+    // One event in, two peer reads — the git host, for the spec and (qits-2523) the egress
+    // declaration — eight questions to the orchestrator, one
     // read back and one store behind all of it (the settings the argv carries are rows in it).
     // Nothing else: this component asks nobody who qits-ci is — the bearer is judged on keys
     // fetched once, at startup. One more since qits-2174 (task qits-2198): once live, the route
     // tables are rebuilt off the services' labels — the `service ls` StorySwarm.ROUTE_TABLE_READ
     // names, whose empty answer leaves nothing to inspect and nothing new to push.
-    ReportAssertions.assertEdgeCount(CATEGORY, CREATED_SLUG, 13);
+    ReportAssertions.assertEdgeCount(CATEGORY, CREATED_SLUG, 14);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY,
         CREATED_SLUG,
@@ -433,6 +435,7 @@ public class BuildDeploymentIT {
     }
     intake(UPDATED_SLUG);
     peer(UPDATED_SLUG, StoryPeers.GIT_HOST, StoryPeers.specLabel(WEB, SECOND_VERSION, 200));
+    peer(UPDATED_SLUG, StoryPeers.GIT_HOST, StoryPeers.egressLabel(WEB, SECOND_VERSION));
     for (String call : StorySwarm.updateCalls(WEB_SERVICE, WEB, SECOND_VERSION)) {
       swarm(UPDATED_SLUG, call);
     }
@@ -443,7 +446,7 @@ public class BuildDeploymentIT {
     // and the drift check's question about every OTHER attached network (qits-2174, qits-2197) —
     // here the stand-in's one fabricated task network id, which never resolves to a name — and the
     // route tables' `service ls` once it is live (qits-2174, task qits-2198), as for the create.
-    ReportAssertions.assertEdgeCount(CATEGORY, UPDATED_SLUG, 15);
+    ReportAssertions.assertEdgeCount(CATEGORY, UPDATED_SLUG, 16);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY,
         UPDATED_SLUG,
@@ -460,15 +463,17 @@ public class BuildDeploymentIT {
         UNPUBLISHED_SLUG,
         StoryPeers.GIT_HOST,
         StoryPeers.specLabel(UNPUBLISHED, UNPUBLISHED_VERSION, 200));
+    peer(UNPUBLISHED_SLUG, StoryPeers.GIT_HOST, StoryPeers.egressLabel(UNPUBLISHED, UNPUBLISHED_VERSION));
     swarm(
         UNPUBLISHED_SLUG,
         StorySwarm.label("pull " + templated(UNPUBLISHED, UNPUBLISHED_VERSION), "1"));
     operatorRead(UNPUBLISHED_SLUG);
     ReportAssertions.assertDeclaredEdge(
         CATEGORY, UNPUBLISHED_SLUG, NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
-    // FIVE, and the absence is the story: the orchestrator was asked exactly once, and nothing
+    // SIX (five before the egress declaration's read, qits-2523), and the absence is the story: the
+    // orchestrator was asked exactly once, and nothing
     // after the failed pull — no argv, so no settings read — happened at all.
-    ReportAssertions.assertEdgeCount(CATEGORY, UNPUBLISHED_SLUG, 5);
+    ReportAssertions.assertEdgeCount(CATEGORY, UNPUBLISHED_SLUG, 6);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY,
         UNPUBLISHED_SLUG,

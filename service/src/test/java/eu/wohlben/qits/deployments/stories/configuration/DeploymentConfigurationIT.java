@@ -209,6 +209,13 @@ public class DeploymentConfigurationIT {
         StoryTarget.SERVICE,
         StoryPeers.GIT_HOST,
         StoryPeers.specLabel(CONFIGURED, CONFIGURED_VERSION, 200));
+    ReportAssertions.assertEdge(
+        CATEGORY,
+        READ_SLUG,
+        NetworkEdge.HTTP,
+        StoryTarget.SERVICE,
+        StoryPeers.GIT_HOST,
+        StoryPeers.egressLabel(CONFIGURED, CONFIGURED_VERSION));
     for (String call : StorySwarm.createCalls(CONFIGURED_SERVICE, CONFIGURED, CONFIGURED_VERSION)) {
       ReportAssertions.assertEdge(
           CATEGORY, READ_SLUG, StorySwarm.KIND, StoryTarget.SERVICE, StorySwarm.ORCHESTRATOR, call);
@@ -248,11 +255,12 @@ public class DeploymentConfigurationIT {
         StorySwarm.label("volume ls", "0"));
     ReportAssertions.assertDeclaredEdge(
         CATEGORY, READ_SLUG, NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
-    // One setting written, one event in, one peer read (the spec), eight questions to the
+    // One setting written, one event in, two peer reads (the spec and, qits-2523, the egress
+    // declaration), eight questions to the
     // orchestrator for this deployment plus three the process made once at boot (above), one store.
     // No configuration service and no credential mint: the settings are rows in the store this
     // component already has.
-    ReportAssertions.assertEdgeCount(CATEGORY, READ_SLUG, 15);
+    ReportAssertions.assertEdgeCount(CATEGORY, READ_SLUG, 16);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY,
         READ_SLUG,
