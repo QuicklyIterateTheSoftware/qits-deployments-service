@@ -488,6 +488,23 @@ class GoldenMasterRecordingTest {
               200,
               null,
               null),
+          // qits-2523: the egress grant table qits-egress polls, with one route and empty.
+          new Interaction(
+              ProviderStates.AN_EGRESS_GRANT_TABLE_WITH_ONE_ROUTE,
+              "getEgressGrants",
+              "GET",
+              "/deployments/api/egress-grants",
+              200,
+              null,
+              null),
+          new Interaction(
+              ProviderStates.AN_EMPTY_EGRESS_GRANT_TABLE,
+              "getEgressGrants",
+              "GET",
+              "/deployments/api/egress-grants",
+              200,
+              null,
+              null),
           // qits-2215: the last split check, clean and with a bridged service.
           new Interaction(
               ProviderStates.A_CLEAN_SPLIT,

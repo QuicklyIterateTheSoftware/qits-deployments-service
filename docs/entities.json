@@ -253,6 +253,24 @@
           "site" : "RollbackPins.pins()"
         },
         {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "EgressGrantTables.current(Instant)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto$Refused",
+          "kind" : "mapper",
+          "via" : null,
+          "site" : "EgressGrantTables.contentOf(List, Map, Map)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto$Route",
+          "kind" : "mapper",
+          "via" : null,
+          "site" : "EgressGrantTables.contentOf(List, Map, Map)"
+        },
+        {
           "type" : "eu.wohlben.qits.deployments.deployments.dto.PdDeploymentDto",
           "kind" : "mapper",
           "via" : null,
@@ -321,6 +339,14 @@
           "dto" : "eu.wohlben.qits.deployments.api.PdDeploymentRequestController$DeploymentRequestResponse",
           "kind" : "returns",
           "cardinality" : "single"
+        },
+        {
+          "operationId" : "getEgressGrants",
+          "method" : "GET",
+          "path" : "/egress-grants",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto",
+          "kind" : "returns",
+          "cardinality" : "collection"
         },
         {
           "operationId" : "listDecommissions",
@@ -563,6 +589,82 @@
           "dto" : "eu.wohlben.qits.deployments.deployments.dto.EdgeRouteTableDto",
           "kind" : "returns",
           "cardinality" : "single"
+        }
+      ]
+    },
+    {
+      "entity" : "eu.wohlben.qits.deployments.deployments.entity.PdEgressDeclaration",
+      "table" : "pd_egress_declaration",
+      "marking" : "domain",
+      "reason" : null,
+      "projectionOf" : null,
+      "knownGap" : null,
+      "dtos" : [
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto$Refused",
+          "site" : "EgressGrantTableDto.<init>(long, List, List)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto$Refused",
+          "kind" : "mapper",
+          "via" : null,
+          "site" : "EgressGrantTables.contentOf(List, Map, Map)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto$Route",
+          "kind" : "mapper",
+          "via" : null,
+          "site" : "EgressGrantTables.contentOf(List, Map, Map)"
+        }
+      ],
+      "operations" : [
+        {
+          "operationId" : "getEgressGrants",
+          "method" : "GET",
+          "path" : "/egress-grants",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto",
+          "kind" : "returns",
+          "cardinality" : "collection"
+        }
+      ]
+    },
+    {
+      "entity" : "eu.wohlben.qits.deployments.deployments.entity.PdEgressGrantTable",
+      "table" : "pd_egress_grant_table",
+      "marking" : "domain",
+      "reason" : null,
+      "projectionOf" : null,
+      "knownGap" : null,
+      "dtos" : [
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto",
+          "kind" : "factory",
+          "via" : null,
+          "site" : "EgressGrantTableDto.of(PdEgressGrantTable, ObjectMapper)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto$Refused",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto",
+          "site" : "EgressGrantTableDto.refused()"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto$Route",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto",
+          "site" : "EgressGrantTableDto.routes()"
+        }
+      ],
+      "operations" : [
+        {
+          "operationId" : "getEgressGrants",
+          "method" : "GET",
+          "path" : "/egress-grants",
+          "dto" : "eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto",
+          "kind" : "returns",
+          "cardinality" : "collection"
         }
       ]
     },

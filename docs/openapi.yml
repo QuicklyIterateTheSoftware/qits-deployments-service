@@ -106,6 +106,20 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Withdrawn"
+    EgressGrantTableDto:
+      type: object
+      properties:
+        version:
+          type: integer
+          format: int64
+        routes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Route"
+        refused:
+          type: array
+          items:
+            $ref: "#/components/schemas/Refused"
     Endpoint:
       type: object
       properties:
@@ -616,6 +630,15 @@ components:
           type: string
         secret:
           type: boolean
+    Refused:
+      type: object
+      properties:
+        application:
+          type: string
+        deployedVersion:
+          type: string
+        reason:
+          type: string
     RemovedArtifact:
       type: object
       properties:
@@ -650,6 +673,27 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RemovedArtifact"
+    Route:
+      type: object
+      properties:
+        application:
+          type: string
+        environment:
+          type: string
+        deployedVersion:
+          type: string
+        name:
+          type: string
+        target:
+          type: string
+        secret:
+          type: string
+        inject:
+          type: string
+        methods:
+          type: array
+          items:
+            type: string
     ScaleRequest:
       type: object
       properties:
@@ -1384,6 +1428,30 @@ paths:
           description: Not Allowed
       tags:
       - Pd Edge Route Controller
+      security:
+      - SecurityScheme:
+        - qits:system
+        - qits:admin
+        - qits:agent
+  /deployments/api/egress-grants:
+    get:
+      summary: "The egress grant table in force: the routes each ACTIVE deployment's\
+        \ egress.yml grants"
+      operationId: getEgressGrants
+      responses:
+        "200":
+          description: "The table, versioned; the version moves only when the content\
+            \ does"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EgressGrantTableDto"
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Egress Grant Controller
       security:
       - SecurityScheme:
         - qits:system

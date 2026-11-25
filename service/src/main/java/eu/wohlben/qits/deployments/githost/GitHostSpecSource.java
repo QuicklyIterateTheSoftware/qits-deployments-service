@@ -13,6 +13,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Optional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -26,7 +27,8 @@ import org.jboss.logging.Logger;
  * GET &lt;git-host-url&gt;/git/&lt;repoId&gt;/blob/&lt;rev&gt;/.config/qits/deployments.yml
  * </pre>
  *
- * <p><b>It reads ONE file.</b> It used to read {@code .config/qits/configuration.yml} beside the
+ * <p><b>It reads ONE file per call</b> — {@code deployments.yml}, a variant's file, or since epic
+ * qits-2523 the unparsed {@code egress.yml} ({@link #readText}). It used to read {@code .config/qits/configuration.yml} beside the
  * spec and hand it unparsed to qits-configuration; that service and the seed are gone (qits-1393).
  * <b>The read does not fall back from the name route to the id route</b> — qits-883 is why.
  *
@@ -169,6 +171,24 @@ public class GitHostSpecSource implements SpecSource {
         DeploymentSpecParser.parse(
             response.body(), path + " of " + repository.applicationName() + "@" + rev),
         commitShaOf(response));
+  }
+
+  /**
+   * The same blob read, answered as text and never parsed — the egress declaration's ({@link
+   * SpecSource#EGRESS_PATH}, epic qits-2523). The 404 is "no such file", every other status that is
+   * not 200 the same classified failure {@link #read} raises.
+   */
+  @Override
+  public Optional<String> readText(RepositoryRef repository, String rev, String path) {
+    String url = blobUrl(address(repository), rev, path);
+    HttpResponse<String> response = get(url);
+    if (response.statusCode() == 404) {
+      return Optional.empty();
+    }
+    if (response.statusCode() != 200) {
+      throw statusFailure(url, response.statusCode());
+    }
+    return Optional.of(response.body() == null ? "" : response.body());
   }
 
   /**

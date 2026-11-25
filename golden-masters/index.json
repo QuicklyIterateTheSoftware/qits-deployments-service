@@ -1066,6 +1066,50 @@
       ]
     },
     {
+      "name": "an egress grant table with one route",
+      "slug": "an-egress-grant-table-with-one-route",
+      "params": {},
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getEgressGrants",
+          "method": "GET",
+          "path": "/deployments/api/egress-grants",
+          "status": 200,
+          "file": "an-egress-grant-table-with-one-route/getEgressGrants.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [
+              "$.routes[*].environment"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "an empty egress grant table",
+      "slug": "an-empty-egress-grant-table",
+      "params": {},
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getEgressGrants",
+          "method": "GET",
+          "path": "/deployments/api/egress-grants",
+          "status": 200,
+          "file": "an-empty-egress-grant-table/getEgressGrants.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "an environment",
       "slug": "an-environment",
       "params": {

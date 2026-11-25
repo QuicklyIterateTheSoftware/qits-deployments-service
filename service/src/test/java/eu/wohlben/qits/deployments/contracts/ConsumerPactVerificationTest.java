@@ -262,4 +262,14 @@ class ConsumerPactVerificationTest {
   Map<String, String> twoEdgesWithRoutes() {
     return states.params(ProviderStates.TWO_EDGES_WITH_ROUTES);
   }
+
+  @State(ProviderStates.AN_EGRESS_GRANT_TABLE_WITH_ONE_ROUTE)
+  Map<String, String> anEgressGrantTableWithOneRoute() {
+    return states.params(ProviderStates.AN_EGRESS_GRANT_TABLE_WITH_ONE_ROUTE);
+  }
+
+  @State(ProviderStates.AN_EMPTY_EGRESS_GRANT_TABLE)
+  Map<String, String> anEmptyEgressGrantTable() {
+    return states.params(ProviderStates.AN_EMPTY_EGRESS_GRANT_TABLE);
+  }
 }

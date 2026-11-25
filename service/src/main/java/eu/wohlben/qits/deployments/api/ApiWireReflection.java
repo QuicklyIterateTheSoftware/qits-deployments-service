@@ -2,7 +2,10 @@ package eu.wohlben.qits.deployments.api;
 
 import eu.wohlben.qits.deployments.deployments.control.ArtifactPurge;
 import eu.wohlben.qits.deployments.deployments.control.EdgeRouteTables;
+import eu.wohlben.qits.deployments.deployments.control.EgressDeclarationParser;
+import eu.wohlben.qits.deployments.deployments.control.EgressGrantTables;
 import eu.wohlben.qits.deployments.deployments.dto.EdgeRouteTableDto;
+import eu.wohlben.qits.deployments.deployments.dto.EgressGrantTableDto;
 import eu.wohlben.qits.deployments.deployments.dto.SplitCheckDto;
 import eu.wohlben.qits.deployments.deployments.dto.PdDatabaseMoveDto;
 import eu.wohlben.qits.deployments.deployments.dto.PdDecommissionDto;
@@ -78,6 +81,11 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       EdgeRouteTableDto.Navigation.class,
       EdgeRouteTableDto.Withdrawn.class,
       EdgeRouteTables.Content.class,
+      EgressGrantTableDto.class,
+      EgressGrantTableDto.Route.class,
+      EgressGrantTableDto.Refused.class,
+      EgressGrantTables.Content.class,
+      EgressDeclarationParser.Route.class,
       SplitCheckDto.class,
       SplitCheckDto.Bridged.class,
       SplitCheckDto.Misplaced.class,

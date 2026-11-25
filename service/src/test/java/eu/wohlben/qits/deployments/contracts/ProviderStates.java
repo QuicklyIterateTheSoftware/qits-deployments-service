@@ -8,16 +8,22 @@ import eu.wohlben.qits.deployments.deployments.control.DeployService;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.DeploymentSpecParser;
 import eu.wohlben.qits.deployments.deployments.control.EdgeRouteTables;
+import eu.wohlben.qits.deployments.deployments.control.EgressDeclarations;
+import eu.wohlben.qits.deployments.deployments.control.EgressGrantTables;
 import eu.wohlben.qits.deployments.deployments.control.FakeArtifactPurge;
 import eu.wohlben.qits.deployments.deployments.control.FakeDeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.FakePublicEdgeProbe;
 import eu.wohlben.qits.deployments.deployments.control.FakeSpecSource;
+import eu.wohlben.qits.deployments.deployments.control.RepositoryRef;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource;
 import eu.wohlben.qits.deployments.deployments.control.SplitCheck;
 import eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove;
 import eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMoveState;
 import eu.wohlben.qits.deployments.deployments.entity.PdDeployment;
+import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentStatus;
 import eu.wohlben.qits.deployments.deployments.entity.PdEdgeRouteTable;
+import eu.wohlben.qits.deployments.deployments.entity.PdEgressDeclaration;
+import eu.wohlben.qits.deployments.deployments.entity.PdEgressGrantTable;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.restassured.http.ContentType;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -173,6 +179,37 @@ public class ProviderStates {
   public static final String TWO_EDGES_WITH_ROUTES = "two edges with routes";
 
   /**
+   * The egress grant table (epic qits-2523) holding one route: {@code qits-edge}, deployed ACTIVE at
+   * {@link #EGRESS_VERSION} in a tier of its own, whose {@code egress.yml} grants {@code hetzner} →
+   * {@code https://api.hetzner.cloud} with the secret {@code HETZNER_DNS} injected as a bearer, for
+   * GET, POST, PUT and DELETE. Every other declaration is cleared first, and the table is built at
+   * {@link #EGRESS_TABLE_BUILT_AT}, so its version is that instant's epoch millis every run.
+   */
+  public static final String AN_EGRESS_GRANT_TABLE_WITH_ONE_ROUTE =
+      "an egress grant table with one route";
+
+  /** The egress grant table with no route and no refusal, built at {@link #EGRESS_TABLE_BUILT_AT}. */
+  public static final String AN_EMPTY_EGRESS_GRANT_TABLE = "an empty egress grant table";
+
+  /** When the egress states build their table: its version is this instant's epoch millis. */
+  static final Instant EGRESS_TABLE_BUILT_AT = Instant.parse("2025-11-25T09:00:00Z");
+
+  /** The version the egress state's qits-edge runs. */
+  static final String EGRESS_VERSION = "2026.1201.101010";
+
+  /** The egress state's declaration, as qits-edge's repository would carry it. */
+  static final String EGRESS_YML =
+      """
+      version: 1
+      routes:
+        - name: hetzner
+          target: https://api.hetzner.cloud
+          secret: HETZNER_DNS
+          inject: bearer
+          methods: [GET, POST, PUT, DELETE]
+      """;
+
+  /**
    * The last split check (qits-2215) found nothing: {@code contract-split-public} on qits-net and
    * {@code contract-split-private} (host {@code contract-split}) on qits-private, each as its
    * placement label says, and the private one answered 404 by the public edge — checked at {@link
@@ -259,6 +296,8 @@ public class ProviderStates {
   @Inject FakeArtifactPurge artifacts;
   @Inject DeployService deployService;
   @Inject EdgeRouteTables edgeRouteTables;
+  @Inject EgressDeclarations egressDeclarations;
+  @Inject EgressGrantTables egressGrants;
   @Inject SplitCheck splitCheck;
   @Inject FakePublicEdgeProbe publicEdge;
 
@@ -304,6 +343,8 @@ public class ProviderStates {
     states.put(A_FINISHED_DATABASE_MOVE, this::aFinishedDatabaseMove);
     states.put(A_RUNNING_DATABASE_MOVE, this::aRunningDatabaseMove);
     states.put(TWO_EDGES_WITH_ROUTES, this::twoEdgesWithRoutes);
+    states.put(AN_EGRESS_GRANT_TABLE_WITH_ONE_ROUTE, this::anEgressGrantTableWithOneRoute);
+    states.put(AN_EMPTY_EGRESS_GRANT_TABLE, this::anEmptyEgressGrantTable);
     states.put(A_CLEAN_SPLIT, () -> aSplitCheck(false));
     states.put(A_BRIDGED_SERVICE, () -> aSplitCheck(true));
   }
@@ -393,6 +434,57 @@ public class ProviderStates {
     Map<String, String> params = new TreeMap<>();
     params.put("edge", EdgeRouteTables.PRIVATE);
     return new Setup(params, List.of());
+  }
+
+  /**
+   * See {@link #AN_EGRESS_GRANT_TABLE_WITH_ONE_ROUTE}. The deployment row is written directly, in a
+   * tier clean-up deletes (and its rows with it): a release through the worker would designate the
+   * tier, which clean-up cannot delete, and a second run would then find the first run's ACTIVE
+   * qits-edge joined to the same declaration. The declaration goes the production way — the fake git
+   * host answers the file and {@link EgressDeclarations#record} reads, parses and stores it.
+   */
+  private Setup anEgressGrantTableWithOneRoute() {
+    awaitIdle();
+    String token = token();
+    String environmentId = createEnvironment("contract-" + token, false);
+    removable.add(environmentId);
+    clearEgress();
+    String application = "qits-edge";
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              PdDeployment row = new PdDeployment();
+              row.id = UUID.randomUUID().toString();
+              row.applicationName = application;
+              row.environmentId = environmentId;
+              row.version = EGRESS_VERSION;
+              row.status = PdDeploymentStatus.ACTIVE;
+              row.createdAt = EGRESS_TABLE_BUILT_AT;
+              row.finishedAt = EGRESS_TABLE_BUILT_AT;
+              row.persist();
+            });
+    specs.scriptText(application, SpecSource.EGRESS_PATH, EGRESS_YML);
+    egressDeclarations.record(RepositoryRef.ofId(application), application, EGRESS_VERSION);
+    egressGrants.current(EGRESS_TABLE_BUILT_AT);
+    return new Setup(new TreeMap<>(), List.of(token));
+  }
+
+  /** See {@link #AN_EMPTY_EGRESS_GRANT_TABLE}: no declaration anywhere, the table built from that. */
+  private Setup anEmptyEgressGrantTable() {
+    awaitIdle();
+    clearEgress();
+    egressGrants.current(EGRESS_TABLE_BUILT_AT);
+    return new Setup(new TreeMap<>(), List.of());
+  }
+
+  /** Every egress declaration and the stored table, gone: the egress states start from nothing. */
+  private static void clearEgress() {
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              PdEgressDeclaration.deleteAll();
+              PdEgressGrantTable.deleteAll();
+            });
   }
 
   /** See {@link #A_CLEAN_SPLIT} and {@link #A_BRIDGED_SERVICE}: one check, at a fixed instant. */

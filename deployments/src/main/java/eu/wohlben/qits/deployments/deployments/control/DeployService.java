@@ -200,6 +200,9 @@ public class DeployService implements ReleaseAnnouncements {
   @Inject DeploymentDriver driver;
   @Inject SpecSource specs;
 
+  /** The release's {@code egress.yml}, read beside the spec (epic qits-2523). Never fails a deploy. */
+  @Inject EgressDeclarations egress;
+
   @Inject ServiceCatalog catalog;
   @Inject EnvironmentService environments;
   @Inject ResourceProvisioning resourceProvisioning;
@@ -2097,6 +2100,12 @@ public class DeployService implements ReleaseAnnouncements {
     }
     String applicationName = applicationName(releasedName, spec);
     String failure = null;
+    if (variant == null) {
+      // The routes this version sends through qits-egress (epic qits-2523), read at the same tag
+      // before anything of the release is queued. A file that is absent, refused or unreadable is a
+      // version with no routes — never this deployment's failure; record() swallows everything.
+      egress.record(repository, applicationName, version);
+    }
 
     List<Target> targets;
     try {

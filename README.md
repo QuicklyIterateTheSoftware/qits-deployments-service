@@ -595,6 +595,7 @@ Two more things such a move does once, neither of them an error:
 | `GET /pins` | qits-platform-artifacts' OCI garbage collector, fail-closed |
 | `POST /events/build-succeeded` | qits-ci, fire-and-forget; the manual and bootstrap door |
 | `GET /split-check` | a person or an agent: the last split check (see *Split check*) |
+| `GET /egress-grants` | qits-egress (`qits:system`), a person or an agent: the egress grant table (see *Egress grants*) |
 
 All under `/deployments/api`. The client is served at `/` — this service has a host of its own,
 `deployments.<env>.<domain>`, and the segment is the wire surface alone. Health is at
@@ -623,6 +624,47 @@ second value of that one key. The health path is derived, not declared — the f
 when no pin names it, and deletes nothing when it cannot get an answer, so the keep-set must not
 depend on anything the topology says today. Per application name, across every tier: the sha it is
 serving, and the sha a rollback would put back.
+
+## Egress grants
+
+A repository may carry **`.config/qits/egress.yml`** beside `deployments.yml` (epic qits-2523): the
+routes its application sends through qits-egress, each one a grant `(application, route, methods)`.
+The secret's VALUE never appears in the file — `secret:` names the setting the gateway injects.
+
+```yaml
+version: 1
+routes:
+  - name: hetzner                       # [a-z][a-z0-9-]{0,62}; the first path segment at the gateway
+    target: https://api.hetzner.cloud   # https://<host>[:port][/base path], or platform:<host label>
+    secret: HETZNER_DNS                 # [A-Z][A-Z0-9_]{0,63}; omitted for a platform target
+    inject: bearer                      # bearer | header:<Header-Name>; omitted for a platform target
+    methods: [GET, POST, PUT, DELETE]   # GET HEAD POST PUT PATCH DELETE OPTIONS CONNECT
+```
+
+It is read at the released tag, beside the spec, for the release's MAIN application (a variant
+carries no routes), and parsed strictly by `EgressDeclarationParser`: `version` must be `1`, unknown
+keys and a key twice are refused, `name` is unique in the file (route names are per application),
+`target` is `https://…` (plain `http://` refused, no user info, query or fragment) or
+`platform:<label>`, a `platform:` route takes no `secret`/`inject` (it gets the token-exchange
+bearer) and an `https://` route needs both, `methods` is a non-empty list of upper-case methods,
+none twice. **Nothing about the file can fail a deployment**: no file (the git host's 404) is no
+routes, and a refused or unreadable file deploys anyway — that version carries no routes and is
+listed under `refused` with the reason. What a version declared is kept per (application, version)
+in `pd_egress_declaration` (V27).
+
+`GET /deployments/api/egress-grants` (`qits:system`, `qits:admin`, `qits:agent`) answers the table
+in force — the routes of each application's `ACTIVE` deployment:
+
+```json
+{ "version": 1764051234000,
+  "routes": [ { "application": "qits-edge", "environment": "dev", "deployedVersion": "2026.1201.101010",
+                "name": "hetzner", "target": "https://api.hetzner.cloud", "secret": "HETZNER_DNS",
+                "inject": "bearer", "methods": ["DELETE","GET","POST","PUT"] } ],
+  "refused": [ { "application": "…", "deployedVersion": "…", "reason": "…" } ] }
+```
+
+The version follows the edge route tables' rule — it moves only when the content does, to
+`max(stored + 1, epoch millis now)` — and is kept in `pd_egress_grant_table`.
 
 ## Addressing: every peer through the edge, one exception
 

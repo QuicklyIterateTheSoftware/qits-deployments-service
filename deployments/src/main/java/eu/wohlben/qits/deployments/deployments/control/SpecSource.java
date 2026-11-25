@@ -6,6 +6,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * The seam that fetches a repository's deployment spec at a commit — the {@link DeploymentDriver}
@@ -75,6 +76,25 @@ public interface SpecSource {
    * SpecRead#undeclared()} when it is absent at that rev, or a {@link SpecException}.
    */
   SpecRead read(RepositoryRef repository, String rev, String path);
+
+  /**
+   * Where a repository declares the routes it sends through qits-egress (epic qits-2523), beside
+   * {@link #SPEC_PATH} at the same tag. Read and parsed by {@link EgressDeclarations}; absent is
+   * "no routes".
+   */
+  String EGRESS_PATH = ".config/qits/egress.yml";
+
+  /**
+   * The raw text of {@code path} at {@code rev}, unparsed — the egress declaration's read ({@link
+   * #EGRESS_PATH}), whose grammar is not this seam's and whose refusal must never become a
+   * deployment's failure.
+   *
+   * @return the file's text, or empty when the repository carries no such file at that rev (the git
+   *     host's 404)
+   * @throws SpecException when the file could not be fetched, classified retryable as {@link #read}
+   *     classifies it
+   */
+  Optional<String> readText(RepositoryRef repository, String rev, String path);
 
   /**
    * A spec, and the commit the rev it was read at resolved to.

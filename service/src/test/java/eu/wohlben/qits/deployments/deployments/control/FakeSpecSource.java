@@ -3,6 +3,7 @@ package eu.wohlben.qits.deployments.deployments.control;
 import io.quarkus.test.Mock;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -60,7 +61,31 @@ public class FakeSpecSource implements SpecSource {
   /** What runs when a file at another path is read — see {@link #onReadAt}. */
   private final Map<String, Runnable> hooks = new ConcurrentHashMap<>();
 
+  /** The raw text each application's file at another path answers {@link #readText} with. */
+  private final Map<String, String> texts = new ConcurrentHashMap<>();
+
+  /**
+   * Script the text of a file {@link #readText} reads — {@code .config/qits/egress.yml} (epic
+   * qits-2523). Unscripted, the file is absent: the git host's 404, so every existing test's
+   * release carries no routes.
+   */
+  public void scriptText(String applicationName, String path, String text) {
+    texts.put(key(applicationName, path), text);
+  }
+
+  @Override
+  public Optional<String> readText(RepositoryRef repository, String rev, String path) {
+    String key = key(repository.applicationName(), path);
+    reads.merge(key, 1, Integer::sum);
+    String failure = failures.get(key);
+    if (failure != null) {
+      throw new SpecException(failure, retryable.contains(key));
+    }
+    return Optional.ofNullable(texts.get(key));
+  }
+
   public void reset() {
+    texts.clear();
     specs.clear();
     failures.clear();
     revs.clear();

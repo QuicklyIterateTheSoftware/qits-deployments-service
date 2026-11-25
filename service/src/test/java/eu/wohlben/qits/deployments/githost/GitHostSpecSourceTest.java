@@ -162,6 +162,40 @@ public class GitHostSpecSourceTest {
   }
 
   @Test
+  public void theEgressDeclarationIsReadAsTextAtTheTagAndA404IsNoFile() {
+    // epic qits-2523: the same blob route, the rev encoded the same way, the body unparsed.
+    body = "version: 1\nroutes: []\n";
+    java.util.Optional<String> text =
+        source()
+            .readText(
+                new RepositoryRef(UUID_ID, "qits", "qits-edge"),
+                SpecSource.tagRev(VERSION),
+                SpecSource.EGRESS_PATH);
+
+    assertEquals(java.util.Optional.of("version: 1\nroutes: []\n"), text);
+    assertEquals(
+        "/git/qits/qits-edge/blob/refs%2Ftags%2F" + VERSION + "/.config/qits/egress.yml",
+        onlyPath());
+
+    status = 404;
+    assertTrue(
+        source()
+            .readText(RepositoryRef.ofId("qits-edge"), SpecSource.tagRev(VERSION), SpecSource.EGRESS_PATH)
+            .isEmpty());
+    status = 503;
+    SpecException refused =
+        assertThrows(
+            SpecException.class,
+            () ->
+                source()
+                    .readText(
+                        RepositoryRef.ofId("qits-edge"),
+                        SpecSource.tagRev(VERSION),
+                        SpecSource.EGRESS_PATH));
+    assertTrue(refused.retryable(), refused.getMessage());
+  }
+
+  @Test
   public void anythingElseFailsTheDeploymentNamingTheUrlItAsked() {
     // The fe26a6c stance: a read that could not be answered is a failure, never an empty spec.
     status = 503;

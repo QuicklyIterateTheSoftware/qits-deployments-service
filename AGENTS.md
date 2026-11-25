@@ -1859,6 +1859,46 @@ it states env only):
 **Do not write these keys into a repository before this deployer is live** — the running parser
 refuses unknown keys, and a spec is read at the released tag.
 
+### `.config/qits/egress.yml` and the egress grant table (qits-2523)
+
+README's *Egress grants* has the file and the door's shape. Seven things about it, each easy to undo
+by accident:
+
+- **It is a second FILE, never a key of `deployments.yml`.** `SpecSource.readText(ref, rev,
+  EGRESS_PATH)` reads it unparsed — the seam's one method that returns text, so the file's grammar
+  stays out of the git host adapter and its refusal never becomes a `SpecException` the release path
+  would act on. `FakeSpecSource.scriptText` scripts it; unscripted is the 404, so every existing test
+  releases a version with no routes.
+- **Read in `DeployService.deployReadSpec`, for the MAIN application only** (`variant == null`),
+  after the declared-spec refusal and before anything is queued — so on a held or retried release it
+  is read when the release finally deploys, at the same tag. A variant is an application of its own
+  and the file is the main application's: a variant grants nothing.
+- **`EgressDeclarations.record` never throws.** No file → routes `[]`; a parse error → stored
+  REFUSED with the message; a read that never answered → stored refused the same way, unless that
+  (application, version) was already read, which is kept (a tag never changes). Every exception,
+  the store's included, ends in a log line. A malformed file is a deployed version with no routes
+  and a `refused` entry, never a failed deployment.
+- **Keyed by (application, VERSION), not by a deployment row** (`pd_egress_declaration`, V27). The
+  start door, a rollback and a re-announcement all deploy a version whose file has not changed, and
+  none of them re-reads it; a row key would have needed every one of those paths to copy it. The
+  table joins each application's newest `ACTIVE` row per tier on (application_name, version). A
+  version released before this read has no row and grants nothing.
+- **`EgressDeclarationParser` is a line reader, like `DeploymentSpecParser`**, for its reason: no
+  YAML library on this classpath and one shape to read. It takes the block form, `routes: []`, and
+  `methods` as a flow list or a block list; anchors, block scalars, flow maps and tabs are refused,
+  and every refusal names the file (and the line where there is one). One bad route refuses the
+  whole file.
+- **The table is built when it is asked** (`EgressGrantTables.current`, synchronized, one
+  `requiringNew`): two queries, a hash over the content, and a new `pd_egress_grant_table` version
+  only when the hash moved (`EdgeRouteTables.nextVersion`). Asking twice stores nothing, which is
+  why the door can wrap a build that may write in `PdReadPatience`.
+- **Golden masters**: `an egress grant table with one route` (a directly written `ACTIVE`
+  qits-edge row in a tier clean-up deletes, the declaration through `record`) and `an empty egress
+  grant table`, both built at `EGRESS_TABLE_BUILT_AT` after every declaration is cleared — so the
+  version is that instant's millis and no other suite's rows can add a route.
+  `PdEgressGrantApiTest` holds the shape, the roles, the version rule and a malformed file that
+  still deploys; `EgressDeclarationParserTest` holds every rule.
+
 ### `replicas:` — more than one task, for an application that can run twice (qits-2523)
 
     replicas: 2        # 1..5, default 1
@@ -1938,7 +1978,7 @@ carries a `@RolesAllowed`, and there are exactly four roles:
 | `qits:admin` | every read — applications, deployments, the environment listing/aggregate/links, the service listing — **and the operator's two levers**, `POST /applications/{id}/scale` and `/restart` | the forwarded `X-Qits-Roles` header only: the platform edge asserts it for an authenticated admin session, and the bootstrap asserts it on its own qits-net hop (`PdApi.ADMIN_HEADERS`) |
 | `qits:admin-agent` | wherever `qits:admin` is (qits-628 follow-up) | an ADMIN workspace's coding agent's credential, alongside `qits:agent`; for now it may use everything `qits:admin` may use |
 | `qits:desk-admin` | wherever `qits:admin-agent` is (qits-1621) | the delivery desk's admin grant, alongside `qits:agent` and `qits:desk` |
-| `qits:system` | the pins, the **idp-client claims** (`GET /claims/idp-clients`, qits-idp's read for its service-client garbage collection), the **deployment-request listing** (`GET /deployment-requests`, the read qits-projects draws a release's deploy phase from), every topology **write** (environment create/patch/delete, service upsert/delete) and the release intake | a machine bearer: qits-platform-idp copies `qits.idp.client.<id>.roles` into the token's `groups` claim, which quarkus-oidc reads as roles with no configuration at all. It is the open calling model's role — "a service calling a service" |
+| `qits:system` | the **egress grants** (`GET /egress-grants`, qits-egress' poll, qits-2523), the pins, the **idp-client claims** (`GET /claims/idp-clients`, qits-idp's read for its service-client garbage collection), the **deployment-request listing** (`GET /deployment-requests`, the read qits-projects draws a release's deploy phase from), every topology **write** (environment create/patch/delete, service upsert/delete) and the release intake | a machine bearer: qits-platform-idp copies `qits.idp.client.<id>.roles` into the token's `groups` claim, which quarkus-oidc reads as roles with no configuration at all. It is the open calling model's role — "a service calling a service" |
 | `qits:agent` | every read — the ones `qits:admin` has, plus the pins and the idp-client claims — and two writes: the database move and the approval of a held deployment request (qits-2268) | an agent's own bearer: a commissioned client whose kind maps to this role (epic qits-543, dossier page "Plan (as of 2026-09-13)", C7) |
 
 **The two sets — `qits:system` and `qits:admin` — do not overlap and must not.** A machine token
@@ -3350,6 +3390,12 @@ nothing. `PdDecommission` is a stamped `CausedRow` (request thread, the `PdEnvir
 `image_defaults:` deleted from the settings store, comma-separated in file order, keys only. Null is
 every row that retired nothing and every row from before the column; **no backfill**, because what
 those retired was never recorded.
+
+**`V27__egress_declaration.sql` adds two tables and no column** (qits-2523):
+`pd_egress_declaration`, one row per (application, version) — `routes` jsonb (`[]` for none,
+null exactly when `refused` holds the reason) — and `pd_egress_grant_table`, V23's one-row-per-table
+shape for the egress grant table (`id` = `egress`). Both `@Uncaused`, `PdEdgeRouteTable`'s reason.
+**No backfill**: no version was ever read, so none grants anything until it is released again.
 
 **`V26__deployment_request_declared_variants.sql` is V19's shape on the request** (qits-2296):
 `declared_variants text`, nullable, comma-separated in file order, on `pd_deployment_request` —
