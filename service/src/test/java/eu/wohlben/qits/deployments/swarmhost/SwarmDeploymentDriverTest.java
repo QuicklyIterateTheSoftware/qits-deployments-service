@@ -5289,6 +5289,112 @@ class SwarmDeploymentDriverTest {
     assertEquals(List.of(), dnsArguments(update, "--dns-add"));
   }
 
+  // --- qits-2588: a former private-edge VIP is never handed on as an upstream -------------------
+
+  @Test
+  void aFormerVipStillInExtServersIsDroppedFromThePrivateEdgeResolvers() {
+    SwarmDeploymentDriver driver = driver();
+    driver.resolvConf =
+        resolvConf("nameserver 127.0.0.11\n# ExtServers: [10.231.0.8 192.168.188.1]\n").toString();
+    scriptPrivateEdge("10.231.0.5");
+
+    SwarmDeploymentDriver.Resolvers resolvers =
+        driver.privateEdgeResolvers(exposed(DeploymentDriver.Exposure.PRIVATE));
+
+    assertEquals(
+        List.of("10.231.0.5", "192.168.188.1"),
+        resolvers.servers(),
+        "10.231.0.8 is the overlay's own and is dropped, not handed on as an upstream: "
+            + resolvers);
+  }
+
+  @Test
+  void aSelfUpdateDropsAFormerVipStillInsideThePrivateSubnet() {
+    // On main today this issues no --dns-rm at all: 10.231.0.8 is read back as an "upstream" and
+    // the wanted list becomes [new VIP, old VIP, upstream], which the live [old VIP, upstream]
+    // already satisfies.
+    SwarmDeploymentDriver driver = selfOn(driver(), PRIVATE_NET_ID + "\n");
+    driver.resolvConf =
+        resolvConf("nameserver 127.0.0.11\n# ExtServers: [10.231.0.8 192.168.188.1]\n").toString();
+    scriptPrivateEdge("10.231.0.5");
+    cli.script(
+        SwarmDeploymentDriver.SPEC_DNS_FORMAT,
+        result(0, "{\"Nameservers\":[\"10.231.0.8\",\"192.168.188.1\"]}\n"));
+
+    DeploymentDriver.ApplyResult applied = driver.apply(exposed(DeploymentDriver.Exposure.PRIVATE));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.HANDED_OFF, applied.outcome());
+    List<String> update = cli.matching("service update");
+    assertEquals(List.of("10.231.0.8"), dnsArguments(update, "--dns-rm"), update.toString());
+    assertEquals(List.of("10.231.0.5"), dnsArguments(update, "--dns-add"), update.toString());
+  }
+
+  @Test
+  void theDerivedUpstreamAlsoDropsAnAddressInsideThePrivateSubnet() {
+    // The derive path (qits-2586) reads a resolver edge's OWN resolv.conf, which can carry a stale
+    // VIP in its ExtServers exactly as the deployer's own resolv.conf can.
+    SwarmDeploymentDriver driver = driver();
+    driver.resolvConf = vipOnlyResolvConf();
+    cli.script(
+        "service ls -q --filter label=qits.platform.deployments.app-name=qits-edge-private",
+        result(0, PRIVATE_EDGE_SHORT_ID + "\n"));
+    cli.script(
+        SwarmDeploymentDriver.SERVICE_NAME_FORMAT + " " + PRIVATE_EDGE_SHORT_ID,
+        result(0, "dev-qits-edge-private\n"));
+    cli.script(
+        "label=com.docker.swarm.service.name=dev-qits-edge-private", result(0, "edgecontainer01\n"));
+    cli.cpWrites = "nameserver 127.0.0.11\n# ExtServers: [10.231.0.9 192.168.188.1]\n";
+
+    SwarmDeploymentDriver.UpstreamDerivation derived =
+        driver.derivedUpstreams(
+            new SwarmDeploymentDriver.EdgeVip("10.231.0.5", null, false, "qits-edge-private"));
+
+    assertEquals(
+        List.of("192.168.188.1"),
+        derived.servers(),
+        "10.231.0.9 is on the private subnet too and is dropped: " + derived);
+    assertEquals(List.of(), derived.misses(), derived.misses().toString());
+  }
+
+  @Test
+  void upstreamsOutsideThePrivateSubnetIncludingIpv6AreKeptInOrder() {
+    SwarmDeploymentDriver driver = driver();
+    driver.resolvConf =
+        resolvConf(
+                "nameserver 127.0.0.11\n"
+                    + "# ExtServers: [10.231.0.8 185.12.64.1 2a01:4ff:ff00::add:1"
+                    + " 2a01:4ff:ff00::add:2]\n")
+            .toString();
+    scriptPrivateEdge("10.231.0.5");
+
+    SwarmDeploymentDriver.Resolvers resolvers =
+        driver.privateEdgeResolvers(exposed(DeploymentDriver.Exposure.PRIVATE));
+
+    assertEquals(
+        List.of("10.231.0.5", "185.12.64.1", "2a01:4ff:ff00::add:1", "2a01:4ff:ff00::add:2"),
+        resolvers.servers(),
+        "10.231.0.8 alone is on the subnet; the IPv6 upstreams are never \"inside\" it: " + resolvers);
+  }
+
+  @Test
+  void anUnparseablePrivateNetworkSubnetFiltersTheVipAloneWithoutThrowing() {
+    SwarmDeploymentDriver driver = driver();
+    driver.privateNetworkSubnet = "not-a-cidr";
+    driver.resolvConf =
+        resolvConf("nameserver 127.0.0.11\n# ExtServers: [10.231.0.8 192.168.188.1]\n").toString();
+    scriptPrivateEdge("10.231.0.5");
+
+    SwarmDeploymentDriver.Resolvers resolvers =
+        driver.privateEdgeResolvers(exposed(DeploymentDriver.Exposure.PRIVATE));
+
+    assertEquals(
+        List.of("10.231.0.5", "10.231.0.8", "192.168.188.1"),
+        resolvers.servers(),
+        "an unparseable subnet falls back to filtering the named VIP alone, same as before"
+            + " qits-2588: "
+            + resolvers);
+  }
+
   // --- placement by label (qits-2174) ------------------------------------------------------------
 
   private static final DeploymentDriver.RouteLabels GATEWAY_ROUTES =

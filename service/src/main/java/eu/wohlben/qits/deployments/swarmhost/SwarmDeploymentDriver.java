@@ -46,6 +46,7 @@ import java.util.OptionalInt;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -594,6 +595,15 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   /**
    * The private overlay's subnet, fixed rather than drawn from docker's pool, because the private
    * edge's allow-list names it. {@code 10.231.0.0/20} shipped.
+   *
+   * <p>It is also what {@link #insidePrivateSubnet} tests an upstream candidate against (qits-2588):
+   * an address on this subnet is the private overlay's own, so it is never an upstream resolver —
+   * a former resolver VIP, superseded by a later {@link #resolverVip}, that still sits in a
+   * resolv.conf's {@code # ExtServers:} line is exactly that, and handing it on as an upstream
+   * means it is never dropped from a live service's {@code --dns} once it stops being the VIP. A
+   * null, blank or unparseable value answers {@code false} for everything, which is {@link
+   * #upstreamsBesides} and {@link #derivedUpstreams}'s behaviour before qits-2588: filter the named
+   * VIP alone.
    */
   @ConfigProperty(name = "qits.deployments.swarm.private-network.subnet")
   String privateNetworkSubnet;
@@ -625,6 +635,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * Where this process's own resolvers are read from (qits-2117): the upstreams that follow the
    * private edge's VIP in a private service's {@code --dns} list. {@code /etc/resolv.conf} shipped;
    * another path is for a suite.
+   *
+   * <p>An address this file names is an upstream only when it is outside {@link
+   * #privateNetworkSubnet} (qits-2588, {@link #upstreamsBesides}): docker's {@code ExtServers} line
+   * does not age out a VIP that moved, so an installation that has resolved through more than one
+   * private-edge VIP over its life can carry a stale one here indefinitely, and nothing short of
+   * recognising it as an address on the private overlay — rather than comparing it to the one VIP a
+   * call happens to name — ever drops it.
    */
   @ConfigProperty(name = "qits.deployments.swarm.private-edge.resolv-conf")
   String resolvConf;
@@ -645,6 +662,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   private volatile DerivedUpstreams derivedUpstreams;
 
   private record DerivedUpstreams(String vip, String edgeService, List<String> servers, Instant at) {}
+
+  /**
+   * Set once {@link #insidePrivateSubnet} has WARNed about an unparseable {@link
+   * #privateNetworkSubnet} (qits-2588): one log line per process life, not one per {@link
+   * #upstreamsBesides}/{@link #derivedUpstreams} call.
+   */
+  private final AtomicBoolean badPrivateNetworkSubnetWarned = new AtomicBoolean();
 
   /**
    * The platform's one domain, handed to every container as {@link #DOMAIN_VARIABLE}. See that
@@ -2579,7 +2603,12 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     return found.size() == 1 ? dnsServer(found.get(0)) : Optional.empty();
   }
 
-  /** This process's upstreams, read from {@link #resolvConf}, without {@code vip}. */
+  /**
+   * This process's upstreams, read from {@link #resolvConf}, without {@code vip} and without any
+   * address {@link #insidePrivateSubnet} (qits-2588) — a former resolver VIP left in {@code
+   * ExtServers} by an earlier {@link #resolverVip} answer is on the private overlay too, and
+   * {@code vip} alone no longer names it.
+   */
   private List<String> upstreamsBesides(String vip) {
     String text;
     try {
@@ -2588,7 +2617,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       LOG.debugf("Could not read %s: %s", resolvConf, e.toString());
       return List.of();
     }
-    return upstreams(text).stream().filter(server -> !server.equals(vip)).toList();
+    return upstreams(text).stream()
+        .filter(server -> !server.equals(vip) && !insidePrivateSubnet(server))
+        .toList();
   }
 
   /**
@@ -2605,8 +2636,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * container carries the service's name in full, so a task lookup filtered on the truncated id
    * never matched a thing (qits-2586) — a running task container of it on this node ({@code ps
    * --filter label=com.docker.swarm.service.name=<name> --filter status=running}, first line), and
-   * its resolv.conf ({@link #edgeResolvConf}), parsed by {@link #upstreams} without loopback or the
-   * VIP.
+   * its resolv.conf ({@link #edgeResolvConf}), parsed by {@link #upstreams} without loopback, the
+   * VIP, or any address {@link #insidePrivateSubnet} (qits-2588) — this edge's own resolv.conf can
+   * carry a former VIP in {@code ExtServers} exactly as the deployer's can.
    *
    * <p>A success is reused for {@link #DERIVED_UPSTREAMS_TTL} while the VIP is the same, and logged
    * once at INFO when it is derived; a failure is never cached and is a WARN naming every resolver
@@ -2679,7 +2711,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
           continue;
         }
         List<String> servers =
-            upstreams(read.text()).stream().filter(server -> !server.equals(vip)).toList();
+            upstreams(read.text()).stream()
+                .filter(server -> !server.equals(vip) && !insidePrivateSubnet(server))
+                .toList();
         if (servers.isEmpty()) {
           misses.add(
               application + ": its resolv.conf names no upstream" + bracketed(flattened(read.text())));
@@ -2809,6 +2843,81 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     } catch (IllegalArgumentException e) {
       return true;
     }
+  }
+
+  /**
+   * Whether {@code address} is an IPv4 literal inside {@link #privateNetworkSubnet} (qits-2588) —
+   * the private overlay's own range, so an address there is never an upstream resolver however it
+   * got into a resolv.conf: it is a former {@link #resolverVip} answer, superseded by a later one,
+   * that {@code ExtServers} never ages out on its own.
+   *
+   * <p>An IPv6 literal is never inside it — the subnet this process is configured with is IPv4 only,
+   * by {@link #privateNetworkSubnet}'s own contract, so there is nothing to compare an IPv6 address
+   * against. A null, blank or unparseable {@link #privateNetworkSubnet} answers {@code false} for
+   * every address — the behaviour {@link #upstreamsBesides} and {@link #derivedUpstreams} had before
+   * qits-2588, filtering the named VIP alone — with one WARN naming the bad value, logged once
+   * ({@link #badPrivateNetworkSubnetWarned}) rather than on every call. Never throws.
+   */
+  private boolean insidePrivateSubnet(String address) {
+    String subnet = privateNetworkSubnet;
+    if (subnet == null || subnet.isBlank() || address == null) {
+      return false;
+    }
+    int[] network = parsePrivateSubnet(subnet);
+    if (network == null) {
+      return false;
+    }
+    if (!IPV4_LITERAL.matcher(address).matches()) {
+      return false;
+    }
+    try {
+      byte[] candidate = InetAddress.ofLiteral(address).getAddress();
+      if (candidate.length != 4) {
+        return false;
+      }
+      int mask = network[1];
+      return (toInt(candidate) & mask) == network[0];
+    } catch (IllegalArgumentException e) {
+      return false;
+    }
+  }
+
+  /**
+   * {@code {network bits, mask}} of {@link #privateNetworkSubnet}, or {@code null} on anything
+   * unparseable — logged once at WARN ({@link #badPrivateNetworkSubnetWarned}), never per call.
+   */
+  private int[] parsePrivateSubnet(String subnet) {
+    try {
+      String stripped = subnet.strip();
+      int slash = stripped.indexOf('/');
+      if (slash < 0) {
+        throw new IllegalArgumentException("no /prefix");
+      }
+      byte[] network = InetAddress.ofLiteral(stripped.substring(0, slash).strip()).getAddress();
+      int prefix = Integer.parseInt(stripped.substring(slash + 1).strip());
+      if (network.length != 4 || prefix < 0 || prefix > 32) {
+        throw new IllegalArgumentException("not an IPv4 CIDR");
+      }
+      int mask = prefix == 0 ? 0 : (int) (0xFFFFFFFFL << (32 - prefix));
+      return new int[] {toInt(network) & mask, mask};
+    } catch (IllegalArgumentException e) {
+      if (badPrivateNetworkSubnetWarned.compareAndSet(false, true)) {
+        LOG.warnf(
+            "qits.deployments.swarm.private-network.subnet (%s) is not a parseable IPv4 CIDR (%s);"
+                + " an upstream resolver is filtered by its VIP alone",
+            subnet,
+            e.getMessage());
+      }
+      return null;
+    }
+  }
+
+  /** The four bytes of an IPv4 address, big-endian, as one {@code int}. */
+  private static int toInt(byte[] address) {
+    return ((address[0] & 0xFF) << 24)
+        | ((address[1] & 0xFF) << 16)
+        | ((address[2] & 0xFF) << 8)
+        | (address[3] & 0xFF);
   }
 
   /**
