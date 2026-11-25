@@ -110,7 +110,9 @@ public final class Contracts {
 
     static Contract of(GoldenMasters masters, Check... checks) {
       List<Check> all = List.of(checks);
-      List<GoldenInteraction> rows = all.stream().map(Check::row).toList();
+      // distinct: two client methods may make one recorded request (the spec read and the egress
+      // declaration's read are the same blob GET, epic qits-2523), and a pact holds a row once.
+      List<GoldenInteraction> rows = all.stream().map(Check::row).distinct().toList();
       for (Check check : all) {
         if (!rows.containsAll(check.alongside())) {
           throw new IllegalArgumentException(
@@ -316,7 +318,30 @@ public final class Contracts {
               "read",
               UNNAMED_SPEC_BY_ID,
               (url, recorded) ->
-                  declared(GitHostSources.at(url).read(byId(recorded.params()), recorded.params().get("rev")), recorded)));
+                  declared(GitHostSources.at(url).read(byId(recorded.params()), recorded.params().get("rev")), recorded)),
+          // The egress declaration's read (epic qits-2523) is the same blob request answered as
+          // text: a 200 is the file's content, a 404 no file. It replays the spec read's rows, since
+          // the request differs from them only in the path.
+          Check.of(
+              GitHostSpecSource.class,
+              "readText",
+              SPEC_BY_NAME,
+              (url, recorded) ->
+                  assertTrue(
+                      GitHostSources.at(url)
+                          .readText(byName(recorded.params()), recorded.params().get("rev"), recorded.params().get("path"))
+                          .isPresent(),
+                      "a 200 blob is the file's text")),
+          Check.of(
+              GitHostSpecSource.class,
+              "readText",
+              NO_SPEC_BY_NAME,
+              (url, recorded) ->
+                  assertFalse(
+                      GitHostSources.at(url)
+                          .readText(byName(recorded.params()), recorded.params().get("rev"), recorded.params().get("path"))
+                          .isPresent(),
+                      "a 404 blob is no file")));
 
   // --- qits-artifacts --------------------------------------------------------------------------
 
