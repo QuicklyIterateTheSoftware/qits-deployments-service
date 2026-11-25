@@ -895,6 +895,58 @@ class DeploymentSpecParserTest {
   }
 
   @Test
+  void replicasDefaultsToOneAndAcceptsUpToFive() {
+    // qits-2523: one task unless the file says otherwise, and the count reaches the driver on the
+    // declared shape.
+    assertEquals(1, parse("").shape().replicas(), "the default");
+    assertEquals(1, parse("replicas: 1\n").shape().replicas());
+    assertEquals(2, parse("replicas: 2\n").shape().replicas());
+    assertEquals(5, parse("replicas: 5\n").shape().replicas());
+    // An ingress port is held by the routing mesh, not a task, so it does not clash.
+    assertEquals(
+        2, parse("replicas: 2\npublish_mode: ingress\nupdate_order: start-first\n").shape().replicas());
+  }
+
+  @Test
+  void replicasOutsideOneToFiveIsAnError() {
+    for (String value : List.of("0", "6", "-1", "two", "1.5", "")) {
+      String message = messageOf("replicas: " + value + "\n");
+      assertTrue(message.contains("replicas"), message);
+      assertTrue(message.contains("from 1 to 5"), message);
+    }
+  }
+
+  @Test
+  void moreThanOneReplicaBesidePublishesIsAnError() {
+    String message = messageOf("replicas: 2\npublishes: 8080:8080\n");
+    assertTrue(message.contains("replicas: 2"), message);
+    assertTrue(message.contains("publishes"), message);
+    // The order of the two lines does not matter: the check runs on the whole file.
+    assertTrue(messageOf("publishes: 8080:8080\nreplicas: 3\n").contains("publishes"));
+  }
+
+  @Test
+  void moreThanOneReplicaBesideHostPublishModeIsAnError() {
+    String message = messageOf("replicas: 2\npublish_mode: host\n");
+    assertTrue(message.contains("publish_mode: host"), message);
+  }
+
+  @Test
+  void moreThanOneReplicaBesideStopFirstIsAnError() {
+    String message = messageOf("replicas: 2\nupdate_order: stop-first\n");
+    assertTrue(message.contains("update_order: stop-first"), message);
+  }
+
+  @Test
+  void oneReplicaStatedOutrightClashesWithNothing() {
+    // `replicas: 1` is the default said aloud — the single-task shape every one of those three
+    // statements exists for.
+    DeploymentSpec spec =
+        parse("replicas: 1\npublishes: 8080:8080\npublish_mode: host\nupdate_order: stop-first\n");
+    assertEquals(1, spec.shape().replicas());
+  }
+
+  @Test
   void anUnknownKeyIsAnError() {
     // A lenient parser answers a typo with a default, which deploys the wrong topology in silence.
     String message = messageOf("deployment_targets: platform\n");
@@ -907,6 +959,7 @@ class DeploymentSpecParserTest {
     assertTrue(message.contains("application"), message);
     assertTrue(message.contains("renamed_from"), message);
     assertTrue(message.contains("stop_grace_period"), message);
+    assertTrue(message.contains("replicas"), message);
   }
 
   @Test

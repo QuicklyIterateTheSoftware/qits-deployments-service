@@ -3129,6 +3129,74 @@ class SwarmDeploymentDriverTest {
     assertEquals("1", argv.get(flag + 1));
   }
 
+  // --- replicas: from deployments.yml (qits-2523) --------------------------------------------
+
+  private DeploymentDriver.ServiceSpec withReplicas(int replicas) {
+    return withShape(
+        spec(), new DeclaredShape(List.of(), List.of(), List.of(), List.of(), List.of(), replicas));
+  }
+
+  @Test
+  void declaredReplicasReachTheCreateRolledOneTaskAtATimeStartFirst() {
+    List<String> argv =
+        driver().buildCreateArgv(withReplicas(2), "dev-qits-gateway", List.of("qits-net"));
+
+    int flag = argv.indexOf("--replicas");
+    assertEquals("2", argv.get(flag + 1), argv.toString());
+    int parallelism = argv.indexOf("--update-parallelism");
+    assertTrue(parallelism > 0, argv.toString());
+    assertEquals("1", argv.get(parallelism + 1));
+    assertTrue(argv.containsAll(List.of("--update-order", "start-first")), argv.toString());
+    assertEquals(1, flagCount(argv, "--update-parallelism"), argv.toString());
+  }
+
+  @Test
+  void aDeploymentRestatesTheDeclaredReplicaCountWhateverItWasScaledTo() {
+    // The scale door's count lasts until the next deployment, which puts the declared one back.
+    List<String> argv = driver().buildUpdateArgv(withReplicas(3), "dev-qits-gateway");
+
+    int flag = argv.indexOf("--replicas");
+    assertEquals("3", argv.get(flag + 1), argv.toString());
+    int parallelism = argv.indexOf("--update-parallelism");
+    assertTrue(parallelism > 0, argv.toString());
+    assertEquals("1", argv.get(parallelism + 1));
+    assertTrue(argv.containsAll(List.of("--update-order", "start-first")), argv.toString());
+    assertEquals("dev-qits-gateway", argv.get(argv.size() - 1), "the service stays the last word");
+  }
+
+  @Test
+  void aOneTaskServiceCarriesNoParallelismFlagSoItsArgvIsUnchanged() {
+    assertFalse(
+        driver()
+            .buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"))
+            .contains("--update-parallelism"));
+    assertFalse(
+        driver().buildUpdateArgv(spec(), "dev-qits-gateway").contains("--update-parallelism"));
+  }
+
+  @Test
+  void aFirstDeploymentOfTwoTasksConvergesOnlyOnceBothRun() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}}", result(1, "no such service"));
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, driver.apply(withReplicas(2)).outcome());
+    assertTrue(
+        String.join(" ", cli.matching("service create")).contains("--replicas 2"),
+        cli.calls.toString());
+    cli.script(".UpdateStatus", result(0, "||"));
+    cli.script(
+        "service ps",
+        result(0, "Running 2 seconds ago\nStarting less than a second ago"),
+        result(0, "Running 3 seconds ago\nRunning 1 second ago"));
+    int before = cli.count("service ps");
+
+    DeploymentDriver.Convergence converged =
+        driver.awaitConverged("dev-qits-gateway", Duration.ofSeconds(30));
+
+    assertEquals(DeploymentDriver.ConvergenceOutcome.CONVERGED, converged.outcome());
+    // One running task of two is half a deployment: the first reading is not the verdict.
+    assertEquals(2, cli.count("service ps") - before, cli.calls.toString());
+  }
+
   // --- the scripted seam --------------------------------------------------------------------
 
   /** A container id file of this test's own, so nothing here depends on the build host. */

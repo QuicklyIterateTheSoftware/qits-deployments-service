@@ -421,14 +421,16 @@ Eight things about it, each easy to undo by accident:
   the observation to promote. This component reaches a health verdict in exactly one place and it is
   `DeploymentObserver`; a scale that wrote `ACTIVE` would be claiming a gate it never ran. The wait
   is one `observe-interval-seconds` and that is the honest cost.
-- **`MAX_REPLICAS` is 1, and it is the platform's shape rather than swarm's limit.** Every
-  application here binds host ports from inside the task, or writes to a store with one writer, or
-  holds a config volume. Raising it belongs in the commit that makes one of them able to run twice.
+- **`MAX_REPLICAS` is 1, and it is the platform's shape rather than swarm's limit.** Most
+  applications here bind host ports from inside the task, or write to a store with one writer, or
+  hold a config volume. An application that CAN run twice says so in its own file — `replicas:`
+  (qits-2523, below) — and the door stays `0|1`: an operator's count lasts until the next
+  deployment, which restates the declared one.
 - **Scaling the deployer's own service to 0 is REFUSED by the driver**, naming why: there would be
   nothing left to scale it back up, and the API that would have done it is what stops answering.
   Scaling it up and bouncing it are allowed and come back `HANDED_OFF`, the self-deployment's own
   outcome and the same arbiter.
-- **A deployment RESTATES `--replicas 1`**, which is new in `buildUpdateArgv` and is the one piece
+- **A deployment RESTATES `--replicas <declared>`** (1 unless `replicas:` says otherwise), which is new in `buildUpdateArgv` and is the one piece
   of desired state an update owns beside the image. A service left at 0 takes `service update
   --image` happily — swarm has no task to converge, so the update completes at once and the row is
   recorded `ACTIVE` with nothing running behind it. Mounts, networks and ports stay absent for the
@@ -1856,6 +1858,29 @@ it states env only):
 
 **Do not write these keys into a repository before this deployer is live** — the running parser
 refuses unknown keys, and a spec is read at the released tag.
+
+### `replicas:` — more than one task, for an application that can run twice (qits-2523)
+
+    replicas: 2        # 1..5, default 1
+
+- **It rides `DeclaredShape`**, the record that already carries the file's host-facing statements
+  untouched to the driver, though it is desired state rather than shape. `SwarmDeploymentDriver`
+  reads it through `deployedReplicas(spec)` — the one spelling that replaced the `DEPLOYED_REPLICAS`
+  constant — on the create, the update and the self-update alike.
+- **More than one is refused beside the three statements that are why the default is one**:
+  `publishes:` and an explicit `publish_mode: host` (a host port has one binder per node), and
+  `update_order: stop-first` (single writer). `replicas: 1` said aloud clashes with nothing. The
+  check runs on the whole file, so the order of the lines does not matter.
+- **`--update-parallelism 1` only when the count is above one**, spliced after the
+  `--update-order` pair (`withUpdateParallelism`; the containers-driver `UpdatePolicy` has no
+  parallelism field). Docker's default is the same 1; leaving the flag off a one-task service keeps
+  every existing argv byte-identical. Start-first is guaranteed by the parser's stop-first refusal.
+- **The task-read verdicts count.** A fresh create (no `UpdateStatus` yet) and an update of a
+  service that stood at 0 converge once `issuedReplicas` many tasks run, not one: one running task
+  of two is half a deployment. The ordinary update path reads swarm's `UpdateStatus`, which already
+  covers every task. The observer's `observe` still reads "any task running" as healthy — a
+  half-serving application is serving.
+- **The scale door is unchanged** (`0|1`), and the next deployment restores the declared count.
 
 ## Addressing and auth
 

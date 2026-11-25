@@ -34,13 +34,26 @@ import java.util.Set;
  * {@code ip_forward=1} with {@code /proc/sys} read-only, and would route a tunnel peer around the
  * edge). No extras twin either, and restated on the update too ({@code --sysctl-add} is
  * idempotent).
+ *
+ * <p>{@code replicas} is {@code replicas:} (qits-2523) — how many tasks the service runs, {@link
+ * #DEFAULT_REPLICAS} unless the file says otherwise and never above {@link #MAX_REPLICAS}. It is
+ * desired state rather than shape, but it is carried here because this record is what already
+ * travels from the file to the driver untouched; the create declares it and every update restates
+ * it, so a deployment puts back the declared count whatever an operator scaled the service to.
  */
 public record DeclaredShape(
     List<ServiceExtras.Mount> binds,
     List<String> publishes,
     List<String> aliases,
     List<String> capAdd,
-    List<String> sysctls) {
+    List<String> sysctls,
+    int replicas) {
+
+  /** The task count of a file that does not say — every file before qits-2523. */
+  public static final int DEFAULT_REPLICAS = 1;
+
+  /** The most tasks a file may ask for. */
+  public static final int MAX_REPLICAS = 5;
 
   /**
    * The one placeholder an alias may carry. Replaced by the deployment's environment name, so one
@@ -61,9 +74,13 @@ public record DeclaredShape(
 
   /** A file that declared none of the three — every file that exists today. */
   public static final DeclaredShape NONE =
-      new DeclaredShape(List.of(), List.of(), List.of(), List.of(), List.of());
+      new DeclaredShape(List.of(), List.of(), List.of(), List.of(), List.of(), DEFAULT_REPLICAS);
 
   public DeclaredShape {
+    if (replicas < 1 || replicas > MAX_REPLICAS) {
+      throw new IllegalArgumentException(
+          "replicas must be 1.." + MAX_REPLICAS + ", got " + replicas);
+    }
     sysctls = sysctls == null ? List.of() : List.copyOf(sysctls);
     capAdd = capAdd == null ? List.of() : List.copyOf(capAdd);
     binds = binds == null ? List.of() : List.copyOf(binds);
@@ -71,10 +88,20 @@ public record DeclaredShape(
     aliases = aliases == null ? List.of() : List.copyOf(aliases);
   }
 
+  /** The shape before {@code replicas}: a file that runs one task. */
+  public DeclaredShape(
+      List<ServiceExtras.Mount> binds,
+      List<String> publishes,
+      List<String> aliases,
+      List<String> capAdd,
+      List<String> sysctls) {
+    this(binds, publishes, aliases, capAdd, sysctls, DEFAULT_REPLICAS);
+  }
+
   /** The shape before {@code cap_add}: a file that grants no capability. */
   public DeclaredShape(
       List<ServiceExtras.Mount> binds, List<String> publishes, List<String> aliases) {
-    this(binds, publishes, aliases, List.of(), List.of());
+    this(binds, publishes, aliases, List.of(), List.of(), DEFAULT_REPLICAS);
   }
 
   /** The shape before {@code sysctls}: a file that sets no kernel parameter. */
@@ -83,7 +110,7 @@ public record DeclaredShape(
       List<String> publishes,
       List<String> aliases,
       List<String> capAdd) {
-    this(binds, publishes, aliases, capAdd, List.of());
+    this(binds, publishes, aliases, capAdd, List.of(), DEFAULT_REPLICAS);
   }
 
   /**

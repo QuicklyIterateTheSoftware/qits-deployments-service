@@ -88,6 +88,10 @@ public class ApplicationScaling {
    * are single-writer stores on one volume, and one holds a config volume — a second task is a
    * refused schedule or a corrupted cluster, not capacity. Raising it is a decision about those
    * applications, and it belongs in the same commit as whatever makes one of them able to run twice.
+   *
+   * <p>An application that can run twice says so in its own file — {@code replicas:} (qits-2523) —
+   * and this door is unchanged by it: an operator's 0 or 1 holds until the next deployment, which
+   * restates the declared count, exactly as it restated one before.
    */
   public static final int MAX_REPLICAS = 1;
 

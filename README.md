@@ -87,6 +87,7 @@ sysctls: net.ipv4.ip_forward=0       # kernel parameters as <name>=<value>; only
 image: qits-edge                     # the image pulled, qits/<image>:<version>; default: the application
 variants: private                    # main file only: also deploy .config/qits/deployments.<name>.yml
 stop_grace_period: 10m               # default 30s; SIGTERM-to-SIGKILL, e.g. 90s, 9m30s, at most 1h
+replicas: 2                          # default 1, at most 5; refused beside publishes, publish_mode: host, stop-first
 image_defaults: QITS_EDGE_ACME_MODE=production   # env the image ships itself; settings rows equal to it retire
 routes: /artifacts,/artifacts/api    # optional public path prefixes, ordered
 upstream_port: 8080                  # default; target port behind every declared route
@@ -103,6 +104,17 @@ provisioned database, the derived host label, the catalogue key, the extras fami
 does not notice. Two repositories claiming one application name is last-wins and this component
 cannot refuse it (these tables record an application name and no repository identity); changing the
 key on a live application is a decommission and a new application, not a rename.
+
+`replicas:` is how many tasks the service runs (qits-2523): a whole number from 1 to 5, and 1 when
+the file says nothing, so every file today deploys exactly as before. The create declares it and every
+deployment restates it, so the operator's scale door (`POST …/scale`, still `0|1`) holds only until
+the next deployment, which puts the declared count back. More than one task is **refused** beside
+`publishes:` and an explicit `publish_mode: host` (a host port has one binder per node) and beside
+`update_order: stop-first` (an application that cannot run beside itself cannot run twice) — the
+three reasons the default is one. A service of more than one task is rolled one task at a time,
+start-first (`--update-parallelism 1`), so the others keep serving; a one-task service carries no
+parallelism flag and its argv is unchanged. A first deployment, and an update of a service a move
+had stopped, converge once that many tasks run, not one.
 
 `exposure:` is which networks the service joins and which edge routes it (qits-1976). `public` —
 the default, and every file today — joins `qits-net` exactly as before; `private` joins only the

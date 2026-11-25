@@ -395,14 +395,28 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       java.util.regex.Pattern.compile("(\\d+(?:\\.\\d+)?)(h|ms|m|us|\u00b5s|ns|s)");
 
   /**
-   * How many tasks a service this component creates runs. One, everywhere: the applications on this
-   * platform bind host ports from inside the task and write to stores with a single writer, so a
-   * second task is a port collision or a corrupted volume rather than capacity.
+   * How many tasks a service this component deploys runs: the repository's {@code replicas:}
+   * (qits-2523), one when it says nothing. One is the default because most applications here bind
+   * host ports from inside the task or write to stores with a single writer, and the parser refuses
+   * more than one beside either statement.
    *
-   * <p>It is stated once and used twice — the create declares it, and an update <b>restates</b> it.
-   * See {@link #buildUpdateArgv} for why the update must.
+   * <p>It is stated twice — the create declares it, and an update <b>restates</b> it, so an
+   * operator's scale lasts until the next deployment puts the declared count back. See {@link
+   * #buildUpdateArgv} for why the update must. The fresh-create and resumed-from-zero verdicts wait
+   * for this many tasks to run.
    */
-  static final int DEPLOYED_REPLICAS = 1;
+  static int deployedReplicas(ServiceSpec spec) {
+    return spec.shape().replicas();
+  }
+
+  /**
+   * The update parallelism a service of more than one task is rolled with: one task at a time, so
+   * the others keep serving while each is replaced start-first (the parser refuses {@code
+   * stop-first} beside {@code replicas:}). A one-task service carries no flag at all — docker's
+   * default is the same 1, and the argv of every application that does not declare {@code
+   * replicas:} stays byte-identical.
+   */
+  static final String UPDATE_PARALLELISM = "1";
 
   // The variables this driver writes for the deployer itself — QITS_ENVIRONMENT, QITS_APPLICATION,
   // QITS_VARIANT, QITS_DOMAIN and the telemetry four — and the QITS_RESOURCE_ prefix are spelled on
@@ -452,6 +466,14 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * twice.
    */
   private final Map<String, String> issuedImages = new ConcurrentHashMap<>();
+
+  /**
+   * The task count this process last asked swarm to run, per service name (qits-2523) — written
+   * beside {@link #issuedImages} and cleared with it. The two verdicts that read tasks rather than
+   * swarm's {@code UpdateStatus} (a fresh create, an update from zero) converge once this many run:
+   * one running task of a two-task service is half a deployment.
+   */
+  private final Map<String, Integer> issuedReplicas = new ConcurrentHashMap<>();
 
   /**
    * The last spec this process applied, per service, for every {@code private} or {@code both}
@@ -984,6 +1006,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       // WHICH image the verdict is about — the failure detail picks this image's tasks out of the
       // predecessor's. Never for a self-update: nothing here waits for its verdict.
       issuedImages.put(target, spec.imageRef());
+      issuedReplicas.put(target, deployedReplicas(spec));
       // What the private edge's next move re-applies — see `reapplyBehindPrivateEdge`.
       if (wantsPrivateEdgeResolvers(spec)) {
         resolverSpecs.put(target, spec);
@@ -1202,6 +1225,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       // The verdict is reached, however it went: this update is nobody's in-flight state now.
       issuedUpdates.remove(name);
       issuedImages.remove(name);
+      issuedReplicas.remove(name);
       updatedFromZero.remove(name);
     }
   }
@@ -1225,10 +1249,11 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     if (listed.exitCode() != 0) {
       return null;
     }
-    boolean serving =
+    long serving =
         taskRows(listed.output()).stream()
-            .anyMatch(row -> row.running() && sameImage(row.image(), image));
-    return serving ? Convergence.converged(List.of()) : null;
+            .filter(row -> row.running() && sameImage(row.image(), image))
+            .count();
+    return serving >= wantedTasks(name) ? Convergence.converged(List.of()) : null;
   }
 
   /**
@@ -1296,15 +1321,16 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
 
   /**
    * The first deployment's verdict, read off the tasks: {@code Running} is healthy (swarm holds a
-   * task in {@code Starting} until its healthcheck passes), a generation whose tasks have all ended
-   * is a failure, and anything else is still pending.
+   * task in {@code Starting} until its healthcheck passes) once as many run as were issued
+   * ({@link #wantedTasks}), a generation whose tasks have all ended is a failure, and anything else
+   * is still pending.
    */
   private Convergence freshCreateVerdict(String name) {
     List<String> states = runningGenerationStates(name);
     if (states.isEmpty()) {
       return null;
     }
-    if (states.stream().anyMatch("running"::equals)) {
+    if (states.stream().filter("running"::equals).count() >= wantedTasks(name)) {
       return Convergence.converged(List.of());
     }
     if (states.stream().allMatch(TERMINAL_TASK_STATES::contains)) {
@@ -1318,6 +1344,14 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
               + tasks(name));
     }
     return null;
+  }
+
+  /**
+   * How many running tasks a task-read verdict waits for: the count {@link #apply} issued, and one
+   * for a service this process did not apply (the count every service had before qits-2523).
+   */
+  private int wantedTasks(String name) {
+    return issuedReplicas.getOrDefault(name, DeclaredShape.DEFAULT_REPLICAS);
   }
 
   /**
@@ -2090,7 +2124,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     ServiceExtras extras = withSocketGroup(spec, shapeOf(spec, extrasOf(spec)));
     eu.wohlben.qits.containers.driver.swarm.ServiceSpec.Builder service =
         eu.wohlben.qits.containers.driver.swarm.ServiceSpec.builder(name, spec.imageRef())
-            .replicas(DEPLOYED_REPLICAS)
+            .replicas(deployedReplicas(spec))
             .noResolveImage(true)
             .withRegistryAuth(registryAuth);
     // The FULL membership, here and nowhere else: every later --network-add recreates the task.
@@ -2121,7 +2155,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     extras(service, extras, spec.publishMode(), declaredTargets);
     // The placement and routing labels, on the SERVICE alone (qits-2174) — see `serviceLabels`.
     return withServiceLabels(
-        SwarmArgv.serviceCreate(runtime, service.build()),
+        withUpdateParallelism(SwarmArgv.serviceCreate(runtime, service.build()), spec),
         serviceLabels(spec, networks),
         "--label",
         List.of());
@@ -3063,7 +3097,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     RouteLabels routing = spec.routing();
     return withMountRemovals(
         withServiceLabels(
-            SwarmArgv.serviceUpdate(runtime, service, delta.build()),
+            withUpdateParallelism(SwarmArgv.serviceUpdate(runtime, service, delta.build()), spec),
             serviceLabels(spec, networks),
             "--label-add",
             routing.absent()),
@@ -3127,6 +3161,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       } finally {
         // Nobody awaits these verdicts: the edge's deployment is the one being recorded.
         issuedImages.remove(spec.wireAlias());
+        issuedReplicas.remove(spec.wireAlias());
         issuedUpdates.remove(spec.wireAlias());
       }
     }
@@ -3202,7 +3237,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     extraNetworks.forEach(delta::networkRemoval);
     return withMountRemovals(
         withServiceLabels(
-            SwarmArgv.serviceUpdate(runtime, service, delta.build()),
+            withUpdateParallelism(SwarmArgv.serviceUpdate(runtime, service, delta.build()), spec),
             serviceLabels(spec, collapse(spec)),
             "--label-add",
             spec.routing().absent()),
@@ -3261,6 +3296,23 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     return List.copyOf(removals);
   }
 
+  /**
+   * {@code argv} with {@code --update-parallelism 1} right after its {@code --update-order} pair,
+   * for a service of more than one task — see {@link #UPDATE_PARALLELISM}. Unchanged otherwise.
+   */
+  static List<String> withUpdateParallelism(List<String> argv, ServiceSpec spec) {
+    if (deployedReplicas(spec) <= 1) {
+      return argv;
+    }
+    int at = argv.indexOf("--update-order");
+    int insert = at < 0 ? Math.min(3, argv.size()) : at + 2;
+    List<String> spliced = new ArrayList<>(argv.subList(0, insert));
+    spliced.add("--update-parallelism");
+    spliced.add(UPDATE_PARALLELISM);
+    spliced.addAll(argv.subList(insert, argv.size()));
+    return List.copyOf(spliced);
+  }
+
   /** {@code argv} with {@code --mount-rm <target>} per removal, right after {@code --detach}. */
   static List<String> withMountRemovals(List<String> argv, List<String> removals) {
     if (removals.isEmpty()) {
@@ -3295,8 +3347,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
             // update completes at once and the deployment is recorded ACTIVE while nothing runs.
             // Restating it is what makes a deployment mean "this application should be serving
             // this image" rather than "this image is what it would run if it ran". Nothing here
-            // scales UP beyond one — see DEPLOYED_REPLICAS.
-            .replicas(DEPLOYED_REPLICAS)
+            // scales beyond the repository's own `replicas:` — see deployedReplicas.
+            .replicas(deployedReplicas(spec))
             .withRegistryAuth(registryAuth)
             // --label-add and --container-label-add, each.
             .labels(labels(spec));

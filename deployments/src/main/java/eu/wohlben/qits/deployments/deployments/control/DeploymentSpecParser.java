@@ -16,7 +16,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * The strict reader of {@code .config/qits/deployments.yml}. Twenty-six scalar keys, no nesting, no
+ * The strict reader of {@code .config/qits/deployments.yml}. Twenty-eight scalar keys, no nesting, no
  * YAML lists — so this is a line reader rather than a YAML library, and being one is what makes every
  * rejection a sentence naming the file and the line.
  *
@@ -40,6 +40,7 @@ import java.util.regex.Pattern;
  * image: qits-edge                     # the image pulled, qits/<image>:<version>; default the app
  * variants: private                    # main file only: also deploy .config/qits/deployments.<v>.yml
  * stop_grace_period: 10m               # default 30s; SIGTERM to SIGKILL, for long transfers
+ * replicas: 2                          # default 1, at most 5; never with publishes or stop-first
  * image_defaults: QITS_EDGE_ACME_MODE=production   # env the image ships; equal settings retire
  * routes: /artifacts,/v2               # optional public path prefixes, in navigation order
  * upstream_port: 8080                  # default; the service port behind every route
@@ -241,6 +242,16 @@ import java.util.regex.Pattern;
  * It reaches the orchestrator as {@code --update-order}. A repository that says nothing gets
  * {@code start-first}, so an application that must not overlap has to say so.
  *
+ * <p><b>{@code replicas} is how many tasks the service runs</b> (qits-2523): a whole number from 1
+ * to {@value DeclaredShape#MAX_REPLICAS}, {@value DeclaredShape#DEFAULT_REPLICAS} when absent. It is
+ * desired state, so the create declares it and every deployment restates it — an operator's scale
+ * lasts until the next deployment, which puts the declared count back. More than one is REFUSED
+ * beside the three statements that are exactly why the default is one: {@code publishes} (a host
+ * port has one binder per node), {@code publish_mode: host} said explicitly (the same binder,
+ * stated as a mode) and {@code update_order: stop-first} (an application that cannot run beside
+ * itself cannot run twice either). A service of more than one task is updated one task at a time,
+ * start-first ({@code --update-parallelism 1}), so the others keep serving.
+ *
  * <p><b>{@code stop_grace_period} is the third key an orchestrator reads rather than this
  * component</b>, and it reaches it as {@code --stop-grace-period} on the create and the update
  * alike. It is how long a task that has been told to stop keeps the transfers it is in the middle
@@ -419,6 +430,7 @@ public final class DeploymentSpecParser {
   private static final String UPDATE_ORDER = "update_order";
   private static final String PUBLISH_MODE = "publish_mode";
   private static final String STOP_GRACE_PERIOD = "stop_grace_period";
+  private static final String REPLICAS = "replicas";
   private static final String EXPOSURE = "exposure";
 
   /** The retired third exposure (qits-2174), refused by name — see {@link #exposure}. */
@@ -608,6 +620,7 @@ public final class DeploymentSpecParser {
     List<String> variants = List.of();
     Map<String, String> imageDefaults = Map.of();
     Duration stopGracePeriod = DeploymentDriver.DEFAULT_STOP_GRACE_PERIOD;
+    int replicas = DeclaredShape.DEFAULT_REPLICAS;
     List<String> routes = List.of();
     int upstreamPort = DEFAULT_UPSTREAM_PORT;
     String host = null;
@@ -661,6 +674,7 @@ public final class DeploymentSpecParser {
         case IMAGE -> image = image(value, source, lineNumber);
         case VARIANTS -> variants = variants(value, source, lineNumber);
         case STOP_GRACE_PERIOD -> stopGracePeriod = stopGracePeriod(value, source, lineNumber);
+        case REPLICAS -> replicas = replicas(value, source, lineNumber);
         case IMAGE_DEFAULTS -> imageDefaults = imageDefaults(value, source, lineNumber);
         case ROUTES -> routes = routes(value, source, lineNumber);
         case UPSTREAM_PORT -> upstreamPort = upstreamPort(value, source, lineNumber);
@@ -716,6 +730,8 @@ public final class DeploymentSpecParser {
                     + ", "
                     + STOP_GRACE_PERIOD
                     + ", "
+                    + REPLICAS
+                    + ", "
                     + IMAGE_DEFAULTS
                     + ", "
                     + ROUTES
@@ -762,6 +778,30 @@ public final class DeploymentSpecParser {
                   + VOLUMES
                   + "` already mounts a volume at — one directory takes one mount");
         }
+      }
+    }
+    if (replicas > 1) {
+      String clash =
+          !publishes.isEmpty()
+              ? "`" + PUBLISHES + "`, and a host port has one binder"
+              : seen.contains(PUBLISH_MODE) && publishMode == DeploymentDriver.PublishMode.HOST
+                  ? "`" + PUBLISH_MODE + ": host`, and a host-mode port has one binder"
+                  : updateOrder == DeploymentDriver.UpdateOrder.STOP_FIRST
+                      ? "`"
+                          + UPDATE_ORDER
+                          + ": stop-first`, and an application that cannot run beside itself"
+                          + " cannot run twice"
+                      : null;
+      if (clash != null) {
+        throw new SpecException(
+            source
+                + ": `"
+                + REPLICAS
+                + ": "
+                + replicas
+                + "` asks for more than one task beside "
+                + clash
+                + " — drop one of the two (qits-2523)");
       }
     }
     if (renamedFrom != null && renamedFrom.equals(application)) {
@@ -842,7 +882,7 @@ public final class DeploymentSpecParser {
         application,
         renamedFrom,
         stopGracePeriod,
-        new DeclaredShape(binds, publishes, aliases, capAdd, sysctls),
+        new DeclaredShape(binds, publishes, aliases, capAdd, sysctls, replicas),
         exposure,
         image,
         variants,
@@ -1185,6 +1225,27 @@ public final class DeploymentSpecParser {
       declared.add(path);
     }
     return List.copyOf(declared);
+  }
+
+  /** {@code replicas:} — a whole number from 1 to {@link DeclaredShape#MAX_REPLICAS}. */
+  private static int replicas(String value, String source, int line) {
+    try {
+      int replicas = Integer.parseInt(value);
+      if (replicas < 1 || replicas > DeclaredShape.MAX_REPLICAS) {
+        throw new NumberFormatException();
+      }
+      return replicas;
+    } catch (NumberFormatException e) {
+      throw error(
+          source,
+          line,
+          "`"
+              + REPLICAS
+              + "` must be an integer from 1 to "
+              + DeclaredShape.MAX_REPLICAS
+              + ", got: "
+              + value);
+    }
   }
 
   private static int upstreamPort(String value, String source, int line) {
