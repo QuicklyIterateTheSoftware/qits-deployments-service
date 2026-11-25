@@ -55,6 +55,8 @@ import java.util.Map;
  *   <li><b>{@code qits.deployments.edges.*-url}</b> — a closed loopback port. The route-table
  *       pushes run on the deploy worker, and an edge alias the build machine happens to resolve
  *       would hold that worker for a whole retry budget per edge. Nothing here records them.
+ *   <li><b>{@code qits.deployments.egress.url}</b> — the same closed port, for the egress grant
+ *       table's push to qits-egress (qits-2523), which runs on the same worker.
  *   <li><b>{@code observe-interval-seconds=0}</b> — see below.
  *   <li><b>{@code otel} and {@code eventstream} dark</b> — a step container has no qits-observability
  *       and no qits-events, and an exporter retrying against an unresolvable host would bury the
@@ -145,6 +147,11 @@ public class StoryProfile extends PdPackagedSurfaceIT.PackagedUnderTarget {
     overrides.put("qits.deployments.edges.public-url", EDGE_NOBODY_LISTENS);
     overrides.put("qits.deployments.edges.private-url", EDGE_NOBODY_LISTENS);
     overrides.put("qits.deployments.edges.overlay-url", EDGE_NOBODY_LISTENS);
+
+    // qits-egress's grant-table door (qits-2523), the same closed port for the same reason: the
+    // push runs on the deploy worker at boot and after every ACTIVE, and the shipped address is
+    // https://egress.qits.${QITS_DOMAIN}. Refused at once, one WARN, and nothing recorded.
+    overrides.put("qits.deployments.egress.url", EDGE_NOBODY_LISTENS + "/egress/api");
     return overrides;
   }
 }

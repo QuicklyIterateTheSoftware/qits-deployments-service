@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 import eu.wohlben.qits.deployments.deployments.control.DeployService;
 import eu.wohlben.qits.deployments.deployments.control.EgressGrantTables;
+import eu.wohlben.qits.deployments.deployments.control.FakeEgressGrantClient;
 import eu.wohlben.qits.deployments.deployments.control.FakeDeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.FakeSpecSource;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource;
@@ -61,12 +62,14 @@ class PdEgressGrantApiTest {
   @Inject FakeSpecSource specs;
   @Inject DeployService deployService;
   @Inject EgressGrantTables tables;
+  @Inject FakeEgressGrantClient egress;
 
   @BeforeEach
   void reset() throws Exception {
     deployService.awaitIdle();
     driver.reset();
     specs.reset();
+    egress.reset();
     QuarkusTransaction.requiringNew()
         .run(
             () -> {
@@ -166,7 +169,7 @@ class PdEgressGrantApiTest {
   }
 
   @Test
-  void theVersionMovesOnlyWhenTheContentDoes() {
+  void theVersionMovesOnlyWhenTheContentDoes() throws Exception {
     Instant first = Instant.parse("2025-11-25T09:00:00Z");
     long empty = tables.current(first).version();
     assertEquals(first.toEpochMilli(), empty);
@@ -179,10 +182,17 @@ class PdEgressGrantApiTest {
     specs.scriptText(application, SpecSource.EGRESS_PATH, HETZNER);
     release(application, "2026.1201.101013");
     awaitStatus(environmentId, "ACTIVE");
+    // The cutover's last steps build the table and push it to qits-egress (EgressGrantPusher), so
+    // the new version is stored by the time the worker is idle, at the instant it was built.
+    deployService.awaitIdle();
 
     long withRoutes = tables.current(first.plusSeconds(120)).version();
-    assertEquals(first.plusSeconds(120).toEpochMilli(), withRoutes, "the content changed");
+    assertTrue(withRoutes > empty, "the content changed: " + withRoutes + " after " + empty);
     assertEquals(withRoutes, tables.current(first.plusSeconds(180)).version());
+    assertEquals(
+        withRoutes,
+        egress.pushedVersions().get(egress.pushedVersions().size() - 1),
+        "the version qits-egress was pushed after the cutover");
     // ...and the door answers the stored table: the same version, a later instant notwithstanding.
     long served =
         given()

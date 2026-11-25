@@ -15,7 +15,7 @@ import org.jboss.logging.Logger;
 /**
  * Reads a release's {@code .config/qits/egress.yml} (epic qits-2523) and keeps what it says, per
  * (application, version), in {@code pd_egress_declaration}. {@link EgressGrantTables} turns the
- * declarations of the {@code ACTIVE} deployments into the table qits-egress polls.
+ * declarations of the {@code ACTIVE} deployments into the table pushed to qits-egress.
  *
  * <p><b>Read where the release is read, at the same tag</b>: {@code DeployService} calls {@link
  * #record} for the MAIN application of a release, after {@code deployments.yml} answered and before

@@ -221,6 +221,8 @@ public class DeployService implements ReleaseAnnouncements {
    */
   @Inject EdgeRoutePusher edgeRoutes;
 
+  @Inject EgressGrantPusher egressGrants;
+
   /**
    * The split check (qits-2215): on the observation pass at most every {@code
    * qits.deployments.split-check.every}, and after each deploy of either edge. Never fails what
@@ -467,6 +469,9 @@ public class DeployService implements ReleaseAnnouncements {
           // The route tables (qits-2174), once the labels are on: the private edge fetches its
           // table from this process at its own start, and answers nothing until one is built.
           edgeRoutes.observe();
+          // The egress grant table (qits-2523): qits-egress cannot reach this private service,
+          // so it holds nothing until it is pushed one.
+          egressGrants.reconcile();
         });
     startObserving();
   }
@@ -633,6 +638,9 @@ public class DeployService implements ReleaseAnnouncements {
           // Last, the route tables (qits-2174): rebuilt off the labels, pushed when they moved, and
           // pushed again to an edge that reports an older version than the stored one.
           edgeRoutes.observe();
+          // ...and the egress grant table (qits-2523): built, compared with the version
+          // qits-egress holds, and pushed when the two differ. Never throws.
+          egressGrants.reconcile();
           // ...and the split check off the same label read, on its own slower cadence (qits-2215).
           splitCheck.observe();
         });
@@ -4038,6 +4046,8 @@ public class DeployService implements ReleaseAnnouncements {
     // ...and the route tables (qits-2174): this service's labels just changed, and an edge that
     // just went healthy may hold nothing yet. Never fails the deployment, which is live.
     edgeRoutes.afterDeploy(plan.applicationName());
+    // ...and the egress grant table (qits-2523): this version's egress.yml grants are in force now.
+    egressGrants.afterDeploy();
     // ...and, for either edge, the split check at once rather than on its cadence (qits-2215).
     splitCheck.afterDeploy(plan.applicationName());
     // ...and the retired config volumes (qits-2266): a deployment that just shed /work/config may
@@ -5355,6 +5365,8 @@ public class DeployService implements ReleaseAnnouncements {
         plan.applicationName(), plan.version(), restored.version());
     // The restored version's labels are on the service again: the route tables follow them.
     edgeRoutes.afterDeploy(plan.applicationName());
+    // ...and its egress grants are the ones in force again (qits-2523).
+    egressGrants.afterDeploy();
     return "[rolled back: "
         + plan.applicationName()
         + " "

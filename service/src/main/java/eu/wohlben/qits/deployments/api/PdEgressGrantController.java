@@ -13,8 +13,9 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 /**
  * {@code GET /deployments/api/egress-grants} — the egress grant table in force (epic qits-2523):
  * every route the {@code ACTIVE} deployments' {@code .config/qits/egress.yml} grant, and the
- * deployments whose file was refused. qits-egress polls it with its {@code qits} client bearer;
- * agents read it for live checks. See {@link EgressGrantTables} for what is in the table and how
+ * deployments whose file was refused. It is the source of truth and the CLI's door; qits-egress
+ * is public and cannot reach this private service, so it does not read it — {@code
+ * EgressGrantPusher} pushes this exact body to qits-egress. Agents read it for live checks. See {@link EgressGrantTables} for what is in the table and how
  * its version moves.
  *
  * <p>{@code qits:system} for qits-egress, {@code qits:admin} and {@code qits:agent} for people and

@@ -30,8 +30,9 @@ import org.jboss.logging.Logger;
 /**
  * <b>The egress grant table in force</b> (epic qits-2523): the routes of each application's {@code
  * ACTIVE} deployment, as its released version's {@code egress.yml} declared them ({@link
- * EgressDeclarations}), kept in {@code pd_egress_grant_table} and answered by {@code GET
- * /deployments/api/egress-grants}, which qits-egress polls.
+ * EgressDeclarations}), kept in {@code pd_egress_grant_table}, answered by {@code GET
+ * /deployments/api/egress-grants} and pushed to qits-egress by {@link EgressGrantPusher} (qits-egress
+ * is public and cannot reach this private service, so it never polls).
  *
  * <ul>
  *   <li><b>One deployment per place</b>: the newest {@code ACTIVE} row of each (application, tier)
@@ -213,7 +214,11 @@ public class EgressGrantTables {
     return Objects.requireNonNullElse(row.seq, Long.MIN_VALUE);
   }
 
-  private static String json(EgressGrantTableDto table) {
+  /**
+   * The table's JSON as it is stored and served — and pushed to qits-egress verbatim ({@link
+   * EgressGrantPusher}): a plain mapper, {@code {version, routes, refused}}.
+   */
+  static String json(EgressGrantTableDto table) {
     try {
       return JSON.writeValueAsString(table);
     } catch (JsonProcessingException e) {
