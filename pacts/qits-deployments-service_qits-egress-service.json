@@ -1,0 +1,303 @@
+{
+  "consumer": {
+    "name": "qits-deployments-service"
+  },
+  "interactions": [
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-egress-service",
+            "operationId": "putGrantTable"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "event": "SoftwareRelease",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "SoftwareRelease: putGrantTable",
+      "key": "c60fd2d",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a grant table is held",
+          "params": {
+            "authorization": "Bearer contract-qits-deployments",
+            "version": "1764061200000"
+          }
+        }
+      ],
+      "request": {
+        "body": {
+          "content": {
+            "refused": [],
+            "routes": [
+              {
+                "application": "qits-edge",
+                "deployedVersion": "2026.1201.101010",
+                "environment": "dev",
+                "inject": "bearer",
+                "methods": [
+                  "DELETE",
+                  "GET",
+                  "POST",
+                  "PUT"
+                ],
+                "name": "hetzner",
+                "secret": "HETZNER_DNS",
+                "target": "https://api.hetzner.cloud"
+              }
+            ],
+            "version": 1764061200000
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "generators": {
+          "header": {
+            "Authorization": {
+              "dataType": "RAW",
+              "expression": "${authorization}",
+              "type": "ProviderState"
+            }
+          }
+        },
+        "headers": {
+          "Authorization": [
+            "Bearer contract-qits-deployments"
+          ],
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "method": "PUT",
+        "path": "/egress/api/grant-table"
+      },
+      "response": {
+        "status": 204
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-egress-service",
+            "operationId": "putGrantTable"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "event": "SoftwareRelease",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "SoftwareRelease: putGrantTable",
+      "key": "49010bcd",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "no grant table is held",
+          "params": {
+            "authorization": "Bearer contract-qits-deployments",
+            "version": "1764061200000"
+          }
+        }
+      ],
+      "request": {
+        "body": {
+          "content": {
+            "refused": [],
+            "routes": [
+              {
+                "application": "qits-edge",
+                "deployedVersion": "2026.1201.101010",
+                "environment": "dev",
+                "inject": "bearer",
+                "methods": [
+                  "DELETE",
+                  "GET",
+                  "POST",
+                  "PUT"
+                ],
+                "name": "hetzner",
+                "secret": "HETZNER_DNS",
+                "target": "https://api.hetzner.cloud"
+              }
+            ],
+            "version": 1764061200000
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "generators": {
+          "header": {
+            "Authorization": {
+              "dataType": "RAW",
+              "expression": "${authorization}",
+              "type": "ProviderState"
+            }
+          }
+        },
+        "headers": {
+          "Authorization": [
+            "Bearer contract-qits-deployments"
+          ],
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "method": "PUT",
+        "path": "/egress/api/grant-table"
+      },
+      "response": {
+        "status": 204
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-egress-service",
+            "operationId": "getGrantTable"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "kind": "schedule",
+            "schedule": "the deployment observation pass"
+          }
+        }
+      },
+      "description": "the deployment observation pass: getGrantTable",
+      "key": "19bd15df",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a grant table is held",
+          "params": {
+            "authorization": "Bearer contract-qits-deployments",
+            "version": "1764061200000"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "header": {
+            "Authorization": {
+              "dataType": "RAW",
+              "expression": "${authorization}",
+              "type": "ProviderState"
+            }
+          }
+        },
+        "headers": {
+          "Authorization": [
+            "Bearer contract-qits-deployments"
+          ]
+        },
+        "method": "GET",
+        "path": "/egress/api/grant-table"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "version": 1764061200000
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.version": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "number"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-egress-service",
+            "operationId": "getGrantTable"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "kind": "schedule",
+            "schedule": "the deployment observation pass"
+          }
+        }
+      },
+      "description": "the deployment observation pass: getGrantTable",
+      "key": "565d247f",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "no grant table is held",
+          "params": {
+            "authorization": "Bearer contract-qits-deployments",
+            "version": "1764061200000"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "header": {
+            "Authorization": {
+              "dataType": "RAW",
+              "expression": "${authorization}",
+              "type": "ProviderState"
+            }
+          }
+        },
+        "headers": {
+          "Authorization": [
+            "Bearer contract-qits-deployments"
+          ]
+        },
+        "method": "GET",
+        "path": "/egress/api/grant-table"
+      },
+      "response": {
+        "status": 404
+      },
+      "type": "Synchronous/HTTP"
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "4.0"
+    },
+    "plugins": []
+  },
+  "provider": {
+    "name": "qits-egress-service"
+  }
+}

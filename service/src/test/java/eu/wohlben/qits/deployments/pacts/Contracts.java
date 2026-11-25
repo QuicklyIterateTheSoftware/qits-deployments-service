@@ -11,9 +11,12 @@ import eu.wohlben.qits.deployments.deployments.control.ArtifactPurge;
 import eu.wohlben.qits.deployments.deployments.control.IdpClientProvisioner;
 import eu.wohlben.qits.deployments.deployments.control.RepositoryRef;
 import eu.wohlben.qits.deployments.deployments.control.EdgeRouteClient;
+import eu.wohlben.qits.deployments.deployments.control.EgressGrantClient;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource;
 import eu.wohlben.qits.deployments.edgehost.EdgeRouteClients;
 import eu.wohlben.qits.deployments.edgehost.HttpEdgeRouteClient;
+import eu.wohlben.qits.deployments.egresshost.EgressGrantClients;
+import eu.wohlben.qits.deployments.egresshost.HttpEgressGrantClient;
 import eu.wohlben.qits.deployments.githost.GitHostSources;
 import eu.wohlben.qits.deployments.githost.GitHostSpecSource;
 import eu.wohlben.qits.deployments.githost.IdpGitHostBearer;
@@ -50,7 +53,9 @@ import java.util.Map;
  *   <li>{@link #ARTIFACTS} — {@code HttpArtifactPurge}'s purge of a decommissioned application's
  *       published artifacts (qits-1941);
  *   <li>{@link #EDGE} — {@code HttpEdgeRouteClient}'s push of a route table to an edge and its read
- *       of the version the edge holds (epic qits-2174).
+ *       of the version the edge holds (epic qits-2174);
+ *   <li>{@link #EGRESS} — {@code HttpEgressGrantClient}'s push of the egress grant table to
+ *       qits-egress and its read of the version qits-egress holds (epic qits-2523).
  * </ul>
  *
  * <p>The bus library qits-eventstream owns its catch-up and publish pact, so no events row is here.
@@ -454,8 +459,77 @@ public final class Contracts {
                           EDGE_MASTERS.json(A_ROUTE_TABLE_HELD, "getEdgeRouteTable").path("version").asLong()),
                       EdgeRouteClients.at(url).held("public"))));
 
+  // --- qits-egress -----------------------------------------------------------------------------
+
+  static final GoldenMasters EGRESS_MASTERS = GoldenMasters.of("qits-egress-service", "qits-egress");
+
+  static final String A_GRANT_TABLE_HELD = "a grant table is held";
+  static final String NO_GRANT_TABLE_HELD = "no grant table is held";
+
+  /**
+   * The push follows a deployment reaching ACTIVE, which a release triggers; the pass re-pushes on
+   * its tick. Every call presents the deployer's own bearer, the one caller the door admits.
+   */
+  private static GoldenInteraction grantPushRow(String state) {
+    return GoldenInteraction.of(Trigger.event("SoftwareRelease"), state, "putGrantTable")
+        .header("Authorization", "{authorization}");
+  }
+
+  /** Each observation pass reads the version qits-egress holds, and pushes when it differs. */
+  private static GoldenInteraction grantReadRow(String state) {
+    return GoldenInteraction.of(
+            Trigger.schedule("the deployment observation pass"), state, "getGrantTable")
+        .header("Authorization", "{authorization}");
+  }
+
+  /** The client at the mock's {@code /egress/api}, presenting the state's {@code authorization}. */
+  private static HttpEgressGrantClient egress(String url, Map<String, String> params) {
+    return EgressGrantClients.at(
+        url + "/egress/api", params.get("authorization").substring("Bearer ".length()));
+  }
+
+  public static final Contract EGRESS =
+      Contract.of(
+          EGRESS_MASTERS,
+          // The first table qits-egress is handed is stored: 204, no body...
+          Check.of(
+              HttpEgressGrantClient.class,
+              "push",
+              grantPushRow(NO_GRANT_TABLE_HELD),
+              (url, recorded) ->
+                  assertEquals(
+                      new EgressGrantClient.Stored(),
+                      egress(url, recorded.params()).push(recordedTable(recorded)))),
+          // ...and so is one whose version it already holds.
+          Check.of(
+              HttpEgressGrantClient.class,
+              "push",
+              grantPushRow(A_GRANT_TABLE_HELD),
+              (url, recorded) ->
+                  assertEquals(
+                      new EgressGrantClient.Stored(),
+                      egress(url, recorded.params()).push(recordedTable(recorded)))),
+          // The version held, read on each pass...
+          Check.of(
+              HttpEgressGrantClient.class,
+              "heldVersion",
+              grantReadRow(A_GRANT_TABLE_HELD).consumes("version"),
+              (url, recorded) ->
+                  assertEquals(
+                      java.util.OptionalLong.of(
+                          EGRESS_MASTERS.json(A_GRANT_TABLE_HELD, "getGrantTable").path("version").asLong()),
+                      egress(url, recorded.params()).heldVersion())),
+          // ...and none: 404, which is what makes the pass push.
+          Check.of(
+              HttpEgressGrantClient.class,
+              "heldVersion",
+              grantReadRow(NO_GRANT_TABLE_HELD),
+              (url, recorded) ->
+                  assertEquals(
+                      java.util.OptionalLong.empty(), egress(url, recorded.params()).heldVersion())));
+
   /** Every contract this repository holds. */
   public static List<Contract> all() {
-    return List.of(IDP, GITHOST, ARTIFACTS, EDGE);
+    return List.of(IDP, GITHOST, ARTIFACTS, EDGE, EGRESS);
   }
 }
