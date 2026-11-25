@@ -1923,17 +1923,22 @@ by accident:
   `QITS_EGRESS_SECRET_HETZNER_DNS`, triggered by a `qits-edge` route whose `secret` is
   `HETZNER_DNS`). `EgressGrantPusher.reconcile` calls `apply(table)` after the push, whatever the
   push answered. The move is one `DbRetry.inNewTx` (both rows `findOneForUpdate`, an existing target
-  kept, the source deleted, flushed); after it the restart is `ApplicationScaling.restart` with
-  actor `egress hand-over` and the redeploy `DatabaseMoves.queueRedeployOfLive` — the move door's
-  `live()` lookup, then `DeployService.redeploy` queued through `enqueueOperation`. **Both are
-  QUEUED, never run inline**: the reconcile also runs inside a deployment's own tail
-  (`afterDeploy`), and a redeploy run there would nest one deployment inside another. A deployment of
-  either application `QUEUED`/`STARTING` in the tier skips the entry before anything is written, so
-  the move and its two steps are never split by that guard; a step that could not be queued after
-  the commit is kept in memory (`owed`) and retried each pass (a restart loses it — the edge's next
-  deployment drops the variable anyway). A target never deployed in the tier is not restarted: its
-  first deployment reads the row. `PdEgressSecretHandOverTest` holds it through the release path
-  with test-only entries (`declare`), so no suite deploys an application named `qits-edge`.
+  kept, the source deleted, flushed); after it BOTH applications' live versions are redeployed
+  through `DatabaseMoves.queueRedeployOfLive` with actor `egress hand-over` — the move door's
+  `live()` lookup, then `DeployService.redeploy` queued through `enqueueOperation`. A restart was
+  tried first and does not work: it replaces the tasks on the unchanged swarm service spec, and the
+  argv — the only place a setting reaches a container — is only ever rebuilt by a redeploy, so a
+  restarted `toApplication` never saw the moved secret. **Both redeploys are QUEUED, never run
+  inline**: the reconcile also runs inside a deployment's own tail (`afterDeploy`), and a redeploy
+  run there would nest one deployment inside another. A deployment of either application
+  `QUEUED`/`STARTING` in the tier skips the entry before anything is written, so the move and its
+  two steps are never split by that guard; a step that could not be queued after the commit is kept
+  in memory (`owed`) and retried each pass (a process restart loses it — either application's next
+  ordinary deployment reads the settings store fresh and carries the moved key anyway). A target
+  never deployed in the tier is not redeployed (`DatabaseMoves.live` throws `ConflictException`,
+  caught and logged at DEBUG): its first deployment reads the row. `PdEgressSecretHandOverTest`
+  holds it through the release path with test-only entries (`declare`), so no suite deploys an
+  application named `qits-edge`.
 
 ### `replicas:` — more than one task, for an application that can run twice (qits-2523)
 

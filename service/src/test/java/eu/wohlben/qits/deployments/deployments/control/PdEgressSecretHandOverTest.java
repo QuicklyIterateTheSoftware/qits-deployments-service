@@ -29,8 +29,10 @@ import org.junit.jupiter.api.Test;
 /**
  * The egress secret hand-over (epic qits-2523): once a route of the trigger application injecting
  * the trigger secret is in force in a tier, the source setting moves to the target application as
- * a secret in one transaction, the target is restarted and the source's live version redeployed —
- * and nothing happens again once the source row is gone.
+ * a secret in one transaction, and both the target's and the source's live versions are
+ * redeployed — a restart would never carry the moved setting, since it replaces the tasks on the
+ * unchanged swarm spec rather than rebuilding the argv — and nothing happens again once the source
+ * row is gone.
  *
  * <p>Driven through the release path and the reconcile it ends in, with entries of this suite's
  * own ({@link EgressSecretHandOvers#declare}) so the names are unique to each test: the suite shares
@@ -112,7 +114,7 @@ class PdEgressSecretHandOverTest {
   }
 
   @Test
-  void theRouteInForceMovesTheSecretRestartsTheTargetAndRedeploysTheSource() throws Exception {
+  void theRouteInForceMovesTheSecretAndRedeploysBothTargetAndSource() throws Exception {
     release(to);
     settings.put(from, tier, FROM_KEY, VALUE, false, "an operator");
     List<String> logs = new ArrayList<>();
@@ -125,10 +127,10 @@ class PdEgressSecretHandOverTest {
     assertEquals("egress hand-over from " + from, moved.updatedBy);
     assertTrue(row(from, FROM_KEY).isEmpty(), "the source row is deleted");
 
-    assertTrue(
-        driver.calls().contains("restart:" + serviceOf(to)), driver.calls().toString());
-    String stamp = rows(to).get(0).detail;
-    assertTrue(stamp.startsWith("[restarted by " + EgressSecretHandOvers.ACTOR + " at "), stamp);
+    List<PdDeployment> toRows = rows(to);
+    assertEquals(2, toRows.size(), "the target's live version was redeployed");
+    assertEquals(PdDeploymentStatus.ACTIVE, toRows.get(0).status);
+    assertEquals(VERSION, toRows.get(0).version);
     List<PdDeployment> fromRows = rows(from);
     assertEquals(2, fromRows.size(), "the source's live version was redeployed");
     assertEquals(PdDeploymentStatus.ACTIVE, fromRows.get(0).status);
@@ -147,15 +149,15 @@ class PdEgressSecretHandOverTest {
     release(to);
     settings.put(from, tier, FROM_KEY, VALUE, true, "an operator");
     releaseWithRoute(from);
-    int restarts = restarts();
+    int toRows = rows(to).size();
     int fromRows = rows(from).size();
-    assertEquals(1, restarts);
+    assertEquals(2, toRows);
 
     deployService.enqueueObservation();
     settle();
 
-    assertEquals(restarts, restarts(), "no second restart");
-    assertEquals(fromRows, rows(from).size(), "no second redeploy");
+    assertEquals(toRows, rows(to).size(), "no second redeploy of the target");
+    assertEquals(fromRows, rows(from).size(), "no second redeploy of the source");
     assertEquals(VALUE, row(to, TO_KEY).orElseThrow().value);
   }
 
@@ -170,7 +172,7 @@ class PdEgressSecretHandOverTest {
 
     assertEquals(VALUE, row(from, FROM_KEY).orElseThrow().value, "the source stays");
     assertTrue(row(to, TO_KEY).isEmpty());
-    assertEquals(0, restarts());
+    assertEquals(1, rows(to).size());
     assertEquals(1, rows(from).size());
   }
 
@@ -183,7 +185,7 @@ class PdEgressSecretHandOverTest {
     settle();
 
     assertTrue(row(to, TO_KEY).isEmpty());
-    assertEquals(0, restarts());
+    assertEquals(1, rows(to).size());
     assertEquals(1, rows(from).size());
   }
 
@@ -199,13 +201,13 @@ class PdEgressSecretHandOverTest {
     assertEquals("already-there", kept.value);
     assertEquals("an operator", kept.updatedBy);
     assertTrue(row(from, FROM_KEY).isEmpty());
-    assertEquals(1, restarts());
+    assertEquals(2, rows(to).size(), "the target is still redeployed, even keeping its own value");
     assertEquals(2, rows(from).size());
   }
 
   // --- helpers -----------------------------------------------------------------------------------
 
-  /** The worker until idle: a job it runs may queue the restart and the redeploy behind it. */
+  /** The worker until idle: a job it runs may queue the two redeploys behind it. */
   private void settle() throws Exception {
     for (int i = 0; i < 4; i++) {
       deployService.awaitIdle();
@@ -232,15 +234,6 @@ class PdEgressSecretHandOverTest {
         .statusCode(202);
     settle();
     assertEquals(PdDeploymentStatus.ACTIVE, rows(application).get(0).status, application);
-  }
-
-  private int restarts() {
-    String service = serviceOf(to);
-    return (int) driver.calls().stream().filter(call -> call.equals("restart:" + service)).count();
-  }
-
-  private String serviceOf(String application) {
-    return rows(application).get(0).containerName;
   }
 
   private List<PdDeployment> rows(String application) {

@@ -7,9 +7,9 @@ import eu.wohlben.qits.deployments.deployments.entity.PdDeploymentStatus;
 import eu.wohlben.qits.deployments.deployments.entity.PdSetting;
 import eu.wohlben.qits.deployments.deployments.persistence.PdDeploymentRepository;
 import eu.wohlben.qits.deployments.deployments.persistence.PdSettingRepository;
-import eu.wohlben.qits.deployments.environments.control.ApplicationKeys;
 import eu.wohlben.qits.deployments.environments.control.EnvironmentService;
 import eu.wohlben.qits.deployments.environments.entity.PdEnvironment;
+import eu.wohlben.qits.deployments.environments.error.ConflictException;
 import eu.wohlben.qits.deployments.environments.error.NotFoundException;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -43,24 +43,26 @@ import org.jboss.logging.Logger;
  *   <li>one transaction: the target row is inserted with the same value, {@code secret=true},
  *       {@code updated_by} {@code egress hand-over from <fromApplication>} — unless it exists, and
  *       an existing target wins and is not overwritten — and the source row is deleted;
- *   <li>after the commit, {@code toApplication} is restarted through {@link
- *       ApplicationScaling#restart} (it reads its secrets at boot), and {@code fromApplication}'s
- *       live version is redeployed ({@link DatabaseMoves#queueRedeployOfLive}, {@link
- *       DeployService#redeploy}), so its next update {@code --env-rm}s the moved key.
+ *   <li>after the commit, both applications' live versions are redeployed ({@link
+ *       DatabaseMoves#queueRedeployOfLive}, {@link DeployService#redeploy}): {@code toApplication}
+ *       so its argv is rebuilt from the settings store and carries the moved secret — a restart
+ *       replaces the tasks on the unchanged swarm service spec and never rebuilds the argv, so it
+ *       would never carry it — and {@code fromApplication} so its next update {@code --env-rm}s the
+ *       moved key.
  * </ol>
  *
  * <p><b>Idempotent</b>: with the source row gone the trigger never fires again. Nothing moves while
  * a deployment of either application in that tier is {@code QUEUED} or {@code STARTING}; the next
- * tick tries again. A restart or redeploy that could not be queued after the commit is OWED in
- * memory and retried on the next tick. Every failure is a WARN; nothing throws out of the tick.
- * The log names applications, the tier and keys — never a value.
+ * tick tries again. A redeploy that could not be queued after the commit is OWED in memory and
+ * retried on the next tick. Every failure is a WARN; nothing throws out of the tick. The log names
+ * applications, the tier and keys — never a value.
  */
 @ApplicationScoped
 public class EgressSecretHandOvers {
 
   private static final Logger LOG = Logger.getLogger(EgressSecretHandOvers.class);
 
-  /** Who the restart's stamp and the redeploy's log name. */
+  /** Who the redeploy's log name. */
   static final String ACTOR = "egress hand-over";
 
   /**
@@ -93,7 +95,6 @@ public class EgressSecretHandOvers {
   @Inject PdSettingRepository settings;
   @Inject PdDeploymentRepository deployments;
   @Inject EnvironmentService environments;
-  @Inject ApplicationScaling scaling;
   @Inject DatabaseMoves databaseMoves;
 
   /** The entries {@link #apply} reads — {@link #DECLARED}, swapped only by the suite. */
@@ -101,8 +102,8 @@ public class EgressSecretHandOvers {
 
   /** What a committed move still owes: a step not yet queued, by (entry, tier). */
   private enum Step {
-    RESTART,
-    REDEPLOY
+    REDEPLOY_TARGET,
+    REDEPLOY_SOURCE
   }
 
   private record Owed(HandOver handOver, String tier) {}
@@ -210,7 +211,7 @@ public class EgressSecretHandOvers {
       return;
     }
     LOG.infof(
-        "egress hand-over in %s: moved %s:%s to %s:%s (%s); restarting %s, redeploying %s",
+        "egress hand-over in %s: moved %s:%s to %s:%s (%s); redeploying %s, redeploying %s",
         tier,
         handOver.fromApplication(),
         handOver.fromKey(),
@@ -221,8 +222,8 @@ public class EgressSecretHandOvers {
         handOver.fromApplication());
     Owed key = new Owed(handOver, tier);
     owed.put(key, ConcurrentHashMap.newKeySet());
-    owed.get(key).add(Step.RESTART);
-    owed.get(key).add(Step.REDEPLOY);
+    owed.get(key).add(Step.REDEPLOY_TARGET);
+    owed.get(key).add(Step.REDEPLOY_SOURCE);
     settle(key, owed.get(key));
   }
 
@@ -235,19 +236,20 @@ public class EgressSecretHandOvers {
       return;
     }
     PdEnvironment tier = environment.get();
-    if (steps.contains(Step.RESTART) && !inFlight(handOver.toApplication(), tier.id)) {
+    if (steps.contains(Step.REDEPLOY_TARGET) && !inFlight(handOver.toApplication(), tier.id)) {
       try {
-        scaling.restart(ApplicationKeys.of(tier.id, handOver.toApplication()), ACTOR);
-      } catch (NotFoundException e) {
+        databaseMoves.queueRedeployOfLive(handOver.toApplication(), tier, "The " + ACTOR);
+      } catch (ConflictException | NotFoundException e) {
         // Never deployed here: its first deployment reads the moved row, so there is nothing to
-        // restart.
-        LOG.debugf("egress hand-over: nothing to restart in %s: %s", key.tier(), e.getMessage());
+        // redeploy.
+        LOG.debugf(
+            "egress hand-over: nothing to redeploy in %s: %s", key.tier(), e.getMessage());
       }
-      steps.remove(Step.RESTART);
+      steps.remove(Step.REDEPLOY_TARGET);
     }
-    if (steps.contains(Step.REDEPLOY) && !inFlight(handOver.fromApplication(), tier.id)) {
+    if (steps.contains(Step.REDEPLOY_SOURCE) && !inFlight(handOver.fromApplication(), tier.id)) {
       databaseMoves.queueRedeployOfLive(handOver.fromApplication(), tier, "The " + ACTOR);
-      steps.remove(Step.REDEPLOY);
+      steps.remove(Step.REDEPLOY_SOURCE);
     }
     if (steps.isEmpty()) {
       owed.remove(key);
