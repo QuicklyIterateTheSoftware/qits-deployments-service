@@ -84,8 +84,27 @@ public class FakeSpecSource implements SpecSource {
     return Optional.ofNullable(texts.get(key));
   }
 
+  /** {@link #readText}, at {@link #RESOLVED_COMMIT} — the commit every scripted rev resolves to. */
+  @Override
+  public Optional<TextRead> readTextAt(RepositoryRef repository, String rev, String path) {
+    String key = key(repository.applicationName(), path);
+    textReads.put(key, new TextReadAt(repository, rev));
+    return readText(repository, rev, path).map(text -> new TextRead(text, RESOLVED_COMMIT));
+  }
+
+  /** The reference and rev a {@link #readTextAt} of that file was last made with (qits-2659). */
+  public record TextReadAt(RepositoryRef repository, String rev) {}
+
+  private final Map<String, TextReadAt> textReads = new ConcurrentHashMap<>();
+
+  /** How {@link #readTextAt} last read this application's file at {@code path}; null if never. */
+  public TextReadAt textReadOf(String applicationName, String path) {
+    return textReads.get(key(applicationName, path));
+  }
+
   public void reset() {
     texts.clear();
+    textReads.clear();
     specs.clear();
     failures.clear();
     revs.clear();

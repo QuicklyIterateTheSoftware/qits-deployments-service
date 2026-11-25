@@ -1,0 +1,36 @@
+{
+  "version": 1764061200001,
+  "routes": [
+    {
+      "principal": "project:00000000-0000-4000-8000-000000000001",
+      "application": null,
+      "environment": null,
+      "deployedVersion": "0f1e2d3c4b5a",
+      "name": "portal",
+      "target": "https://portal.example.com",
+      "secret": "PROJECT_CONTRACT_SESSION",
+      "inject": "cookie:sid",
+      "methods": [
+        "GET",
+        "HEAD"
+      ]
+    },
+    {
+      "principal": "application:qits-edge",
+      "application": "qits-edge",
+      "environment": "contract-00000001",
+      "deployedVersion": "2026.1201.101010",
+      "name": "hetzner",
+      "target": "https://api.hetzner.cloud",
+      "secret": "HETZNER_DNS",
+      "inject": "bearer",
+      "methods": [
+        "DELETE",
+        "GET",
+        "POST",
+        "PUT"
+      ]
+    }
+  ],
+  "refused": []
+}

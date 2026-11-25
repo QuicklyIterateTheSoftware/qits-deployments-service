@@ -219,10 +219,95 @@ class EgressDeclarationParserTest {
   }
 
   @Test
-  void anInjectionIsBearerOrANamedHeader() {
-    for (String bad : List.of("basic", "header:", "header:X Api", "header:1x", "Bearer")) {
+  void anInjectionIsBearerANamedHeaderOrACookie() {
+    for (String bad :
+        List.of(
+            "basic",
+            "header:",
+            "header:X Api",
+            "header:1x",
+            "Bearer",
+            "cookie:",
+            "cookie:a=b",
+            "cookie:a;b",
+            "cookie:a,b",
+            "cookie:" + "c".repeat(65))) {
       String message = messageOf(route(HTTPS, "secret: S", "inject: " + bad, "methods: [GET]"));
-      assertTrue(message.contains("`bearer` or `header:<Header-Name>`"), message);
+      assertTrue(message.contains("`bearer`, `header:<Header-Name>` or `cookie:<name>`"), message);
+    }
+  }
+
+  // --- qits-2659: the cookie injection and the project namespace -------------------------------
+
+  @Test
+  void aCookieInjectionNamesAnRfc6265Token() {
+    for (String name : List.of("session", "__Host-sid", "a!#$%&'*+.^_`|~-z", "c".repeat(64))) {
+      List<Route> routes =
+          parse(route(HTTPS, "secret: SESSION", "inject: cookie:" + name, "methods: [GET]"));
+      assertEquals("cookie:" + name, routes.get(0).inject());
+      assertEquals("SESSION", routes.get(0).secret());
+    }
+  }
+
+  @Test
+  void anApplicationMayNotNameAProjectSecret() {
+    String message =
+        messageOf(route(HTTPS, "secret: PROJECT_FOO", "inject: bearer", "methods: [GET]"));
+    assertTrue(message.contains("may not start with `PROJECT_`"), message);
+    // ...and a name that merely contains the word is its own.
+    assertEquals(
+        "MY_PROJECT_FOO",
+        parse(route(HTTPS, "secret: MY_PROJECT_FOO", "inject: bearer", "methods: [GET]"))
+            .get(0)
+            .secret());
+  }
+
+  @Test
+  void aProjectsSecretIsAnsweredInItsNamespace() {
+    String yaml =
+        """
+        version: 1
+        routes:
+          - name: github
+            target: https://api.github.com
+            secret: GITHUB_READ
+            inject: bearer
+            methods: [GET, HEAD, CONNECT]
+          - name: portal
+            target: https://portal.example.com
+            secret: SESSION
+            inject: cookie:sid
+            methods: [GET]
+        """;
+    List<Route> routes = EgressDeclarationParser.parseProject(yaml, SOURCE, "qits");
+    assertEquals("PROJECT_QITS_GITHUB_READ", routes.get(0).secret());
+    assertEquals(List.of("CONNECT", "GET", "HEAD"), routes.get(0).methods());
+    assertEquals("PROJECT_QITS_SESSION", routes.get(1).secret());
+    assertEquals("cookie:sid", routes.get(1).inject());
+    assertEquals(
+        "PROJECT_MY_TEAM_7_X",
+        EgressDeclarationParser.parseProject(
+                route(HTTPS, "secret: X", "inject: bearer", "methods: [GET]"), SOURCE, "my-team-7")
+            .get(0)
+            .secret());
+  }
+
+  @Test
+  void aProjectsFileGrantsNoPlatformTargetAndNeedsASlug() {
+    SpecException platform =
+        assertThrows(
+            SpecException.class,
+            () ->
+                EgressDeclarationParser.parseProject(
+                    route("target: platform:projects", "methods: [GET]"), SOURCE, "qits"));
+    assertTrue(platform.getMessage().contains("grants no `platform:` target"), platform.getMessage());
+    for (String slug : java.util.Arrays.asList(null, "", "Qits", "a_b", "-a")) {
+      assertThrows(
+          SpecException.class,
+          () ->
+              EgressDeclarationParser.parseProject(
+                  route(HTTPS, "secret: X", "inject: bearer", "methods: [GET]"), SOURCE, slug),
+          String.valueOf(slug));
     }
   }
 

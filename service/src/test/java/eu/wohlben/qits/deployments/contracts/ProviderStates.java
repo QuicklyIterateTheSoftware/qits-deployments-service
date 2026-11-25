@@ -13,7 +13,9 @@ import eu.wohlben.qits.deployments.deployments.control.EgressGrantTables;
 import eu.wohlben.qits.deployments.deployments.control.FakeArtifactPurge;
 import eu.wohlben.qits.deployments.deployments.control.FakeDeploymentDriver;
 import eu.wohlben.qits.deployments.deployments.control.FakePublicEdgeProbe;
+import eu.wohlben.qits.deployments.deployments.control.FakeProjectDirectory;
 import eu.wohlben.qits.deployments.deployments.control.FakeSpecSource;
+import eu.wohlben.qits.deployments.deployments.control.ProjectEgressGrants;
 import eu.wohlben.qits.deployments.deployments.control.RepositoryRef;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource;
 import eu.wohlben.qits.deployments.deployments.control.SplitCheck;
@@ -191,6 +193,39 @@ public class ProviderStates {
   /** The egress grant table with no route and no refusal, built at {@link #EGRESS_TABLE_BUILT_AT}. */
   public static final String AN_EMPTY_EGRESS_GRANT_TABLE = "an empty egress grant table";
 
+  /**
+   * The egress grant table (qits-2659) holding {@link #AN_EGRESS_GRANT_TABLE_WITH_ONE_ROUTE}'s
+   * application route ({@code application:qits-edge}) and one PROJECT route: project {@code
+   * projectId} (slug {@link #EGRESS_PROJECT_SLUG}), whose wrapper {@link #EGRESS_WRAPPER} declares
+   * {@code portal} → {@code https://portal.example.com} with the secret {@code SESSION} injected as
+   * the cookie {@code sid}, for GET and HEAD — granted as {@code principal: "project:<projectId>"},
+   * the secret resolved to {@code PROJECT_CONTRACT_SESSION}, at the wrapper's {@code main} commit.
+   * Built at {@link #EGRESS_TABLE_BUILT_AT}.
+   */
+  public static final String AN_EGRESS_GRANT_TABLE_WITH_A_PROJECT_ROUTE =
+      "an egress grant table with a project route";
+
+  /** The project the project-route state grants: its id is the state's {@code projectId} param. */
+  static final String EGRESS_PROJECT_ID = "6f1d2c3b-4a59-4e68-8d7c-0b1a2c3d4e5f";
+
+  static final String EGRESS_PROJECT_SLUG = "contract";
+
+  static final String EGRESS_WRAPPER = "contract-wrapper";
+
+  static final String EGRESS_WRAPPER_ID = "5e0c1b2a-3948-4d57-9c6b-fa0918273645";
+
+  /** The project-route state's wrapper file. */
+  static final String PROJECT_EGRESS_YML =
+      """
+      version: 1
+      routes:
+        - name: portal
+          target: https://portal.example.com
+          secret: SESSION
+          inject: cookie:sid
+          methods: [GET, HEAD]
+      """;
+
   /** When the egress states build their table: its version is this instant's epoch millis. */
   static final Instant EGRESS_TABLE_BUILT_AT = Instant.parse("2025-11-25T09:00:00Z");
 
@@ -298,6 +333,8 @@ public class ProviderStates {
   @Inject EdgeRouteTables edgeRouteTables;
   @Inject EgressDeclarations egressDeclarations;
   @Inject EgressGrantTables egressGrants;
+  @Inject FakeProjectDirectory projectDirectory;
+  @Inject ProjectEgressGrants projectGrants;
   @Inject SplitCheck splitCheck;
   @Inject FakePublicEdgeProbe publicEdge;
 
@@ -343,6 +380,7 @@ public class ProviderStates {
     states.put(A_FINISHED_DATABASE_MOVE, this::aFinishedDatabaseMove);
     states.put(A_RUNNING_DATABASE_MOVE, this::aRunningDatabaseMove);
     states.put(TWO_EDGES_WITH_ROUTES, this::twoEdgesWithRoutes);
+    states.put(AN_EGRESS_GRANT_TABLE_WITH_A_PROJECT_ROUTE, this::anEgressGrantTableWithAProjectRoute);
     states.put(AN_EGRESS_GRANT_TABLE_WITH_ONE_ROUTE, this::anEgressGrantTableWithOneRoute);
     states.put(AN_EMPTY_EGRESS_GRANT_TABLE, this::anEmptyEgressGrantTable);
     states.put(A_CLEAN_SPLIT, () -> aSplitCheck(false));
@@ -380,6 +418,10 @@ public class ProviderStates {
       settling.clear();
     }
     announced.forEach(ProviderStates::drain);
+    // A project the egress project-route state listed must not grant routes to the next state or
+    // to another suite sharing this application (qits-2659).
+    projectDirectory.reset();
+    projectGrants.refresh();
     // A scale, a restart or a retirement an interaction queued runs on the deploy worker: let it
     // finish here, so it cannot act on the fakes while the next state seeds.
     awaitIdle();
@@ -444,6 +486,27 @@ public class ProviderStates {
    * host answers the file and {@link EgressDeclarations#record} reads, parses and stores it.
    */
   private Setup anEgressGrantTableWithOneRoute() {
+    return new Setup(new TreeMap<>(), List.of(egressEdgeRoute()));
+  }
+
+  /**
+   * See {@link #AN_EGRESS_GRANT_TABLE_WITH_A_PROJECT_ROUTE}: the one-route state's qits-edge, then a
+   * project the fake qits-projects lists, whose wrapper the fake git host answers, read the
+   * production way ({@link ProjectEgressGrants#refresh}).
+   */
+  private Setup anEgressGrantTableWithAProjectRoute() {
+    String token = egressEdgeRoute();
+    projectDirectory.project(EGRESS_PROJECT_ID, EGRESS_PROJECT_SLUG, EGRESS_WRAPPER_ID, EGRESS_WRAPPER);
+    specs.scriptText(EGRESS_WRAPPER, SpecSource.EGRESS_PATH, PROJECT_EGRESS_YML);
+    projectGrants.refresh();
+    egressGrants.current(EGRESS_TABLE_BUILT_AT);
+    Map<String, String> params = new TreeMap<>();
+    params.put("projectId", EGRESS_PROJECT_ID);
+    return new Setup(params, List.of(token));
+  }
+
+  /** The one-route state's body: qits-edge ACTIVE with its hetzner route; the unique token. */
+  private String egressEdgeRoute() {
     awaitIdle();
     String token = token();
     String environmentId = createEnvironment("contract-" + token, false);
@@ -466,7 +529,7 @@ public class ProviderStates {
     specs.scriptText(application, SpecSource.EGRESS_PATH, EGRESS_YML);
     egressDeclarations.record(RepositoryRef.ofId(application), application, EGRESS_VERSION);
     egressGrants.current(EGRESS_TABLE_BUILT_AT);
-    return new Setup(new TreeMap<>(), List.of(token));
+    return token;
   }
 
   /** See {@link #AN_EMPTY_EGRESS_GRANT_TABLE}: no declaration anywhere, the table built from that. */
@@ -477,8 +540,13 @@ public class ProviderStates {
     return new Setup(new TreeMap<>(), List.of());
   }
 
-  /** Every egress declaration and the stored table, gone: the egress states start from nothing. */
-  private static void clearEgress() {
+  /**
+   * Every egress declaration, every project grant and the stored table, gone: the egress states
+   * start from nothing.
+   */
+  private void clearEgress() {
+    projectDirectory.reset();
+    projectGrants.refresh();
     QuarkusTransaction.requiringNew()
         .run(
             () -> {

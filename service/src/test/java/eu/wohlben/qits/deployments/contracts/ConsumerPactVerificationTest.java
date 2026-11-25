@@ -272,4 +272,9 @@ class ConsumerPactVerificationTest {
   Map<String, String> anEmptyEgressGrantTable() {
     return states.params(ProviderStates.AN_EMPTY_EGRESS_GRANT_TABLE);
   }
+
+  @State(ProviderStates.AN_EGRESS_GRANT_TABLE_WITH_A_PROJECT_ROUTE)
+  Map<String, String> anEgressGrantTableWithAProjectRoute() {
+    return states.params(ProviderStates.AN_EGRESS_GRANT_TABLE_WITH_A_PROJECT_ROUTE);
+  }
 }

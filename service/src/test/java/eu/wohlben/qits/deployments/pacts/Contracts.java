@@ -12,6 +12,7 @@ import eu.wohlben.qits.deployments.deployments.control.IdpClientProvisioner;
 import eu.wohlben.qits.deployments.deployments.control.RepositoryRef;
 import eu.wohlben.qits.deployments.deployments.control.EdgeRouteClient;
 import eu.wohlben.qits.deployments.deployments.control.EgressGrantClient;
+import eu.wohlben.qits.deployments.deployments.control.ProjectDirectory;
 import eu.wohlben.qits.deployments.deployments.control.SpecSource;
 import eu.wohlben.qits.deployments.edgehost.EdgeRouteClients;
 import eu.wohlben.qits.deployments.edgehost.HttpEdgeRouteClient;
@@ -22,6 +23,8 @@ import eu.wohlben.qits.deployments.githost.GitHostSpecSource;
 import eu.wohlben.qits.deployments.githost.IdpGitHostBearer;
 import eu.wohlben.qits.deployments.idphost.HttpIdpClientProvisioner;
 import eu.wohlben.qits.deployments.idphost.IdpStub;
+import eu.wohlben.qits.deployments.projectshost.HttpProjectDirectory;
+import eu.wohlben.qits.deployments.projectshost.ProjectDirectories;
 import eu.wohlben.qits.pact.consumer.ConsumerPact;
 import eu.wohlben.qits.pact.consumer.GoldenInteraction;
 import eu.wohlben.qits.pact.consumer.GoldenMasters;
@@ -55,7 +58,9 @@ import java.util.Map;
  *   <li>{@link #EDGE} — {@code HttpEdgeRouteClient}'s push of a route table to an edge and its read
  *       of the version the edge holds (epic qits-2174);
  *   <li>{@link #EGRESS} — {@code HttpEgressGrantClient}'s push of the egress grant table to
- *       qits-egress and its read of the version qits-egress holds (epic qits-2523).
+ *       qits-egress and its read of the version qits-egress holds (epic qits-2523);
+ *   <li>{@link #PROJECTS} — {@code HttpProjectDirectory}'s reads of the projects, each project's
+ *       wrapper and a repository's name, for the projects' egress grants (qits-2659).
  * </ul>
  *
  * <p>The bus library qits-eventstream owns its catch-up and publish pact, so no events row is here.
@@ -337,6 +342,30 @@ public final class Contracts {
                           .readText(byName(recorded.params()), recorded.params().get("rev"), recorded.params().get("path"))
                           .isPresent(),
                       "a 200 blob is the file's text")),
+          // The project grants' read of a wrapper's file (qits-2659) is that request again, read
+          // with the commit the rev resolved to.
+          Check.of(
+              GitHostSpecSource.class,
+              "readTextAt",
+              SPEC_BY_NAME,
+              (url, recorded) ->
+                  assertEquals(
+                      recorded.responseHeader("Git-Commit-Sha"),
+                      GitHostSources.at(url)
+                          .readTextAt(byName(recorded.params()), recorded.params().get("rev"), recorded.params().get("path"))
+                          .orElseThrow(() -> new AssertionError("a 200 blob is the file"))
+                          .commitSha(),
+                      "the commit the rev resolved to")),
+          Check.of(
+              GitHostSpecSource.class,
+              "readTextAt",
+              NO_SPEC_BY_NAME,
+              (url, recorded) ->
+                  assertFalse(
+                      GitHostSources.at(url)
+                          .readTextAt(byName(recorded.params()), recorded.params().get("rev"), recorded.params().get("path"))
+                          .isPresent(),
+                      "a 404 blob is no file")),
           Check.of(
               GitHostSpecSource.class,
               "readText",
@@ -528,8 +557,78 @@ public final class Contracts {
                   assertEquals(
                       java.util.OptionalLong.empty(), egress(url, recorded.params()).heldVersion())));
 
+  // --- qits-projects ---------------------------------------------------------------------------
+
+  static final GoldenMasters PROJECTS_MASTERS =
+      GoldenMasters.of("qits-projects-service", "qits-projects");
+
+  static final String TWO_PROJECTS = "two projects exist";
+  static final String A_PROJECT_WITH_ONE_REPOSITORY = "a project with one repository";
+  static final String A_REPOSITORY = "a repository exists";
+
+  /** Each reconcile tick lists the projects and their wrappers, at most every project poll. */
+  private static GoldenInteraction projectsRow(String state, String operationId) {
+    return GoldenInteraction.of(
+        Trigger.schedule("the deployment observation pass"), state, operationId);
+  }
+
+  public static final Contract PROJECTS =
+      Contract.of(
+          PROJECTS_MASTERS,
+          // Every project, by id and slug: the git host's address and the secret namespace.
+          Check.of(
+              HttpProjectDirectory.class,
+              "projects",
+              projectsRow(TWO_PROJECTS, "listProjects")
+                  .consumes("entries[].project.id", "entries[].project.slug")
+                  .anyLength("entries"),
+              (url, recorded) -> {
+                List<ProjectDirectory.Project> projects =
+                    ProjectDirectories.at(url + "/projects/api").projects();
+                assertFalse(projects.isEmpty(), "the listing is read");
+                for (ProjectDirectory.Project project : projects) {
+                  assertNotNull(project.id(), "id");
+                  assertNotNull(project.slug(), "slug");
+                }
+              }),
+          // A project's wrapper, its name off the entry of the same id.
+          Check.of(
+              HttpProjectDirectory.class,
+              "wrapperOf",
+              projectsRow(A_PROJECT_WITH_ONE_REPOSITORY, "listProjectRepositories")
+                  .consumes(
+                      "wrapper.repositoryId", "entries[].repository.id", "entries[].repository.name")
+                  .anyLength("entries"),
+              (url, recorded) -> {
+                ProjectDirectory.Wrapper wrapper =
+                    ProjectDirectories.at(url + "/projects/api")
+                        .wrapperOf(recorded.params().get("projectId"))
+                        .orElseThrow(() -> new AssertionError("the wrapper is read"));
+                assertEquals(
+                    PROJECTS_MASTERS
+                        .json(A_PROJECT_WITH_ONE_REPOSITORY, "listProjectRepositories")
+                        .path("wrapper")
+                        .path("repositoryId")
+                        .asText(),
+                    wrapper.repositoryId());
+              }),
+          // A repository's name, when the listing did not carry the wrapper's.
+          Check.of(
+              HttpProjectDirectory.class,
+              "repositoryName",
+              projectsRow(A_REPOSITORY, "getRepository").consumes("repository.name"),
+              (url, recorded) ->
+                  assertEquals(
+                      PROJECTS_MASTERS
+                          .json(A_REPOSITORY, "getRepository")
+                          .path("repository")
+                          .path("name")
+                          .asText(),
+                      ProjectDirectories.at(url + "/projects/api")
+                          .repositoryName(recorded.params().get("repositoryId")))));
+
   /** Every contract this repository holds. */
   public static List<Contract> all() {
-    return List.of(IDP, GITHOST, ARTIFACTS, EDGE, EGRESS);
+    return List.of(IDP, GITHOST, ARTIFACTS, EDGE, EGRESS, PROJECTS);
   }
 }

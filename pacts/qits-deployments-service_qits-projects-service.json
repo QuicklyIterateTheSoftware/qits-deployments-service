@@ -1,0 +1,304 @@
+{
+  "consumer": {
+    "name": "qits-deployments-service"
+  },
+  "interactions": [
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-projects-service",
+            "operationId": "getRepository"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "kind": "schedule",
+            "schedule": "the deployment observation pass"
+          }
+        }
+      },
+      "description": "the deployment observation pass: getRepository",
+      "key": "4283207b",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a repository exists",
+          "params": {
+            "projectId": "00000000-0000-4000-8000-000000000001",
+            "repoName": "contract-service",
+            "repositoryId": "00000000-0000-4000-8000-000000000002"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/projects/api/repositories/${repositoryId}",
+            "type": "ProviderState"
+          }
+        },
+        "method": "GET",
+        "path": "/projects/api/repositories/00000000-0000-4000-8000-000000000002"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "repository": {
+              "name": "contract-service"
+            }
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.repository.name": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-projects-service",
+            "operationId": "listProjectRepositories"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "kind": "schedule",
+            "schedule": "the deployment observation pass"
+          }
+        }
+      },
+      "description": "the deployment observation pass: listProjectRepositories",
+      "key": "90843cd",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a project with one repository",
+          "params": {
+            "projectId": "00000000-0000-4000-8000-000000000001"
+          }
+        }
+      ],
+      "request": {
+        "generators": {
+          "path": {
+            "dataType": "RAW",
+            "expression": "/projects/api/projects/${projectId}/repositories",
+            "type": "ProviderState"
+          }
+        },
+        "method": "GET",
+        "path": "/projects/api/projects/00000000-0000-4000-8000-000000000001/repositories"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "entries": [
+              {
+                "repository": {
+                  "id": "00000000-0000-4000-8000-000000000002",
+                  "name": "contract-00000001-contract-00000001"
+                }
+              }
+            ],
+            "wrapper": {
+              "repositoryId": "00000000-0000-4000-8000-000000000002"
+            }
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.entries": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 0
+                }
+              ]
+            },
+            "$.entries[*].repository.id": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                }
+              ]
+            },
+            "$.entries[*].repository.name": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.wrapper.repositoryId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-projects-service",
+            "operationId": "listProjects"
+          },
+          "qits-trigger": {
+            "app": "qits-deployments-service",
+            "kind": "schedule",
+            "schedule": "the deployment observation pass"
+          }
+        }
+      },
+      "description": "the deployment observation pass: listProjects",
+      "key": "a9765667",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "two projects exist",
+          "params": {
+            "projectId": "00000000-0000-4000-8000-000000000001",
+            "secondProjectId": "00000000-0000-4000-8000-000000000002"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/projects/api/projects"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "entries": [
+              {
+                "project": {
+                  "id": "00000000-0000-4000-8000-000000000001",
+                  "slug": "qits-00000001"
+                }
+              }
+            ]
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.entries": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 0
+                }
+              ]
+            },
+            "$.entries[*].project.id": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                }
+              ]
+            },
+            "$.entries[*].project.slug": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "4.0"
+    },
+    "plugins": []
+  },
+  "provider": {
+    "name": "qits-projects-service"
+  }
+}

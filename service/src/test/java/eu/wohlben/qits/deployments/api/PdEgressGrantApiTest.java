@@ -103,6 +103,7 @@ class PdEgressGrantApiTest {
     Map<String, Object> hetzner = table.getMap("routes[0]");
     assertEquals(
         Map.of(
+            "principal", "application:" + application,
             "application", application,
             "environment", environment,
             "deployedVersion", "2026.1201.101010",
@@ -143,6 +144,7 @@ class PdEgressGrantApiTest {
         .statusCode(200)
         .body("routes", hasSize(0))
         .body("refused", hasSize(1))
+        .body("refused[0].principal", equalTo("application:" + application))
         .body("refused[0].application", equalTo(application))
         .body("refused[0].deployedVersion", equalTo("2026.1201.101011"))
         .body(

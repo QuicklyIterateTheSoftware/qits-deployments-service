@@ -2,6 +2,7 @@
   "version": 1764061200000,
   "routes": [
     {
+      "principal": "application:qits-edge",
       "application": "qits-edge",
       "environment": "contract-00000001",
       "deployedVersion": "2026.1201.101010",

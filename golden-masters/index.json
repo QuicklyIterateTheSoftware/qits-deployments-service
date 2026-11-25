@@ -1066,6 +1066,32 @@
       ]
     },
     {
+      "name": "an egress grant table with a project route",
+      "slug": "an-egress-grant-table-with-a-project-route",
+      "params": {
+        "projectId": "00000000-0000-4000-8000-000000000001"
+      },
+      "dependsOn": [],
+      "operations": [
+        {
+          "operationId": "getEgressGrants",
+          "method": "GET",
+          "path": "/deployments/api/egress-grants",
+          "status": 200,
+          "file": "an-egress-grant-table-with-a-project-route/getEgressGrants.json",
+          "frozen": {
+            "ids": [],
+            "instants": [],
+            "strings": [
+              "$.routes[*].principal",
+              "$.routes[*].environment"
+            ],
+            "listFilteredTo": null
+          }
+        }
+      ]
+    },
+    {
       "name": "an egress grant table with one route",
       "slug": "an-egress-grant-table-with-one-route",
       "params": {},

@@ -505,6 +505,15 @@ class GoldenMasterRecordingTest {
               200,
               null,
               null),
+          // qits-2659: a project's route beside the application's, principal and cookie inject.
+          new Interaction(
+              ProviderStates.AN_EGRESS_GRANT_TABLE_WITH_A_PROJECT_ROUTE,
+              "getEgressGrants",
+              "GET",
+              "/deployments/api/egress-grants",
+              200,
+              null,
+              null),
           // qits-2215: the last split check, clean and with a bridged service.
           new Interaction(
               ProviderStates.A_CLEAN_SPLIT,
