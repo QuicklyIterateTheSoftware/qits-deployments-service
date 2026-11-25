@@ -75,7 +75,7 @@
              qits-integrations-quarkus, same publisher as qits-auth-core and qits-db-core above.
              From 2026.1103.132907 the wrap also rides out an edge switchover (RetryPolicy, 30 s),
              which edge/EdgeBreakGlass's one internal-address try sits behind (epic qits-428). -->
-        <qits.http-core.version>2026.1106.507</qits.http-core.version>
+        <qits.http-core.version>2026.1125.110206</qits.http-core.version>
         <!-- qits-telemetry-core (epic qits-428): the three OTLP/HTTP exporters as CDI beans whose
              header supplier carries the `qits` oidc client's current bearer, so spans, logs and
              metrics reach qits-observability at its edge host. Published by
