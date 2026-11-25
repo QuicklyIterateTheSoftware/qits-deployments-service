@@ -1862,7 +1862,7 @@ refuses unknown keys, and a spec is read at the released tag.
 
 ### `.config/qits/egress.yml` and the egress grant table (qits-2523)
 
-README's *Egress grants* has the file and the door's shape. Eight things about it, each easy to undo
+README's *Egress grants* has the file and the door's shape. Nine things about it, each easy to undo
 by accident:
 
 - **It is a second FILE, never a key of `deployments.yml`.** `SpecSource.readText(ref, rev,
@@ -1917,6 +1917,23 @@ by accident:
   makes, or assert the version moved rather than its value (`theVersionMovesOnlyWhenTheContentDoes`).
   The story profile points the URL at the same closed loopback port as the edges, so no story
   diagram gained an edge.
+- **The secret hand-over rides the reconcile** (`EgressSecretHandOvers`, the step qits-2615
+  planned, taken into the epic by the desk on 2026-11-25). README's *The secret hand-over* has the
+  rule and the one entry (`qits-edge`'s `QITS_EDGE_ACME_HETZNER_TOKEN` → `qits-egress`'s
+  `QITS_EGRESS_SECRET_HETZNER_DNS`, triggered by a `qits-edge` route whose `secret` is
+  `HETZNER_DNS`). `EgressGrantPusher.reconcile` calls `apply(table)` after the push, whatever the
+  push answered. The move is one `DbRetry.inNewTx` (both rows `findOneForUpdate`, an existing target
+  kept, the source deleted, flushed); after it the restart is `ApplicationScaling.restart` with
+  actor `egress hand-over` and the redeploy `DatabaseMoves.queueRedeployOfLive` — the move door's
+  `live()` lookup, then `DeployService.redeploy` queued through `enqueueOperation`. **Both are
+  QUEUED, never run inline**: the reconcile also runs inside a deployment's own tail
+  (`afterDeploy`), and a redeploy run there would nest one deployment inside another. A deployment of
+  either application `QUEUED`/`STARTING` in the tier skips the entry before anything is written, so
+  the move and its two steps are never split by that guard; a step that could not be queued after
+  the commit is kept in memory (`owed`) and retried each pass (a restart loses it — the edge's next
+  deployment drops the variable anyway). A target never deployed in the tier is not restarted: its
+  first deployment reads the row. `PdEgressSecretHandOverTest` holds it through the release path
+  with test-only entries (`declare`), so no suite deploys an application named `qits-edge`.
 
 ### `replicas:` — more than one task, for an application that can run twice (qits-2523)
 

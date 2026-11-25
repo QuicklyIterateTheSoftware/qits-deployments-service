@@ -683,6 +683,35 @@ differ. A `409` means qits-egress holds a newer version — nothing to do. Any f
 never fails a deployment. `GET /deployments/api/egress-grants` stays the source of truth and the
 CLI's door.
 
+### The secret hand-over
+
+A credential an application held as its own setting moves to qits-egress once a route injecting it
+is in force, so the gateway holds the secret and the application no longer does. The moves are
+declared, one entry each, in `EgressSecretHandOvers.DECLARED` — a later move is another entry, not
+new code. There is one:
+
+| from (application, setting) | to (application, setting) | triggered by a route of | whose `secret` is |
+| --- | --- | --- | --- |
+| `qits-edge`, `QITS_EDGE_ACME_HETZNER_TOKEN` | `qits-egress`, `QITS_EGRESS_SECRET_HETZNER_DNS` | `qits-edge` | `HETZNER_DNS` |
+
+It runs with every reconcile above, on the deploy worker, after the table is built. For each entry
+and each tier whose table in force holds the trigger route, while the source `pd_setting` row
+exists:
+
+1. **one transaction** — the target row is inserted with the same value, `secret=true`,
+   `updated_by` `egress hand-over from <application>`, unless it already exists (an existing target
+   wins and is not overwritten); the source row is deleted;
+2. **after the commit** — `toApplication` is restarted in that tier through the restart lever (the
+   path `POST …/restart` queues; its row is stamped `[restarted by egress hand-over …]`), because
+   qits-egress reads its secrets at boot; then `fromApplication`'s live version is redeployed
+   (`DeployService.redeploy`, the manual door's semantics), so its update `--env-rm`s the moved key.
+
+One INFO line names the applications, the tier and the keys, never the value. Nothing moves while a
+deployment of either application in that tier is `QUEUED` or `STARTING`; the next pass tries again.
+Once the source row is gone the trigger never fires again. A failure is a WARN and the next pass
+retries (a restart or redeploy that could not be queued after the commit is owed in memory); it never
+fails a deployment.
+
 ## Addressing: every peer through the edge, one exception
 
 **A peer is `https://<label>.qits.<domain>`** (epic qits-428), where `<label>` is the peer's
