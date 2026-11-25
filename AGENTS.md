@@ -15,8 +15,9 @@ service-client API), `FakeArtifactPurge` behind `ArtifactPurge` (qits-artifacts'
 qits-1941) and `FakeDatabaseContainers` behind `DatabaseContainers` (the database move's and the
 private postgres' one-shot containers, qits-2175), `FakeEdgeRouteClient` behind `EdgeRouteClient`
 (the three edges' route-table door, qits-2174, qits-2304), `FakePublicEdgeProbe` behind `PublicEdgeProbe` (the
-split check's TLS probe of the public edge, qits-2215) and `FakeEgressGrantClient` behind
-`EgressGrantClient` (qits-egress's grant-table door, qits-2523). **Nine fakes** — the ancestor's stub HTTP server for the topology dissolved
+split check's TLS probe of the public edge, qits-2215), `FakeEgressGrantClient` behind
+`EgressGrantClient` (qits-egress's grant-table door, qits-2523) and `FakeProjectDirectory` behind
+`ProjectDirectory` (qits-projects' project and wrapper reads, qits-2659). **Ten fakes** — the ancestor's stub HTTP server for the topology dissolved
 when the topology became a repository query, and `FakeDeclarationSeed` went with qits-configuration
 (qits-1393).
 
@@ -1939,6 +1940,40 @@ by accident:
   caught and logged at DEBUG): its first deployment reads the row. `PdEgressSecretHandOverTest`
   holds it through the release path with test-only entries (`declare`), so no suite deploys an
   application named `qits-edge`.
+
+### Principals, project grants and the cookie inject (qits-2659)
+
+README's *Project grants* has the rule. Seven things about it, each easy to undo by accident:
+
+- **Every route and refusal carries `principal`**: `application:<app>` or `project:<projectId>`
+  (`EgressGrantTableDto.applicationPrincipal`/`projectPrincipal`, the one spelling). `application`
+  stays, null on a project route — qits-egress before its principal change drops a route without an
+  application, so the push is safe in either order. The new field moves the content hash, so the
+  first table built by this release is a new version once.
+- **Projects are read by `ProjectEgressGrants`, in memory, on the reconcile tick**
+  (`EgressGrantPusher.reconcile` → `refreshIfDue`, at most every `qits.deployments.egress.project-poll`).
+  No table: it is a cache of qits-projects' and the git host's answers. `EgressGrantTables.current`
+  joins `current()` beside the application rows; the GET door never polls. The seam is
+  `ProjectDirectory` (`projectshost/HttpProjectDirectory`, `Contracts.PROJECTS` against
+  `qits-projects-golden-masters`: `two projects exist`/`listProjects`, `a project with one
+  repository`/`listProjectRepositories`, `a repository exists`/`getRepository`), the blob is
+  `SpecSource.readTextAt` (the readText request, answered with its `Git-Commit-Sha`; the githost
+  rows it replays are the spec read's).
+- **An outage revokes nothing**: a listing that fails keeps every project, a wrapper or blob read that
+  fails retryably keeps that project's last grants; a project no longer listed loses them. A
+  non-retryable read and a parse error are that project's `refused` entry.
+- **No push before the first listing answered** (`ProjectEgressGrants.answered`): a fresh process
+  that cannot reach qits-projects would otherwise push a table without any project's routes. The
+  hand-overs still run.
+- **The secret is resolved in the parser** (`EgressDeclarationParser.parseProject`,
+  `PROJECT_<SLUG>_<NAME>`), so the table and qits-egress never need the slug; `parse` (an
+  application's file) refuses a `PROJECT_` secret. A project file takes no `platform:` target.
+- **`cookie:<name>`** is the third inject kind, the name an RFC 6265 token of at most 64 characters.
+- **Tests clear the project grants**: `FakeProjectDirectory` (the tenth fake) answers no projects
+  unscripted, and a test that scripts one resets it and calls `ProjectEgressGrants.refresh()` after,
+  as `PdProjectEgressGrantsTest` and `ProviderStates.cleanUp` do — the grants are shared by every
+  suite of the application. Golden master: `an egress grant table with a project route` (the
+  one-route state's qits-edge plus project `contract`'s `portal` route, `cookie:sid`).
 
 ### `replicas:` — more than one task, for an application that can run twice (qits-2523)
 

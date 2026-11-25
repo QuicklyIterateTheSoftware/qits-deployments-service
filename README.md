@@ -637,9 +637,13 @@ routes:
   - name: hetzner                       # [a-z][a-z0-9-]{0,62}; the first path segment at the gateway
     target: https://api.hetzner.cloud   # https://<host>[:port][/base path], or platform:<host label>
     secret: HETZNER_DNS                 # [A-Z][A-Z0-9_]{0,63}; omitted for a platform target
-    inject: bearer                      # bearer | header:<Header-Name>; omitted for a platform target
+    inject: bearer                      # bearer | header:<Header-Name> | cookie:<name>; omitted for a platform target
     methods: [GET, POST, PUT, DELETE]   # GET HEAD POST PUT PATCH DELETE OPTIONS CONNECT
 ```
+
+`inject: cookie:<name>` (qits-2659) sends `Cookie: <name>=<secret>`; the name is an RFC 6265 token,
+`[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}`. An application's `secret:` may not start with `PROJECT_` — that
+namespace is the projects' (below), and is refused in the parser.
 
 It is read at the released tag, beside the spec, for the release's MAIN application (a variant
 carries no routes), and parsed strictly by `EgressDeclarationParser`: `version` must be `1`, unknown
@@ -657,11 +661,51 @@ in force — the routes of each application's `ACTIVE` deployment:
 
 ```json
 { "version": 1764051234000,
-  "routes": [ { "application": "qits-edge", "environment": "dev", "deployedVersion": "2026.1201.101010",
-                "name": "hetzner", "target": "https://api.hetzner.cloud", "secret": "HETZNER_DNS",
-                "inject": "bearer", "methods": ["DELETE","GET","POST","PUT"] } ],
-  "refused": [ { "application": "…", "deployedVersion": "…", "reason": "…" } ] }
+  "routes": [ { "principal": "project:8273c743-…", "application": null, "environment": null,
+                "deployedVersion": "0f1e2d3c4b5a", "name": "github", "target": "https://api.github.com",
+                "secret": "PROJECT_QITS_GITHUB_READ", "inject": "bearer", "methods": ["CONNECT","GET","HEAD"] },
+              { "principal": "application:qits-edge", "application": "qits-edge", "environment": "dev",
+                "deployedVersion": "2026.1201.101010", "name": "hetzner", "target": "https://api.hetzner.cloud",
+                "secret": "HETZNER_DNS", "inject": "bearer", "methods": ["DELETE","GET","POST","PUT"] } ],
+  "refused": [ { "principal": "application:…", "application": "…", "deployedVersion": "…", "reason": "…" } ] }
 ```
+
+Every route and refusal names its **`principal`** (qits-2659): `application:<app>` for an
+application's route, `project:<projectId>` for a project's. `application` stays for application
+routes and is null for project routes, so qits-2523's readers keep working. Routes sort by
+environment (none first), principal and name.
+
+### Project grants
+
+A project declares routes for its agents in its **wrapper repository**, in the same file format:
+`.config/qits/egress.yml` at `refs/heads/main` of the wrapper (qits-qits for project qits). The
+wrapper's `main` moves only at FINALIZED, after its release request passed the `.config/qits`
+approval, so that file is the reviewed one. `ProjectEgressGrants` reads it on the reconcile tick, at
+most every `qits.deployments.egress.project-poll` (`QITS_PLATFORM_DEPLOYMENTS_EGRESS_PROJECT_POLL`,
+60s):
+
+1. the projects, `GET <projects.url>/projects`, then each one's wrapper,
+   `GET …/projects/{id}/repositories` (`wrapper.repositoryId`, its name off the entry of that id, or
+   `GET …/repositories/{id}`) — `qits.deployments.projects.url`
+   (`QITS_PLATFORM_DEPLOYMENTS_PROJECTS_URL`, default `https://projects.qits.${QITS_DOMAIN}/projects/api`),
+   this service's own `qits` client bearer;
+2. the blob, through the git host client the spec is read by:
+   `GET <git-host>/git/<projectId>/<wrapperName>/blob/refs%2Fheads%2Fmain/.config/qits/egress.yml`.
+
+A 404 (or no wrapper) is no routes. A project route joins the table as `principal:
+"project:<projectId>"`, `application: null`, `environment: null`, `deployedVersion`: the wrapper's
+`main` commit, 12 characters. A file the parser refuses is listed under `refused` with its principal
+and keeps only that project's routes out. A project file takes no `platform:` target. A read that does
+not answer keeps what the project granted at the last read — an outage never revokes a grant — and
+until the project listing has answered once in a process, the table is not pushed. The grants are
+held in memory: they are re-read every poll, and nothing about them is history.
+
+**Secret namespace.** A project route's `secret: <NAME>` is answered RESOLVED, as
+`PROJECT_<SLUG>_<NAME>` (the slug upper-cased, `-` → `_`), so qits-egress reads the setting
+`QITS_EGRESS_SECRET_PROJECT_<SLUG>_<NAME>` and needs no slug: project `qits` and `GITHUB_READ` is
+`QITS_EGRESS_SECRET_PROJECT_QITS_GITHUB_READ`. Because an application may not name `PROJECT_*`, no
+wrapper change can grant agents an application's credential, and no application's file a project's.
+The values are `pd_setting` rows (`secret: true`) of application `qits-egress`.
 
 The version follows the edge route tables' rule — it moves only when the content does, to
 `max(stored + 1, epoch millis now)` — and is kept in `pd_egress_grant_table`.
