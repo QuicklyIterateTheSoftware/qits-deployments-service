@@ -1863,7 +1863,7 @@ refuses unknown keys, and a spec is read at the released tag.
 
 ### `.config/qits/egress.yml` and the egress grant table (qits-2523)
 
-README's *Egress grants* has the file and the door's shape. Nine things about it, each easy to undo
+README's *Egress grants* has the file and the door's shape. Ten things about it, each easy to undo
 by accident:
 
 - **It is a second FILE, never a key of `deployments.yml`.** `SpecSource.readText(ref, rev,
@@ -1940,6 +1940,21 @@ by accident:
   caught and logged at DEBUG): its first deployment reads the row. `PdEgressSecretHandOverTest`
   holds it through the release path with test-only entries (`declare`), so no suite deploys an
   application named `qits-edge`.
+- **A changed qits-egress secret redeploys qits-egress** (`EgressSecretRedeploys`, qits-2666; README's
+  *A changed egress secret redeploys qits-egress*). `Settings.put` (only when the row is new or its
+  value or `secret` changed) and `Settings.delete` note `written(app, tier, key)` AFTER their commit;
+  only `qits-egress` with a `QITS_EGRESS_SECRET_` key is kept, in memory, per tier (the keys and the
+  last write's instant). The store's other writers ride a deployment of the application they write
+  (`copyForRename`, `retireImageDefaults`, `retire`) and note nothing. `settle()` runs on the
+  reconcile tick, after `handOvers.apply`: past the debounce, a qits-egress row created at or after
+  the last write that is `QUEUED`/`STARTING`/`ACTIVE` absorbs it; an older row in flight waits;
+  otherwise `DatabaseMoves.queueRedeployOfLive` — QUEUED, never inline, the hand-over's reason. A
+  throw keeps the entry OWED for the next tick; `ConflictException`/`NotFoundException` (never
+  deployed there) drops it. The hand-over writes through the repository and calls `absorbed` once it
+  queued the target's redeploy, so a pending door write never adds a second one. Entries are removed
+  with `remove(tier, snapshot)`, so a write racing the tick is never lost. `PdEgressSecretRedeployTest`
+  drives `settle(Instant)` with a clock past the debounce and `queueWith` to fail a queue; it deploys
+  the real `qits-egress` name in a tier of its own.
 
 ### Principals, project grants and the cookie inject (qits-2659)
 

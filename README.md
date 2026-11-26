@@ -757,6 +757,31 @@ Once the source row is gone the trigger never fires again. A failure is a WARN a
 retries (a redeploy that could not be queued after the commit is owed in memory); it never fails a
 deployment.
 
+### A changed egress secret redeploys qits-egress
+
+qits-egress reads every `QITS_EGRESS_SECRET_*` once, at boot, and a setting reaches a container only
+through a deployment that rebuilds its argv. So when a setting of application `qits-egress` whose key
+starts with `QITS_EGRESS_SECRET_` is created, changed or deleted through `/deployments/api/settings`
+(`PUT`/`DELETE`), its **live version in that tier is redeployed** (qits-2666,
+`EgressSecretRedeploys`) — `DatabaseMoves.queueRedeployOfLive`, as the hand-over does, never a
+restart, which would keep the old swarm spec and never carry the new value. qits-egress runs two
+replicas, start-first, one at a time, so the redeploy drops no call.
+
+- **Debounced**: it runs on the reconcile tick once
+  `qits.deployments.egress.secret-redeploy-debounce` (`QITS_PLATFORM_DEPLOYMENTS_EGRESS_SECRET_REDEPLOY_DEBOUNCE`,
+  `10s`) has passed since the tier's last such write, so writes within it give one redeploy.
+- **Absorbed**: a deployment of qits-egress in that tier created after the last write (`QUEUED`,
+  `STARTING` or `ACTIVE`) already reads the new rows, so nothing more is queued; one in flight that
+  started before it is waited for, and one more redeploy follows it.
+- **Owed**: a redeploy that cannot be queued is kept in memory and retried on the next tick. A tier
+  qits-egress was never deployed in owes nothing — its first deployment reads the rows.
+- **Not triggered** by other applications' settings, by qits-egress keys outside the prefix, by a
+  `PUT` that restates the stored value and flag, or by the hand-over's own move, which redeploys
+  qits-egress itself and absorbs any write pending in that tier.
+
+One INFO line, `egress secret <KEY> changed in <tier>; redeploying qits-egress <live version>`
+(several keys comma-separated), never the value.
+
 ## Addressing: every peer through the edge, one exception
 
 **A peer is `https://<label>.qits.<domain>`** (epic qits-428), where `<label>` is the peer's
