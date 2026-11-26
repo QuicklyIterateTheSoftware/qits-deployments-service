@@ -38,6 +38,8 @@ public class EgressGrantPusher {
 
   @Inject ProjectEgressGrants projects;
 
+  @Inject EgressSecretRedeploys secretRedeploys;
+
   /** Whether the last read or push failed: an outage already WARNed about. */
   private final AtomicBoolean failing = new AtomicBoolean();
 
@@ -50,7 +52,8 @@ public class EgressGrantPusher {
    * Re-read the projects' wrapper files when the poll interval has passed ({@link
    * ProjectEgressGrants#refreshIfDue}, qits-2659), build the table in force, read what qits-egress
    * holds, and push when the versions differ; then run the secret hand-overs the table triggers
-   * ({@link EgressSecretHandOvers}), whatever the push answered. Whether qits-egress now holds this
+   * ({@link EgressSecretHandOvers}), whatever the push answered, and the redeploys a changed
+   * qits-egress secret owes ({@link EgressSecretRedeploys}). Whether qits-egress now holds this
    * table (or a newer one). Never throws.
    *
    * <p><b>No push before the project listing has answered once</b>: a fresh process that could not
@@ -85,6 +88,12 @@ public class EgressGrantPusher {
       handOvers.apply(table);
     } catch (RuntimeException e) {
       LOG.warnf(e, "The egress secret hand-overs failed; the next pass tries again");
+    }
+    // After the hand-overs, which absorb a pending secret write into their own redeploy (qits-2666).
+    try {
+      secretRedeploys.settle();
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "The owed egress secret redeploys failed; the next pass tries again");
     }
     return held;
   }

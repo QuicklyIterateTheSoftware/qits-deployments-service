@@ -46,6 +46,8 @@ public class Settings {
 
   @Inject PdSettingRepository settings;
 
+  @Inject EgressSecretRedeploys egressSecrets;
+
   /** Every row matching the optional filters, masked. */
   public List<PdSettingDto> list(String application, String environment) {
     String app = optionalName(application, "application");
@@ -68,30 +70,41 @@ public class Settings {
     if (value == null) {
       throw new BadRequestException("value is required");
     }
-    return QuarkusTransaction.requiringNew()
-        .call(
-            () -> {
-              PdSetting row =
-                  settings
-                      .findOne(app, env, settingKey)
-                      .orElseGet(
-                          () -> {
-                            PdSetting fresh = new PdSetting();
-                            fresh.id = UUID.randomUUID().toString();
-                            fresh.applicationName = app;
-                            fresh.environmentName = env;
-                            fresh.settingKey = settingKey;
-                            return fresh;
-                          });
-              row.value = value;
-              row.secret = secret;
-              row.updatedAt = Instant.now();
-              row.updatedBy = actor;
-              if (!settings.isPersistent(row)) {
-                settings.persist(row);
-              }
-              return toDto(row);
-            });
+    boolean[] changed = {false};
+    PdSettingDto stored =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  PdSetting row =
+                      settings
+                          .findOne(app, env, settingKey)
+                          .orElseGet(
+                              () -> {
+                                PdSetting fresh = new PdSetting();
+                                fresh.id = UUID.randomUUID().toString();
+                                fresh.applicationName = app;
+                                fresh.environmentName = env;
+                                fresh.settingKey = settingKey;
+                                return fresh;
+                              });
+                  changed[0] =
+                      !settings.isPersistent(row)
+                          || !value.equals(row.value)
+                          || row.secret != secret;
+                  row.value = value;
+                  row.secret = secret;
+                  row.updatedAt = Instant.now();
+                  row.updatedBy = actor;
+                  if (!settings.isPersistent(row)) {
+                    settings.persist(row);
+                  }
+                  return toDto(row);
+                });
+    if (changed[0]) {
+      // After the commit: a changed qits-egress secret is owed a redeploy (qits-2666).
+      egressSecrets.written(app, env, settingKey);
+    }
+    return stored;
   }
 
   /** Remove one row; 404 when there is none. */
@@ -115,6 +128,7 @@ public class Settings {
       throw new NotFoundException(
           "no setting " + settingKey + " for " + app + " in " + env);
     }
+    egressSecrets.written(app, env, settingKey);
   }
 
   /**

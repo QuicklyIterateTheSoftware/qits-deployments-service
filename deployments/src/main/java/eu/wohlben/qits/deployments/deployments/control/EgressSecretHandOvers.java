@@ -56,6 +56,11 @@ import org.jboss.logging.Logger;
  * tick tries again. A redeploy that could not be queued after the commit is OWED in memory and
  * retried on the next tick. Every failure is a WARN; nothing throws out of the tick. The log names
  * applications, the tier and keys — never a value.
+ *
+ * <p>The move writes its rows through the repository, never through {@link Settings}, so it notes
+ * no secret write for {@link EgressSecretRedeploys}; and once it has queued the target's redeploy it
+ * tells {@link EgressSecretRedeploys#absorbed} so a door write pending in that tier rides it rather
+ * than queueing a second one.
  */
 @ApplicationScoped
 public class EgressSecretHandOvers {
@@ -96,6 +101,7 @@ public class EgressSecretHandOvers {
   @Inject PdDeploymentRepository deployments;
   @Inject EnvironmentService environments;
   @Inject DatabaseMoves databaseMoves;
+  @Inject EgressSecretRedeploys secretRedeploys;
 
   /** The entries {@link #apply} reads — {@link #DECLARED}, swapped only by the suite. */
   private volatile List<HandOver> entries = DECLARED;
@@ -245,6 +251,8 @@ public class EgressSecretHandOvers {
         LOG.debugf(
             "egress hand-over: nothing to redeploy in %s: %s", key.tier(), e.getMessage());
       }
+      // A secret write pending in that tier rides this redeploy: no second one (qits-2666).
+      secretRedeploys.absorbed(handOver.toApplication(), key.tier());
       steps.remove(Step.REDEPLOY_TARGET);
     }
     if (steps.contains(Step.REDEPLOY_SOURCE) && !inFlight(handOver.fromApplication(), tier.id)) {
