@@ -61,7 +61,7 @@
              and it stays one line: the release train's follow-bump step
              (.config/qits/ci-event-upstream-eventstream.yml) rewrites exactly this element with a
              `sed`, so a second spelling of the version anywhere would be left behind. -->
-        <qits.eventstream.version>2026.1126.192104</qits.eventstream.version>
+        <qits.eventstream.version>2026.1127.60632</qits.eventstream.version>
         <qits.auth-core.version>2026.1126.172511</qits.auth-core.version>
         <!-- The platform's shared ArchUnit rules, published by qits-integrations-quarkus beside
              qits-auth-core. Test scope wherever entities live — see service/pom.xml. -->
@@ -114,7 +114,7 @@
         <qits.artifacts-golden-masters.version>2026.1124.154841</qits.artifacts-golden-masters.version>
         <qits.edge-golden-masters.version>2026.1115.212737</qits.edge-golden-masters.version>
         <qits.egress-golden-masters.version>2026.1126.60653</qits.egress-golden-masters.version>
-        <qits.projects-golden-masters.version>2026.1127.2311</qits.projects-golden-masters.version>
+        <qits.projects-golden-masters.version>2026.1127.50902</qits.projects-golden-masters.version>
         <!-- THE CONSUMER PACTS ConsumerPactVerificationTest verifies (qits-1149): one jar per consumer
              that commits `pacts/<consumer>_qits-deployments-service.json`, test scope. Exact pins;
              qits-maintenance bumps each when its consumer releases a changed pact. -->
