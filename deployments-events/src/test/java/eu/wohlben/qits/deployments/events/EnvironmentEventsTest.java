@@ -12,7 +12,6 @@ import eu.wohlben.qits.eventstream.control.CanonicalJson;
 import eu.wohlben.qits.eventstream.control.EventEnvelope;
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -76,9 +75,8 @@ class EnvironmentEventsTest {
     EventEnvelope envelope = EventEnvelope.of(aCreated());
     JsonNode json = CanonicalJson.parse(CanonicalJson.envelope(envelope));
 
-    assertEquals(
-        List.of("description", "environment", "name", "occurredAt", "parentId", "payload", "publisher"),
-        json.properties().stream().map(Map.Entry::getKey).toList());
+    // Exactly the old key set, or it plus onBehalfOf and originTraceId (qits-2701, qits-2730).
+    EnvelopeKeys.assertThePlansKeys(json);
     assertEquals("EnvironmentCreated", json.get("name").asText());
     assertEquals("2026-09-26T08:00:00Z", json.get("occurredAt").asText());
     assertEquals(
