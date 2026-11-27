@@ -61,8 +61,8 @@
              and it stays one line: the release train's follow-bump step
              (.config/qits/ci-event-upstream-eventstream.yml) rewrites exactly this element with a
              `sed`, so a second spelling of the version anywhere would be left behind. -->
-        <qits.eventstream.version>2026.1125.142425</qits.eventstream.version>
-        <qits.auth-core.version>2026.1125.60148</qits.auth-core.version>
+        <qits.eventstream.version>2026.1126.192104</qits.eventstream.version>
+        <qits.auth-core.version>2026.1126.172511</qits.auth-core.version>
         <!-- The platform's shared ArchUnit rules, published by qits-integrations-quarkus beside
              qits-auth-core. Test scope wherever entities live — see service/pom.xml. -->
         <qits.arch-rules.version>2026.1113.14706</qits.arch-rules.version>
@@ -75,7 +75,7 @@
              qits-integrations-quarkus, same publisher as qits-auth-core and qits-db-core above.
              From 2026.1103.132907 the wrap also rides out an edge switchover (RetryPolicy, 30 s),
              which edge/EdgeBreakGlass's one internal-address try sits behind (epic qits-428). -->
-        <qits.http-core.version>2026.1125.110206</qits.http-core.version>
+        <qits.http-core.version>2026.1126.172511</qits.http-core.version>
         <!-- qits-telemetry-core (epic qits-428): the three OTLP/HTTP exporters as CDI beans whose
              header supplier carries the `qits` oidc client's current bearer, so spans, logs and
              metrics reach qits-observability at its edge host. Published by
@@ -85,14 +85,14 @@
              (extract, ingest, the private server's psql) are built and run through it rather than
              through a hand-assembled argv, the owner's ruling of 2026-11-13. Published by
              qits-containers-javalib; no Quarkus and no CDI in it, so it is native-image neutral. -->
-        <qits.containers-driver.version>2026.1121.232208</qits.containers-driver.version>
+        <qits.containers-driver.version>2026.1126.150645</qits.containers-driver.version>
         <qits.telemetry-core.version>2026.1106.507</qits.telemetry-core.version>
         <!-- qits-trust-core (epic qits-2524, qits-2633): TrustAnchors polls qits-certificates for the
              platform CA bundle, which every swarm service this deployer creates or updates receives
              as QITS_TRUST_ANCHORS. Published by qits-integrations-quarkus with qits-http-core linked;
              this repo keeps its own qits-http-core pin above. First adoption: no maintenance bump
              added it. -->
-        <qits.trust-core.version>2026.1125.110206</qits.trust-core.version>
+        <qits.trust-core.version>2026.1126.172511</qits.trust-core.version>
         <!-- The user-story framework (test scope): this repo's story catalogue is written as
              @UserStory methods, so a `mvn verify -DskipITs=false` also regenerates
              service/target/userstories/ — the story logs and their network diagrams, which are
@@ -113,8 +113,8 @@
         <qits.githost-golden-masters.version>2026.1109.41303</qits.githost-golden-masters.version>
         <qits.artifacts-golden-masters.version>2026.1124.154841</qits.artifacts-golden-masters.version>
         <qits.edge-golden-masters.version>2026.1115.212737</qits.edge-golden-masters.version>
-        <qits.egress-golden-masters.version>2026.1125.125303</qits.egress-golden-masters.version>
-        <qits.projects-golden-masters.version>2026.1125.225323</qits.projects-golden-masters.version>
+        <qits.egress-golden-masters.version>2026.1126.60653</qits.egress-golden-masters.version>
+        <qits.projects-golden-masters.version>2026.1127.2311</qits.projects-golden-masters.version>
         <!-- THE CONSUMER PACTS ConsumerPactVerificationTest verifies (qits-1149): one jar per consumer
              that commits `pacts/<consumer>_qits-deployments-service.json`, test scope. Exact pins;
              qits-maintenance bumps each when its consumer releases a changed pact. -->
@@ -123,7 +123,7 @@
         <qits.bootstrap-cli-pacts-qits-deployments-service.version>2026.1019.84610</qits.bootstrap-cli-pacts-qits-deployments-service.version>
         <qits.orchestrator-service-pacts-qits-deployments-service.version>2026.1018.172917</qits.orchestrator-service-pacts-qits-deployments-service.version>
         <qits.projects-service-pacts-qits-deployments-service.version>2026.1117.95124</qits.projects-service-pacts-qits-deployments-service.version>
-        <qits.platform-access-monorepo-pacts-qits-deployments-service.version>2026.1116.230905</qits.platform-access-monorepo-pacts-qits-deployments-service.version>
+        <qits.platform-access-monorepo-pacts-qits-deployments-service.version>2026.1126.72028</qits.platform-access-monorepo-pacts-qits-deployments-service.version>
         <!-- qits-landing-app's Deployments › Requests page (ticket qits-2315):
              `pacts/qits-landing-app_qits-deployments-service.json`. -->
         <qits.landing-app-pacts-qits-deployments-service.version>2026.1123.90130</qits.landing-app-pacts-qits-deployments-service.version>
