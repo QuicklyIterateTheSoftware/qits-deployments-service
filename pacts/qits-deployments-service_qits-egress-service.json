@@ -46,6 +46,7 @@
                   "PUT"
                 ],
                 "name": "hetzner",
+                "principal": "application:qits-edge",
                 "secret": "HETZNER_DNS",
                 "target": "https://api.hetzner.cloud"
               }
@@ -123,6 +124,7 @@
                   "PUT"
                 ],
                 "name": "hetzner",
+                "principal": "application:qits-edge",
                 "secret": "HETZNER_DNS",
                 "target": "https://api.hetzner.cloud"
               }
