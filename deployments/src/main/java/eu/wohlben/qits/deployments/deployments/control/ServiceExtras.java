@@ -169,6 +169,49 @@ public record ServiceExtras(
         : new ServiceExtras(mounts, publishes, groups, kept, aliases);
   }
 
+  /**
+   * These extras plus the {@code env} entries of {@code main} that {@code inherited} names
+   * (qits-2784): a variant's {@code inherit_settings:}, read from its main application's extras in
+   * the same argv build. An entry this application states itself wins, and the order stays the
+   * variable name's, as {@link #of} sorts it. A named key {@code main} does not state refuses the
+   * deployment, naming it: a variant that names a key needs it.
+   */
+  public ServiceExtras withInheritedEnv(
+      ServiceExtras main, DeploymentDriver.InheritedSettings inherited, String environmentName) {
+    if (inherited == null || inherited.isEmpty()) {
+      return this;
+    }
+    Map<String, String> merged = new TreeMap<>();
+    for (String variable : main.env()) {
+      int equals = variable.indexOf('=');
+      String key = variable.substring(0, equals);
+      if (inherited.keys().contains(key)) {
+        merged.put(key, variable.substring(equals + 1));
+      }
+    }
+    List<String> missing =
+        inherited.keys().stream().filter(key -> !merged.containsKey(key)).sorted().toList();
+    if (!missing.isEmpty()) {
+      throw new Refused(
+          "inherit_settings names "
+              + String.join(", ", missing)
+              + ", which "
+              + inherited.from()
+              + " holds no setting for in "
+              + environmentName
+              + " — set it on "
+              + inherited.from()
+              + ", or drop it from the variant's inherit_settings:");
+    }
+    for (String variable : env) {
+      int equals = variable.indexOf('=');
+      merged.put(variable.substring(0, equals), variable.substring(equals + 1));
+    }
+    List<String> assignments = new ArrayList<>();
+    merged.forEach((key, value) -> assignments.add(key + "=" + value));
+    return new ServiceExtras(mounts, publishes, groups, assignments, aliases);
+  }
+
   /** Whether this application stated anything at all. */
   public boolean isEmpty() {
     return mounts.isEmpty()

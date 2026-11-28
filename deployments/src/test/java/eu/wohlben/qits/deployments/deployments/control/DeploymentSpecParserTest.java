@@ -1627,4 +1627,110 @@ class DeploymentSpecParserTest {
     String message = messageOf("image_default: A=x\n");
     assertTrue(message.contains("image_defaults"), message);
   }
+
+  // --- the private edge as a writer (qits-2784) ----------------------------------------------
+
+  private static final String VARIANT_SOURCE =
+      ".config/qits/deployments.private.yml of qits-edge@abc1234";
+
+  /** The private edge's file after qits-2784: the volume read-write, two inherited settings. */
+  private static final String EDGE_PRIVATE_WRITER =
+      String.join(
+          "\n",
+          "application: qits-edge-private",
+          "image: qits-edge",
+          "exposure: private",
+          "volumes: private:wireguard:/work/.wireguard, shared:qits-edge-letsencrypt:/work/.letsencrypt",
+          "inherit_settings: QITS_EDGE_DNS_NODE_ADDRESS, QITS_EDGE_ACME_EMAIL",
+          "");
+
+  private static String variantMessageOf(String yaml) {
+    return assertThrows(
+            SpecException.class, () -> DeploymentSpecParser.parseVariant(yaml, VARIANT_SOURCE))
+        .getMessage();
+  }
+
+  @Test
+  void theOwnersVariantMountsTheLetsencryptVolumeReadWriteAndInheritsTwoSettings() {
+    DeploymentSpec spec = DeploymentSpecParser.parseVariant(EDGE_PRIVATE_WRITER, VARIANT_SOURCE);
+
+    assertEquals(
+        new VolumeSpec(
+            VolumeSpec.Scope.SHARED, "qits-edge-letsencrypt", "/work/.letsencrypt", false),
+        spec.volumes().get(1));
+    assertEquals(
+        List.of("QITS_EDGE_DNS_NODE_ADDRESS", "QITS_EDGE_ACME_EMAIL"),
+        spec.inheritSettings().keys());
+    assertNull(spec.inheritSettings().from(), "the parser never knows whose variant it reads");
+    DeploymentSpecParser.checkVariant(spec, "private", "qits-edge", VARIANT_SOURCE);
+    assertEquals("qits-edge", spec.variantOf("qits-edge").inheritSettings().from());
+    assertEquals(spec.inheritSettings().keys(), spec.variantOf("qits-edge").inheritSettings().keys());
+  }
+
+  @Test
+  void anotherApplicationsVariantMayNotMountTheLetsencryptVolumeReadWrite() {
+    DeploymentSpec spec =
+        DeploymentSpecParser.parseVariant(
+            "application: qits-other-private\n"
+                + "volumes: shared:qits-edge-letsencrypt:/work/.letsencrypt\n",
+            VARIANT_SOURCE);
+    String message =
+        assertThrows(
+                SpecException.class,
+                () -> DeploymentSpecParser.checkVariant(spec, "private", "qits-other", VARIANT_SOURCE))
+            .getMessage();
+    assertTrue(message.contains("read-write only in a variant of its owner qits-edge"), message);
+    assertTrue(message.contains("a variant of qits-other"), message);
+    assertTrue(message.contains("shared:qits-edge-letsencrypt:/work/.letsencrypt:ro"), message);
+
+    // ...and read-only it is still anybody's to mount.
+    DeploymentSpecParser.checkVariant(
+        DeploymentSpecParser.parseVariant(
+            "application: qits-other-private\n"
+                + "volumes: shared:qits-edge-letsencrypt:/work/.letsencrypt:ro\n",
+            VARIANT_SOURCE),
+        "private",
+        "qits-other",
+        VARIANT_SOURCE);
+  }
+
+  @Test
+  void aMainFileMayNotMountTheLetsencryptVolumeReadWriteEvenTheOwners() {
+    String message =
+        assertThrows(
+                SpecException.class,
+                () ->
+                    DeploymentSpecParser.parse(
+                        "application: qits-edge\n"
+                            + "volumes: shared:qits-edge-letsencrypt:/work/.letsencrypt\n",
+                        ".config/qits/deployments.yml of qits-edge@abc1234"))
+            .getMessage();
+    assertTrue(message.contains("only read-only"), message);
+    assertTrue(message.contains("only a variant file of qits-edge"), message);
+  }
+
+  @Test
+  void inheritSettingsIsRefusedInAMainFile() {
+    String message = messageOf("inherit_settings: QITS_EDGE_ACME_EMAIL\n");
+    assertTrue(message.contains("`inherit_settings` belongs in a variant file"), message);
+  }
+
+  @Test
+  void inheritSettingsNamesWellFormedSettingKeysOnceEach() {
+    assertTrue(
+        variantMessageOf("inherit_settings: qits_lower\n").contains("names setting keys"),
+        "a key the settings door would refuse");
+    assertTrue(variantMessageOf("inherit_settings: A, A\n").contains("names `A` twice"));
+    assertTrue(variantMessageOf("inherit_settings: A,\n").contains("blank entry"));
+    String deployerOwn =
+        variantMessageOf("inherit_settings: " + DeploymentDriver.TRUST_ANCHORS_VARIABLE + "\n");
+    assertTrue(deployerOwn.contains("which the deployer writes itself"), deployerOwn);
+  }
+
+  @Test
+  void aFileWithoutInheritSettingsInheritsNothing() {
+    assertTrue(parse("").inheritSettings().isEmpty());
+    assertTrue(parse("").variantOf("qits-edge").inheritSettings().isEmpty());
+    assertNull(parse("").variantOf("qits-edge").inheritSettings().from());
+  }
 }

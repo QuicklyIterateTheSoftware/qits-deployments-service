@@ -2,6 +2,7 @@ package eu.wohlben.qits.deployments.deployments.control;
 
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -254,6 +255,84 @@ public class PdSwarmDeployFlowTest {
     assertTrue(second.payload.contains("\"variant\":\"private\""), second.payload);
     assertTrue(second.payload.contains("\"exposure\":\"private\""), second.payload);
     assertNull(only("DeploymentFailed", 0));
+  }
+
+  @Test
+  public void theEdgesPrivateVariantWritesTheLetsencryptVolumeAndReadsTheEdgesSettings() {
+    // qits-2784: the owner's variant mounts its owned volume read-write, and its inherit_settings:
+    // reach the driver naming the MAIN application — the one fact the variant file cannot state.
+    String environmentId = createEnvironment("swarm-variant-writer");
+    specs.script(
+        "repo-swarm-writer",
+        DeploymentSpecParser.parse(
+            "application: qits-edge\nvariants: private\n", "deployments.yml of repo-swarm-writer"));
+    specs.scriptAt(
+        "repo-swarm-writer",
+        SpecSource.variantPath("private"),
+        DeploymentSpecParser.parseVariant(
+            "application: qits-edge-private\nexposure: private\n"
+                + "volumes: shared:qits-edge-letsencrypt:/work/.letsencrypt\n"
+                + "inherit_settings: QITS_EDGE_DNS_NODE_ADDRESS, QITS_EDGE_ACME_EMAIL\n",
+            "deployments.private.yml of repo-swarm-writer"));
+
+    postRelease("run-variant-writer", "repo-swarm-writer");
+    List<Map<String, Object>> deployments = awaitSettled(environmentId, 2);
+    for (Map<String, Object> row : deployments) {
+      assertEquals("ACTIVE", row.get("status"), row.toString());
+    }
+
+    DeploymentDriver.ServiceSpec variant =
+        fake.applied().stream()
+            .filter(spec -> spec.applicationName().equals("qits-edge-private"))
+            .findFirst()
+            .orElseThrow();
+    assertEquals(
+        new DeploymentDriver.InheritedSettings(
+            "qits-edge", List.of("QITS_EDGE_DNS_NODE_ADDRESS", "QITS_EDGE_ACME_EMAIL")),
+        variant.inherited());
+    DeploymentDriver.VolumeMount letsencrypt =
+        variant.volumes().stream()
+            .filter(mount -> mount.source().equals("qits-edge-letsencrypt"))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError(variant.volumes().toString()));
+    assertFalse(letsencrypt.readOnly(), "the owner's variant writes the volume");
+    assertTrue(
+        fake.applied().stream()
+            .filter(spec -> spec.applicationName().equals("qits-edge"))
+            .findFirst()
+            .orElseThrow()
+            .inherited()
+            .isEmpty(),
+        "the main application inherits nothing");
+  }
+
+  @Test
+  public void anotherApplicationsVariantWritingTheLetsencryptVolumeFailsAndTheMainDeploys() {
+    String environmentId = createEnvironment("swarm-variant-thief");
+    specs.script(
+        "repo-swarm-thief",
+        DeploymentSpecParser.parse("variants: private\n", "deployments.yml of repo-swarm-thief"));
+    specs.scriptAt(
+        "repo-swarm-thief",
+        SpecSource.variantPath("private"),
+        DeploymentSpecParser.parseVariant(
+            "application: repo-swarm-thief-private\n"
+                + "volumes: shared:qits-edge-letsencrypt:/work/.letsencrypt\n",
+            "deployments.private.yml of repo-swarm-thief"));
+
+    postRelease("run-variant-thief", "repo-swarm-thief");
+    List<Map<String, Object>> deployments = awaitSettled(environmentId, 2);
+
+    Map<String, Object> variant =
+        deployments.stream()
+            .filter(row -> "repo-swarm-thief-private".equals(row.get("applicationName")))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError(deployments.toString()));
+    assertEquals("FAILED", variant.get("status"), variant.toString());
+    assertTrue(
+        String.valueOf(variant).contains("read-write only in a variant of its owner qits-edge"),
+        variant.toString());
+    assertEquals(1, fake.applied().size(), "only the main application was applied");
   }
 
   @Test

@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import eu.wohlben.qits.deployments.deployments.control.DeployService;
+import eu.wohlben.qits.deployments.deployments.control.DeploymentSpecParser;
 import eu.wohlben.qits.deployments.deployments.control.EgressGrantTables;
 import eu.wohlben.qits.deployments.deployments.control.FakeEgressGrantClient;
 import eu.wohlben.qits.deployments.deployments.control.FakeDeploymentDriver;
@@ -120,6 +121,64 @@ class PdEgressGrantApiTest {
     assertNull(table.getString("routes[1].secret"));
     assertNull(table.getString("routes[1].inject"));
     assertEquals(List.of("GET"), table.getList("routes[1].methods"));
+  }
+
+  @Test
+  void aVariantIsGrantedWhatItsOwnEgressFileDeclaresAndNotTheMainFilesRoutes() {
+    // qits-2784: a variant is an application of its own with a principal of its own, so it reads
+    // .config/qits/egress.<variant>.yml — and the main file's routes stay the main application's.
+    String token = token();
+    String environment = "egress-var-" + token;
+    String environmentId = createEnvironment(environment);
+    String application = "egress-var-" + token;
+    String variantApplication = application + "-private";
+    specs.script(
+        application,
+        DeploymentSpecParser.parse("variants: private, quiet\n", "deployments.yml of " + application));
+    specs.scriptAt(
+        application,
+        SpecSource.variantPath("private"),
+        DeploymentSpecParser.parseVariant(
+            "application: " + variantApplication + "\n", "deployments.private.yml"));
+    specs.scriptAt(
+        application,
+        SpecSource.variantPath("quiet"),
+        DeploymentSpecParser.parseVariant(
+            "application: " + application + "-quiet\n", "deployments.quiet.yml"));
+    specs.scriptText(
+        application,
+        SpecSource.EGRESS_PATH,
+        "version: 1\nroutes:\n  - name: projects\n    target: platform:projects\n"
+            + "    methods: [GET]\n");
+    specs.scriptText(application, SpecSource.egressPath("private"), HETZNER);
+    // `quiet` carries no egress.quiet.yml at all: no routes, and no refusal.
+    release(application, "2026.1201.101014");
+    awaitStatuses(environmentId, List.of("ACTIVE", "ACTIVE", "ACTIVE"));
+
+    JsonPath table =
+        given()
+            .header("Authorization", SuiteBearers.platform())
+            .when()
+            .get(PATH)
+            .then()
+            .statusCode(200)
+            .body("refused", hasSize(0))
+            .extract()
+            .jsonPath();
+    List<String> grants =
+        table.getList("routes", Map.class).stream()
+            .map(route -> route.get("principal") + " " + route.get("name"))
+            .sorted()
+            .toList();
+    assertEquals(
+        List.of(
+            "application:" + application + " projects",
+            "application:" + variantApplication + " hetzner",
+            "application:" + variantApplication + " projects"),
+        grants,
+        table.prettify());
+    assertEquals(".config/qits/egress.private.yml", SpecSource.egressPath("private"));
+    assertEquals(SpecSource.EGRESS_PATH, SpecSource.egressPath(null));
   }
 
   @Test
@@ -259,6 +318,10 @@ class PdEgressGrantApiTest {
   }
 
   private static void awaitStatus(String environmentId, String status) {
+    awaitStatuses(environmentId, List.of(status));
+  }
+
+  private static void awaitStatuses(String environmentId, List<String> wanted) {
     long deadline = System.currentTimeMillis() + 15_000;
     List<String> statuses = List.of();
     while (System.currentTimeMillis() < deadline) {
@@ -272,7 +335,7 @@ class PdEgressGrantApiTest {
               .extract()
               .jsonPath()
               .getList("deployments.status");
-      if (statuses.equals(List.of(status))) {
+      if (statuses.equals(wanted)) {
         return;
       }
       try {
@@ -282,6 +345,6 @@ class PdEgressGrantApiTest {
         return;
       }
     }
-    fail("the deployment into " + environmentId + " never reached " + status + ": " + statuses);
+    fail("the deployment into " + environmentId + " never reached " + wanted + ": " + statuses);
   }
 }

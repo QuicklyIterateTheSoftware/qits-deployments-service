@@ -251,6 +251,38 @@ public interface DeploymentDriver {
   int DEFAULT_UPSTREAM_PORT = 8080;
 
   /**
+   * The settings a VARIANT takes from its main application (qits-2784): {@code inherit_settings:
+   * KEY, ...} in its {@code deployments.<variant>.yml}. For each named key the variant's container
+   * gets the main application's setting for the same environment, read in the same argv build as
+   * the variant's own (none, by owner ruling). The value keeps one home, the main application's
+   * row, and the variant only declares that it reads it, so the two can never drift.
+   *
+   * <p>{@code from} is the main application, and null until the deployer has resolved it — the
+   * parser reads the keys of a file that never knows which application it is a variant of. A key
+   * the main application holds no setting for refuses the deployment: a variant that names a key
+   * is saying it needs it, and starting without it is the silent half-configuration this exists
+   * to prevent.
+   */
+  record InheritedSettings(String from, List<String> keys) {
+
+    /** Inherits nothing: every main deployment and every variant without the key. */
+    public static final InheritedSettings NONE = new InheritedSettings(null, List.of());
+
+    public InheritedSettings {
+      keys = keys == null ? List.of() : List.copyOf(keys);
+    }
+
+    public boolean isEmpty() {
+      return keys.isEmpty();
+    }
+
+    /** These keys, read from {@code mainApplication}'s settings. */
+    public InheritedSettings readFrom(String mainApplication) {
+      return keys.isEmpty() ? NONE : new InheritedSettings(mainApplication, keys);
+    }
+  }
+
+  /**
    * The routing half of a service's labels (qits-2174) — {@link #HOSTS_LABEL}, {@link
    * #ROUTES_LABEL}, {@link #UPSTREAM_PORT_LABEL}, {@link #API_DOCS_LABEL} and {@link
    * #NAVIGATION_LABEL} as values. The placement half is the driver's own, off the network it puts the
@@ -951,12 +983,14 @@ public interface DeploymentDriver {
       Exposure exposure,
       String variant,
       Map<String, String> imageDefaults,
-      RouteLabels routing) {
+      RouteLabels routing,
+      InheritedSettings inherited) {
 
     /** Null lists and empty ones are the same statement: this application declared none. */
     public ServiceSpec {
       exposure = exposure == null ? Exposure.PUBLIC : exposure;
       routing = routing == null ? RouteLabels.NONE : routing;
+      inherited = inherited == null ? InheritedSettings.NONE : inherited;
       // Order kept, because it is the file's and a reader of the spec reads it in that order.
       imageDefaults =
           imageDefaults == null
@@ -1030,6 +1064,67 @@ public interface DeploymentDriver {
           RouteLabels.NONE);
     }
 
+    /**
+     * The shape before {@code inherited} (qits-2784): a service that takes no setting from another
+     * application, which is every service but a variant naming {@code inherit_settings:}.
+     */
+    public ServiceSpec(
+        String environmentId,
+        String environmentName,
+        String applicationId,
+        String applicationName,
+        String deploymentId,
+        String commitSha,
+        String version,
+        String deploymentName,
+        String wireAlias,
+        List<String> networks,
+        String imageRef,
+        String healthPath,
+        String healthCmd,
+        boolean availableOnEnv,
+        UpdateOrder updateOrder,
+        PublishMode publishMode,
+        List<ResourceBinding> resources,
+        List<VolumeMount> volumes,
+        Duration stopGracePeriod,
+        DeclaredShape shape,
+        String renamedFrom,
+        boolean takesOverPredecessor,
+        Exposure exposure,
+        String variant,
+        Map<String, String> imageDefaults,
+        RouteLabels routing) {
+      this(
+          environmentId,
+          environmentName,
+          applicationId,
+          applicationName,
+          deploymentId,
+          commitSha,
+          version,
+          deploymentName,
+          wireAlias,
+          networks,
+          imageRef,
+          healthPath,
+          healthCmd,
+          availableOnEnv,
+          updateOrder,
+          publishMode,
+          resources,
+          volumes,
+          stopGracePeriod,
+          shape,
+          renamedFrom,
+          takesOverPredecessor,
+          exposure,
+          variant,
+          imageDefaults,
+          routing,
+          InheritedSettings.NONE);
+    }
+
     /** This spec with its routing labels — what a deployment knows from the spec it read. */
     public ServiceSpec withRouting(RouteLabels labels) {
       return new ServiceSpec(
@@ -1058,7 +1153,8 @@ public interface DeploymentDriver {
           exposure,
           variant,
           imageDefaults,
-          labels);
+          labels,
+          inherited);
     }
 
     /**

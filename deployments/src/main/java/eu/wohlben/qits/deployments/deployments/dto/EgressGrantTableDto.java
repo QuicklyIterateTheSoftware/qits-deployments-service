@@ -9,7 +9,7 @@ import java.util.List;
  * The egress grant table in force (epic qits-2523): what {@code GET /deployments/api/egress-grants}
  * answers and qits-egress is pushed. Each route is a grant {@code (principal, route, methods)},
  * taken from the {@code .config/qits/egress.yml} of each application's {@code ACTIVE} deployment
- * ({@code application:<app>}) and, since qits-2659, of each project's wrapper at {@code main}
+ * (a variant's own {@code egress.<variant>.yml}, qits-2784) ({@code application:<app>}) and, since qits-2659, of each project's wrapper at {@code main}
  * ({@code project:<projectId>}).
  *
  * @param version only ever goes up, and moves only when the content does

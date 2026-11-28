@@ -141,6 +141,25 @@ public class GitHostSpecSourceTest {
   }
 
   @Test
+  public void onlyAVariantsFileMayInheritSettingsOrWriteAnOwnedVolume() {
+    // qits-2784: the path decides the grammar. The main file refuses both variant-only statements;
+    // the same text at a variant's path parses, and checkVariant holds the owner half after.
+    body =
+        "application: qits-edge-private\n"
+            + "volumes: shared:qits-edge-letsencrypt:/work/.letsencrypt\n"
+            + "inherit_settings: QITS_EDGE_ACME_EMAIL\n";
+    RepositoryRef edge = new RepositoryRef(UUID_ID, "qits", "qits-edge-service");
+
+    DeploymentSpec variant =
+        source().read(edge, SHA, SpecSource.variantPath("private")).spec();
+    assertEquals(List.of("QITS_EDGE_ACME_EMAIL"), variant.inheritSettings().keys());
+    assertFalse(variant.volumes().get(0).readOnly());
+
+    SpecException refused = assertThrows(SpecException.class, () -> source().read(edge, SHA));
+    assertTrue(refused.getMessage().contains("only read-only"), refused.getMessage());
+  }
+
+  @Test
   public void a404IsAnAnswerOnBothArms() {
     // A repository carrying no file deploys with every default — unchanged by which URL asked.
     status = 404;

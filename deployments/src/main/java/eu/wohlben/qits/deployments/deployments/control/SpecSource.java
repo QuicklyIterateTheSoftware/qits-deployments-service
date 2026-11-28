@@ -34,6 +34,16 @@ public interface SpecSource {
   }
 
   /**
+   * Where an application declares its egress routes (qits-2784): {@link #EGRESS_PATH} for the main
+   * application ({@code variant} null), and {@code .config/qits/egress.<variant>.yml} for a variant
+   * — its own file, because a variant is an application of its own with a principal of its own, and
+   * inheriting the main file's routes would grant every variant what only one needs.
+   */
+  static String egressPath(String variant) {
+    return variant == null ? EGRESS_PATH : ".config/qits/egress." + variant + ".yml";
+  }
+
+  /**
    * The rev a released version is read at — <b>fully qualified, and that is the point</b>.
    *
    * <p>The git host resolves a bare {@code 2026.903.113443} perfectly well, but a bare name is
@@ -271,6 +281,10 @@ public interface SpecSource {
    * today. Nothing reaches the argv from it: after the deployment is {@code ACTIVE}, {@code
    * DeployService} deletes the place's settings rows that restate one of these values exactly.
    *
+   * <p>{@code inheritSettings} is a variant file's {@code inherit_settings:} (qits-2784): the keys
+   * of its main application's settings it reads, {@link DeploymentDriver.InheritedSettings#NONE}
+   * for every other file. The parser fills the keys; {@link #variantOf} names the application.
+   *
    * <p><b>{@code deployBranches} is read and not used here</b>, and that is deliberate — see {@link
    * #deployBranches()}.
    */
@@ -296,10 +310,13 @@ public interface SpecSource {
       DeploymentDriver.Exposure exposure,
       String image,
       List<String> variants,
-      Map<String, String> imageDefaults) {
+      Map<String, String> imageDefaults,
+      DeploymentDriver.InheritedSettings inheritSettings) {
 
     /** A null list and an empty one are the same statement: the file named none. */
     public DeploymentSpec {
+      inheritSettings =
+          inheritSettings == null ? DeploymentDriver.InheritedSettings.NONE : inheritSettings;
       // Ordered and unmodifiable: Map.copyOf would lose the order the file wrote the pairs in.
       imageDefaults =
           imageDefaults == null || imageDefaults.isEmpty()
@@ -318,6 +335,88 @@ public interface SpecSource {
           navigationEntries == null ? List.of() : List.copyOf(navigationEntries);
       stopGracePeriod =
           stopGracePeriod == null ? DeploymentDriver.DEFAULT_STOP_GRACE_PERIOD : stopGracePeriod;
+    }
+
+    /** The shape before {@code inherit_settings} (qits-2784): a file that inherits no setting. */
+    public DeploymentSpec(
+        boolean availableOnEnv,
+        List<String> deployBranches,
+        String healthPath,
+        String healthCmd,
+        List<ResourceSpec> resources,
+        List<VolumeSpec> volumes,
+        DeploymentDriver.UpdateOrder updateOrder,
+        DeploymentDriver.PublishMode publishMode,
+        List<String> routes,
+        int upstreamPort,
+        String host,
+        boolean browserHostDeclared,
+        List<NavigationEntry> navigationEntries,
+        String apiDocs,
+        String application,
+        String renamedFrom,
+        Duration stopGracePeriod,
+        DeclaredShape shape,
+        DeploymentDriver.Exposure exposure,
+        String image,
+        List<String> variants,
+        Map<String, String> imageDefaults) {
+      this(
+          availableOnEnv,
+          deployBranches,
+          healthPath,
+          healthCmd,
+          resources,
+          volumes,
+          updateOrder,
+          publishMode,
+          routes,
+          upstreamPort,
+          host,
+          browserHostDeclared,
+          navigationEntries,
+          apiDocs,
+          application,
+          renamedFrom,
+          stopGracePeriod,
+          shape,
+          exposure,
+          image,
+          variants,
+          imageDefaults,
+          null);
+    }
+
+    /**
+     * This file as the variant of {@code mainApplication}: its {@code inherit_settings:} keys read
+     * from that application's settings. The parser cannot say whose variant a file is; the deployer
+     * can, and says it here.
+     */
+    public DeploymentSpec variantOf(String mainApplication) {
+      return new DeploymentSpec(
+          availableOnEnv,
+          deployBranches,
+          healthPath,
+          healthCmd,
+          resources,
+          volumes,
+          updateOrder,
+          publishMode,
+          routes,
+          upstreamPort,
+          host,
+          browserHostDeclared,
+          navigationEntries,
+          apiDocs,
+          application,
+          renamedFrom,
+          stopGracePeriod,
+          shape,
+          exposure,
+          image,
+          variants,
+          imageDefaults,
+          inheritSettings.readFrom(mainApplication));
     }
 
     /** The shape before {@code image_defaults}: an image whose defaults retire no setting. */

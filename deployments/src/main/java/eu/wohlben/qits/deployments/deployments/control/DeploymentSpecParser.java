@@ -16,7 +16,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * The strict reader of {@code .config/qits/deployments.yml}. Twenty-eight scalar keys, no nesting, no
+ * The strict reader of {@code .config/qits/deployments.yml}. Twenty-nine scalar keys, no nesting, no
  * YAML lists — so this is a line reader rather than a YAML library, and being one is what makes every
  * rejection a sentence naming the file and the line.
  *
@@ -42,6 +42,7 @@ import java.util.regex.Pattern;
  * stop_grace_period: 10m               # default 30s; SIGTERM to SIGKILL, for long transfers
  * replicas: 2                          # default 1, at most 5; never with publishes or stop-first
  * image_defaults: QITS_EDGE_ACME_MODE=production   # env the image ships; equal settings retire
+ * inherit_settings: QITS_EDGE_ACME_EMAIL   # variant file only: the main application's settings it gets
  * routes: /artifacts,/v2               # optional public path prefixes, in navigation order
  * upstream_port: 8080                  # default; the service port behind every route
  * host: registry                       # optional DNS label this application is also served at
@@ -222,6 +223,16 @@ import java.util.regex.Pattern;
  * main file says {@code variants: private}, and {@code deployments.private.yml} declares {@code
  * application: qits-edge-private}, {@code image: qits-edge}, {@code exposure: private} and {@code
  * cap_add: NET_ADMIN}.
+ *
+ * <p><b>{@code inherit_settings} lets a variant read named settings of its main application</b>
+ * (qits-2784). A variant has no settings of its own (owner ruling), so a value it needs that only
+ * the install knows — the private edge's node address and ACME e-mail — has one home, the main
+ * application's row, and the variant declares that it reads it: for each key, the variant's
+ * container gets the main application's setting for the same environment. A main file may not say
+ * it, and a key the main application holds no setting for refuses the variant's deployment. The
+ * same release lets a variant of an {@link #OWNED_SHARED_VOLUMES owner} mount the owned volume
+ * read-write; every main file, and every variant of another application, still mounts it {@code
+ * :ro}.
  *
  * <p><b>{@code sysctls} sets kernel parameters in the container's network namespace</b>
  * (qits-1976), as comma-separated {@code <name>=<value>} pairs drawn from a closed list, {@link
@@ -448,6 +459,9 @@ public final class DeploymentSpecParser {
   /** The environment the image ships as its own defaults. See the class javadoc (qits-2009). */
   private static final String IMAGE_DEFAULTS = "image_defaults";
 
+  /** A variant's settings read from its main application. See the class javadoc (qits-2784). */
+  private static final String INHERIT_SETTINGS = "inherit_settings";
+
   /**
    * The capabilities {@code cap_add} may grant. Closed, and one word long on purpose: every entry
    * is a privilege a repository's own review hands its container, and {@code NET_ADMIN} is the one
@@ -581,13 +595,22 @@ public final class DeploymentSpecParser {
               "qits-edge-letsencrypt"));
 
   /**
-   * Shared volumes another application OWNS — its own {@code private:} volume, named in full — that
-   * a second application may mount only read-only (qits-1976). {@code qits-edge-letsencrypt} is the
-   * public edge's ACME account and certificates, which the private edge serves from without ever
-   * ordering: two writers on one account directory is the duplicate-certificate limit spent twice.
-   * Read-only is enforced here, because a write from the second holder is exactly that failure.
+   * Shared volumes another application OWNS — its own {@code private:} volume, named in full — by
+   * their owner (qits-1976, qits-2784). Every other application may mount one only read-only, with
+   * one exception: a VARIANT of the owner, in its own {@code deployments.<variant>.yml}, may mount
+   * it read-write ({@link #checkVariant} holds the owner half, {@link #parse} refuses it in every
+   * main file).
+   *
+   * <p>{@code qits-edge-letsencrypt} is the public edge's ACME account and certificates. The overlay
+   * edge serves from it read-only. {@code qits-edge-private} writes it too (qits-2784), because once
+   * qits-egress is private only the private edge can reach the Hetzner route. Two writers on one
+   * account directory would be the duplicate-certificate limit spent twice, and two things keep it
+   * from happening: each edge orders only while egress' alias resolves on its own network, and an
+   * order is held under a lease file on the volume itself, so even an overlap orders once. A
+   * read-write mount by any other application is refused, because none of it applies there.
    */
-  private static final Set<String> READ_ONLY_SHARED_VOLUMES = Set.of("qits-edge-letsencrypt");
+  private static final Map<String, String> OWNED_SHARED_VOLUMES =
+      Map.of("qits-edge-letsencrypt", "qits-edge");
 
   /** The one option a mount may carry — {@link ServiceExtras.Mount}'s grammar, and no more. */
   private static final String READ_ONLY = "ro";
@@ -599,6 +622,21 @@ public final class DeploymentSpecParser {
    * @throws SpecException on anything this schema does not describe
    */
   public static DeploymentSpec parse(String yaml, String source) {
+    return parse(yaml, source, false);
+  }
+
+  /**
+   * {@link #parse(String, String)} for a VARIANT file, {@code .config/qits/deployments.<v>.yml}: the
+   * same grammar, plus the two statements only a variant may make (qits-2784) — {@code
+   * inherit_settings:}, and a read-write mount of an {@link #OWNED_SHARED_VOLUMES owned} shared
+   * volume. Whether the variant's main application owns that volume is {@link #checkVariant}'s,
+   * since only the deployer knows whose variant this is.
+   */
+  public static DeploymentSpec parseVariant(String yaml, String source) {
+    return parse(yaml, source, true);
+  }
+
+  private static DeploymentSpec parse(String yaml, String source, boolean variantFile) {
     String application = null;
     String renamedFrom = null;
     boolean availableOnEnv = false;
@@ -619,6 +657,7 @@ public final class DeploymentSpecParser {
     String image = null;
     List<String> variants = List.of();
     Map<String, String> imageDefaults = Map.of();
+    List<String> inheritSettings = List.of();
     Duration stopGracePeriod = DeploymentDriver.DEFAULT_STOP_GRACE_PERIOD;
     int replicas = DeclaredShape.DEFAULT_REPLICAS;
     List<String> routes = List.of();
@@ -659,7 +698,7 @@ public final class DeploymentSpecParser {
         case HEALTH_PATH -> healthPath = healthPath(value, source, lineNumber);
         case HEALTH_CMD -> healthCmd = healthCmd(value, source, lineNumber);
         case RESOURCES -> resources = resources(value, source, lineNumber);
-        case VOLUMES -> volumes = volumes(value, source, lineNumber);
+        case VOLUMES -> volumes = volumes(value, source, lineNumber, variantFile);
         case BINDS -> {
           binds = binds(value, source, lineNumber);
           bindsLine = lineNumber;
@@ -676,6 +715,8 @@ public final class DeploymentSpecParser {
         case STOP_GRACE_PERIOD -> stopGracePeriod = stopGracePeriod(value, source, lineNumber);
         case REPLICAS -> replicas = replicas(value, source, lineNumber);
         case IMAGE_DEFAULTS -> imageDefaults = imageDefaults(value, source, lineNumber);
+        case INHERIT_SETTINGS ->
+            inheritSettings = inheritSettings(value, source, lineNumber, variantFile);
         case ROUTES -> routes = routes(value, source, lineNumber);
         case UPSTREAM_PORT -> upstreamPort = upstreamPort(value, source, lineNumber);
         case HOST -> host = host(value, source, lineNumber);
@@ -733,6 +774,8 @@ public final class DeploymentSpecParser {
                     + REPLICAS
                     + ", "
                     + IMAGE_DEFAULTS
+                    + ", "
+                    + INHERIT_SETTINGS
                     + ", "
                     + ROUTES
                     + ", "
@@ -886,7 +929,8 @@ public final class DeploymentSpecParser {
         exposure,
         image,
         variants,
-        imageDefaults);
+        imageDefaults,
+        new DeploymentDriver.InheritedSettings(null, inheritSettings));
   }
 
   /**
@@ -938,6 +982,33 @@ public final class DeploymentSpecParser {
               + ": `"
               + RENAMED_FROM
               + "` is not allowed in a variant file — a variant has no predecessor to retire");
+    }
+    for (DeploymentSpec.VolumeSpec volume : spec.volumes()) {
+      String owner =
+          volume.scope() == DeploymentSpec.VolumeSpec.Scope.SHARED
+              ? OWNED_SHARED_VOLUMES.get(volume.name())
+              : null;
+      if (owner != null && !volume.readOnly() && !owner.equals(mainApplication)) {
+        throw new SpecException(
+            source
+                + ": `"
+                + VOLUMES
+                + "` may mount `"
+                + volume.name()
+                + "` read-write only in a variant of its owner "
+                + owner
+                + ", and this is a variant of "
+                + mainApplication
+                + " — write `"
+                + SHARED
+                + ":"
+                + volume.name()
+                + ":"
+                + volume.target()
+                + ":"
+                + READ_ONLY
+                + "`");
+      }
     }
   }
 
@@ -1117,6 +1188,60 @@ public final class DeploymentSpecParser {
               + " characters — because it is the path segment of qits/<image>:<version>. Got: "
               + value);
     }
+  }
+
+  /**
+   * {@code inherit_settings}: setting keys, comma-separated, none twice — the main application's
+   * settings this variant's container gets (qits-2784). Only a variant file may say it: a main file
+   * has no main application to inherit from. A key the deployer writes itself is no setting at all,
+   * so it cannot be inherited either.
+   */
+  private static List<String> inheritSettings(
+      String value, String source, int line, boolean variantFile) {
+    if (!variantFile) {
+      throw error(
+          source,
+          line,
+          "`"
+              + INHERIT_SETTINGS
+              + "` belongs in a variant file, deployments.<variant>.yml — a main application has no"
+              + " main application to inherit settings from");
+    }
+    List<String> declared = new ArrayList<>();
+    for (String candidate : value.split(",", -1)) {
+      String key = candidate.strip();
+      if (key.isBlank()) {
+        throw error(source, line, "`" + INHERIT_SETTINGS + "` has a blank entry");
+      }
+      try {
+        Settings.requireKey(key);
+      } catch (RuntimeException e) {
+        throw error(
+            source,
+            line,
+            "`"
+                + INHERIT_SETTINGS
+                + "` names setting keys — [A-Z_][A-Z0-9_]*, at most "
+                + Settings.KEY_MAX_LENGTH
+                + " characters — got: "
+                + key);
+      }
+      if (DeploymentDriver.keptByTheDeployer(key)) {
+        throw error(
+            source,
+            line,
+            "`"
+                + INHERIT_SETTINGS
+                + "` names `"
+                + key
+                + "`, which the deployer writes itself — it is no setting to inherit");
+      }
+      if (declared.contains(key)) {
+        throw error(source, line, "`" + INHERIT_SETTINGS + "` names `" + key + "` twice");
+      }
+      declared.add(key);
+    }
+    return List.copyOf(declared);
   }
 
   /** {@code variants}: names, comma-separated, each {@link #VARIANT_NAME}, none twice. */
@@ -1774,8 +1899,13 @@ public final class DeploymentSpecParser {
    * narrowing of it. Both duplicates are refused: a repeated <b>target</b> would be two volumes over
    * one directory, which no orchestrator can honour, and a repeated <b>name</b> would be one volume
    * asked for twice — the second mount point a person meant to write elsewhere.
+   *
+   * <p>An {@link #OWNED_SHARED_VOLUMES owned} shared volume must carry {@code :ro} in a main file;
+   * in a variant file ({@code variantFile}) it may go without, and {@link #checkVariant} then holds
+   * that the variant's main application is its owner.
    */
-  private static List<DeploymentSpec.VolumeSpec> volumes(String value, String source, int line) {
+  private static List<DeploymentSpec.VolumeSpec> volumes(
+      String value, String source, int line, boolean variantFile) {
     List<DeploymentSpec.VolumeSpec> declared = new ArrayList<>();
     Set<String> names = new HashSet<>();
     Set<String> targets = new HashSet<>();
@@ -1832,7 +1962,7 @@ public final class DeploymentSpecParser {
             "`" + parts[3] + "` is not a `" + VOLUMES + "` option here — only `" + READ_ONLY
                 + "` is");
       }
-      if (shared && READ_ONLY_SHARED_VOLUMES.contains(name) && parts.length != 4) {
+      if (shared && OWNED_SHARED_VOLUMES.containsKey(name) && parts.length != 4 && !variantFile) {
         throw error(
             source,
             line,
@@ -1840,7 +1970,11 @@ public final class DeploymentSpecParser {
                 + VOLUMES
                 + "` may mount `"
                 + name
-                + "` only read-only — it is another application's own volume — so write `"
+                + "` only read-only — it is "
+                + OWNED_SHARED_VOLUMES.get(name)
+                + "'s own volume, and only a variant file of "
+                + OWNED_SHARED_VOLUMES.get(name)
+                + " may mount it read-write — so write `"
                 + SHARED
                 + ":"
                 + name
