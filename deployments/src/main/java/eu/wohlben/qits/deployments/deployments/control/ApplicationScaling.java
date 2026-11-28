@@ -12,14 +12,19 @@ import eu.wohlben.qits.deployments.deployments.persistence.PdDeploymentRepositor
 import eu.wohlben.qits.deployments.environments.control.ApplicationKeys;
 import eu.wohlben.qits.deployments.environments.control.EnvironmentService;
 import eu.wohlben.qits.deployments.environments.control.PdIdentifiers;
+import eu.wohlben.qits.deployments.environments.error.BadGatewayException;
 import eu.wohlben.qits.deployments.environments.error.BadRequestException;
 import eu.wohlben.qits.deployments.environments.error.ConflictException;
 import eu.wohlben.qits.deployments.environments.error.NotFoundException;
+import eu.wohlben.qits.deployments.events.ApplicationRollbackRequested;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.time.Instant;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
 import org.jboss.logging.Logger;
 
 /**
@@ -253,6 +258,296 @@ public class ApplicationScaling {
                   queued.deploymentId(),
                   queued.version());
             });
+  }
+
+  /** The longest reason the rollback door takes — a sentence for a person, not a document. */
+  public static final int MAX_ROLLBACK_REASON = 500;
+
+  /** How many accepted versions a refused rollback names, newest first. */
+  static final int NAMED_ROLLBACK_VERSIONS = 5;
+
+  /** The words of a deployment that SERVED its place — {@link RollbackPins}' rule, verbatim. */
+  private static final Set<PdDeploymentStatus> SERVED =
+      EnumSet.of(PdDeploymentStatus.ACTIVE, PdDeploymentStatus.DECOMMISSIONED);
+
+  /**
+   * The audit trail of the operator's version choices (qits-2779): one INFO line per accepted
+   * rollback, on a logger of its own name so it can be routed and kept apart from the worker's
+   * chatter.
+   */
+  private static final Logger AUDIT = Logger.getLogger("eu.wohlben.qits.deployments.audit");
+
+  @Inject SpecSource specs;
+  @Inject Instance<DeployAnnouncer> announcers;
+
+  /**
+   * What the rollback door queued: the place, the version serving it when the request was accepted
+   * ({@code fromVersion}), the one asked for ({@code toVersion}), and {@code deploymentId} — the
+   * {@code ACTIVE} deployment serving {@code fromVersion}, the row the rollback replaces. That is
+   * the start door's choice and for its reason: the new row is written on the worker, after this
+   * answer, so the listing is where it is read.
+   */
+  public record RollbackAccepted(
+      String applicationId,
+      String applicationName,
+      String environmentId,
+      String fromVersion,
+      String toVersion,
+      String deploymentId) {}
+
+  /** Everything the rollback's guards resolved, as plain values — read in one transaction. */
+  private record RollbackPlan(
+      String application,
+      String environmentId,
+      String tier,
+      String fromVersion,
+      String fromDeploymentId,
+      DatabaseMoves.Live target) {}
+
+  /**
+   * Put ONE application in one tier back on an earlier version that already served there
+   * (qits-2779, {@code POST /applications/{id}/rollback}) — no build, no machine role, and nothing
+   * else of the release moving.
+   *
+   * <p>Refused on the request thread, so every refusal is an answer rather than a log line under a
+   * 202: a malformed id (400), a blank {@code version} or {@code reason} or a reason over {@link
+   * #MAX_ROLLBACK_REASON} characters (400); this deployer itself (409); an id with no tier, or a
+   * place nothing ever deployed (404); a deployment of it {@code QUEUED} or {@code STARTING}, or a
+   * database move of it not settled (409, the start door's sentences); no {@code ACTIVE} deployment
+   * (409). Then the version: it must have SERVED this place — a row of this (application, tier) at
+   * that version, {@code ACTIVE} or {@code DECOMMISSIONED}, which is {@link RollbackPins}' rule —
+   * and must not be the version serving now; otherwise a 409 naming the accepted versions. Rolling
+   * forward again to a newer version that served is allowed by the same rule. The coordinates come
+   * off that row's deployment request ({@link DatabaseMoves#coordinates}), never from the caller,
+   * and no request on record is a 409.
+   *
+   * <p><b>Only a start-first application.</b> The named application's own {@code update_order} at
+   * the target tag is read now — the variant's file for a variant — and stop-first is a 409: a
+   * rollback is a person reaching for a version that worked, typically while the serving one is
+   * misbehaving, and a stop-first update would take the serving one away before its successor has
+   * passed the gate. Start-first keeps the serving deployment {@code ACTIVE} until the rolled-back
+   * one is healthy, so a rollback that fails — an image the registry no longer has ends {@code
+   * IMAGE_MISSING} — leaves the platform exactly as it was. A tag that carries no file is a 409 too.
+   * No registry is asked: the pin rule keeps the one rollback step's image, and an older one that
+   * was collected fails the pull harmlessly for exactly that reason.
+   *
+   * <p>Accepted, it queues {@link DeployService#redeployOne} on the worker — that one application,
+   * the main one without its variants or exactly the one variant, in this tier alone — with no
+   * database move planned ({@link DatabaseMoves#onClaims}: a rollback puts the code back, never the
+   * data), writes one {@link #AUDIT} line and announces {@code ApplicationRollbackRequested}, whose
+   * id the new deployment's rows carry as their cause.
+   *
+   * @param actor who asked, for the audit line and the event; null reads as "an operator"
+   */
+  public RollbackAccepted rollback(
+      String applicationId, String version, String reason, String actor) {
+    ApplicationKeys.Key key = keyOf(applicationId);
+    String application = key.applicationName();
+    PdIdentifiers.requireName(application, "application name");
+    if (version == null || version.isBlank()) {
+      throw new BadRequestException("version is required: the earlier version to put back");
+    }
+    if (reason == null || reason.isBlank()) {
+      throw new BadRequestException("reason is required: why this application is being rolled back");
+    }
+    String why = reason.strip();
+    if (why.length() > MAX_ROLLBACK_REASON) {
+      throw new BadRequestException(
+          "reason is at most " + MAX_ROLLBACK_REASON + " characters, and this one is " + why.length());
+    }
+    String asked = version.strip();
+    if (BootResourceRegistration.APPLICATION.equals(application)) {
+      throw new ConflictException(
+          application
+              + " is this deployer: a rollback of it would replace the process answering this"
+              + " request; roll it back by a person");
+    }
+    if (key.environmentId() == null || key.environmentId().isBlank()) {
+      throw new NotFoundException(
+          applicationId + " names no tier, so nothing of it is deployed to roll back");
+    }
+    RollbackPlan plan =
+        QuarkusTransaction.joiningExisting()
+            .call(() -> planRollback(applicationId, application, key.environmentId(), asked));
+    requireStartFirst(plan);
+    // Built before anything is queued, so the queued rows can carry its id as their cause.
+    ApplicationRollbackRequested event =
+        new ApplicationRollbackRequested(
+            application,
+            plan.environmentId(),
+            plan.tier(),
+            plan.fromVersion(),
+            plan.target().version(),
+            actor,
+            why,
+            plan.fromDeploymentId(),
+            Instant.now());
+    worker.enqueueOperation(
+        "Rolling " + application + " in " + plan.tier() + " back to " + plan.target().version(),
+        () ->
+            databaseMoves.onClaims(
+                application,
+                plan.tier(),
+                () ->
+                    worker.redeployOne(
+                        plan.target().repository(),
+                        releasedNameOf(plan.target()),
+                        application,
+                        plan.environmentId(),
+                        plan.target().version(),
+                        plan.target().packageName(),
+                        plan.target().variant(),
+                        event.eventId())));
+    AUDIT.infof(
+        "%s rolled back %s in %s (%s) from %s to %s: %s",
+        actor == null || actor.isBlank() ? "An operator" : actor,
+        application,
+        plan.tier(),
+        plan.environmentId(),
+        plan.fromVersion(),
+        plan.target().version(),
+        // Free text from a caller: one line in the log whatever it holds.
+        why.replaceAll("\\p{Cntrl}", " "));
+    for (DeployAnnouncer announcer : announcers) {
+      try {
+        announcer.onRollbackRequested(event);
+      } catch (RuntimeException e) {
+        LOG.warnf(e, "Announcing the rollback of %s failed", applicationId);
+      }
+    }
+    return new RollbackAccepted(
+        applicationId,
+        application,
+        plan.environmentId(),
+        plan.fromVersion(),
+        plan.target().version(),
+        plan.fromDeploymentId());
+  }
+
+  /** The rollback's guards over the rows, in the one transaction the caller opened. */
+  private RollbackPlan planRollback(
+      String applicationId, String application, String environmentId, String asked) {
+    List<PdDeployment> rows = deployments.listForPlaceNewestFirst(application, environmentId);
+    if (rows.isEmpty()) {
+      throw new NotFoundException(
+          "nothing has ever been deployed for " + applicationId + ", so there is nothing to roll back");
+    }
+    String tier = environments.require(environmentId).name;
+    for (PdDeployment row : rows) {
+      if (row.status == PdDeploymentStatus.QUEUED || row.status == PdDeploymentStatus.STARTING) {
+        throw new ConflictException(
+            "deployment " + row.id + " of " + applicationId + " is " + row.status
+                + ": it decides what runs, so a rollback waits for it");
+      }
+    }
+    List<PdDatabaseMove> unsettled =
+        moves.list(
+            "applicationName = ?1 and environmentName = ?2 and state not in ?3",
+            application,
+            tier,
+            List.copyOf(PdDatabaseMoveState.TERMINAL));
+    if (!unsettled.isEmpty()) {
+      PdDatabaseMove move = unsettled.get(0);
+      throw new ConflictException(
+          "the database move "
+              + move.id
+              + " of `"
+              + move.resourceName
+              + "` of "
+              + application
+              + " is "
+              + move.state
+              + ": it decides where the data is, so a rollback waits for it to settle");
+    }
+    PdDeployment active =
+        rows.stream()
+            .filter(row -> row.status == PdDeploymentStatus.ACTIVE)
+            .findFirst()
+            .orElseThrow(
+                () ->
+                    new ConflictException(
+                        applicationId
+                            + " has no ACTIVE deployment to roll back: its newest is "
+                            + rows.get(0).status));
+    String serving = active.version;
+    PdDeployment target =
+        rows.stream()
+            .filter(row -> SERVED.contains(row.status) && asked.equals(row.version))
+            .findFirst()
+            .orElse(null);
+    if (target == null || asked.equals(serving)) {
+      List<String> accepted =
+          rows.stream()
+              .filter(row -> SERVED.contains(row.status) && row.version != null)
+              .map(row -> row.version)
+              .filter(served -> !served.equals(serving))
+              .distinct()
+              .sorted((left, right) -> Versions.compare(right, left))
+              .limit(NAMED_ROLLBACK_VERSIONS)
+              .toList();
+      String why =
+          asked.equals(serving)
+              ? asked + " is the version " + application + " is serving in " + tier + " now"
+              : asked + " never served " + application + " in " + tier;
+      throw new ConflictException(
+          why
+              + ", so there is nothing to roll back to; "
+              + (accepted.isEmpty()
+                  ? "no other version ever served there"
+                  : "the versions that served there are " + String.join(", ", accepted)));
+    }
+    DatabaseMoves.Live coordinates = databaseMoves.coordinates(application, target);
+    return new RollbackPlan(application, environmentId, tier, serving, active.id, coordinates);
+  }
+
+  /**
+   * The named application's {@code update_order} at the target tag, read now — the variant's own
+   * file for a variant. Stop-first, or no file at all, is a 409; a git host that does not answer is
+   * a 502, since nothing about the request was wrong.
+   */
+  private void requireStartFirst(RollbackPlan plan) {
+    DatabaseMoves.Live target = plan.target();
+    String path =
+        target.variant() == null ? SpecSource.SPEC_PATH : SpecSource.variantPath(target.variant());
+    String at = SpecSource.tagRev(target.version());
+    SpecSource.SpecRead read;
+    try {
+      read = specs.read(target.repository(), at, path);
+    } catch (RuntimeException unreadable) {
+      throw new BadGatewayException(
+          "could not read " + path + " of " + plan.application() + " at " + at
+              + " to check its update order: " + unreadable.getMessage(),
+          unreadable);
+    }
+    if (!read.declared()) {
+      throw new ConflictException(
+          plan.application()
+              + " declares no "
+              + path
+              + " at "
+              + target.version()
+              + ", so how it is updated is unknown; roll it back by a person");
+    }
+    if (read.spec().updateOrder() == DeploymentDriver.UpdateOrder.STOP_FIRST) {
+      throw new ConflictException(
+          plan.application()
+              + " is stop-first at "
+              + target.version()
+              + ": a rollback would stop it before its successor starts; roll it back by a person");
+    }
+  }
+
+  /**
+   * The release's own application name — the MAIN application's — off the coordinates: the
+   * package's segment when the request recorded one. A variant's request without a package names
+   * its own application there, so the repository's name stands in, which is what the release's
+   * main application is called by convention.
+   */
+  private static String releasedNameOf(DatabaseMoves.Live target) {
+    if (target.variant() != null && PackageNames.applicationOf(target.packageName()) == null) {
+      return target.repository().applicationName();
+    }
+    return target.releasedName();
   }
 
   private static Accepted accepted(Placed placed, Integer replicas) {

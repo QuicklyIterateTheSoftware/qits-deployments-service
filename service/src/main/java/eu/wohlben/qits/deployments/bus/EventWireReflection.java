@@ -2,6 +2,7 @@ package eu.wohlben.qits.deployments.bus;
 
 import eu.wohlben.qits.eventstream.control.EventEnvelope;
 import eu.wohlben.qits.eventstream.control.EventFrame;
+import eu.wohlben.qits.deployments.events.ApplicationRollbackRequested;
 import eu.wohlben.qits.deployments.events.DeploymentActive;
 import eu.wohlben.qits.deployments.events.DeploymentEndpoint;
 import eu.wohlben.qits.deployments.events.DeploymentFailed;
@@ -53,6 +54,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  *       DeployEventAnnouncer} serializes. Unregistered, the binary publishes an empty payload rather than failing.
  *   <li>{@link DeploymentRequestDeclined} — a held deployment REQUEST a person declined
  *       (qits-2271), also serialized by {@code DeployEventAnnouncer}.
+ *   <li>{@link ApplicationRollbackRequested} — a person's rollback of one application, accepted
+ *       (qits-2779), serialized by {@code DeployEventAnnouncer} on the door's request thread.
  *   <li>{@link EnvironmentCreated}, {@link EnvironmentChanged} and {@link EnvironmentDeleted} — a
  *       TIER's lifecycle rather than a deployment's, what {@code EnvironmentEventAnnouncer}
  *       serializes. They fail the way the four above would, and quieter: an environment is created
@@ -80,6 +83,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       NavigationEntry.class,
       DeploymentFailed.class,
       DeploymentRequestDeclined.class,
+      ApplicationRollbackRequested.class,
       EnvironmentCreated.class,
       EnvironmentChanged.class,
       EnvironmentDeleted.class

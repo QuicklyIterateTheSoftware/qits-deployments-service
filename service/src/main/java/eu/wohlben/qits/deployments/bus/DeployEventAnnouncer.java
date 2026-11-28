@@ -3,6 +3,7 @@ package eu.wohlben.qits.deployments.bus;
 import eu.wohlben.qits.eventstream.QitsEvent;
 import eu.wohlben.qits.eventstream.QitsEventBus;
 import eu.wohlben.qits.deployments.deployments.control.DeployAnnouncer;
+import eu.wohlben.qits.deployments.events.ApplicationRollbackRequested;
 import eu.wohlben.qits.deployments.events.DeploymentActive;
 import eu.wohlben.qits.deployments.events.DeploymentFailed;
 import eu.wohlben.qits.deployments.events.DeploymentQueued;
@@ -74,6 +75,17 @@ public class DeployEventAnnouncer implements DeployAnnouncer {
   @ActivateRequestContext
   public void onDeclined(DeploymentRequestDeclined event, UUID cause) {
     publish(event, cause);
+  }
+
+  /**
+   * On the request thread of the rollback door (qits-2779), so the ambient cause the request
+   * restored is the parent — {@code publish(event)} reads it, as {@code EnvironmentEventAnnouncer}
+   * does. The annotation is carried anyway, for the reason the others carry it.
+   */
+  @Override
+  @ActivateRequestContext
+  public void onRollbackRequested(ApplicationRollbackRequested event) {
+    bus.publish(event);
   }
 
   /**

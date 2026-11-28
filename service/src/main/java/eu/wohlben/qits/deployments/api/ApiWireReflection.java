@@ -45,6 +45,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       PdApplicationController.ScaleRequest.class,
       PdApplicationController.OperationResponse.class,
       PdApplicationController.StartResponse.class,
+      PdApplicationController.RollbackRequest.class,
+      PdApplicationController.RollbackResponse.class,
       PdApplicationController.RetirementResponse.class,
       PdApplicationController.DecommissionRequest.class,
       ArtifactPurge.RemovedArtifact.class,

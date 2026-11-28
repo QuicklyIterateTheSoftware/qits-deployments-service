@@ -1,5 +1,6 @@
 package eu.wohlben.qits.deployments.deployments.control;
 
+import eu.wohlben.qits.deployments.events.ApplicationRollbackRequested;
 import eu.wohlben.qits.deployments.events.DeploymentActive;
 import eu.wohlben.qits.deployments.events.DeploymentFailed;
 import eu.wohlben.qits.deployments.events.DeploymentQueued;
@@ -79,4 +80,13 @@ public interface DeployAnnouncer {
    * a held request never had one. Called once per row the decline settled, after the commit.
    */
   void onDeclined(DeploymentRequestDeclined event, UUID cause);
+
+  /**
+   * A person's rollback of one application was ACCEPTED (qits-2779): the guards passed and the
+   * redeploy of an earlier served version is queued. Its subject is the decision, not a deployment
+   * — the new row's own lifecycle is announced by the four methods above, with this event's id as
+   * their cause. Called on the request thread, so it takes no {@code cause}: the ambient one the
+   * request carries is the right parent, as it is for {@code EnvironmentAnnouncer}.
+   */
+  void onRollbackRequested(ApplicationRollbackRequested event);
 }

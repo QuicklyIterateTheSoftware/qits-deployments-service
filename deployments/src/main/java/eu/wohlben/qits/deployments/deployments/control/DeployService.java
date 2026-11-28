@@ -678,6 +678,156 @@ public class DeployService implements ReleaseAnnouncements {
         Door.MANUAL);
   }
 
+  /**
+   * Redeploy exactly ONE application of a release in exactly ONE tier — the rollback door's
+   * redeploy (qits-2779, {@code ApplicationScaling#rollback}). Where {@link #redeploy} replays the
+   * whole release, main and every variant, into the entry tiers, this puts back the one place a
+   * person named and nothing else:
+   *
+   * <ul>
+   *   <li>{@code variant} null: the MAIN application, <b>without</b> the variants its file names —
+   *       {@link #deployVariants} is never reached;
+   *   <li>{@code variant} set: exactly that variant, by its own file ({@link
+   *       SpecSource#variantPath}), with the main file read only for the image the variant defaults
+   *       to — the main application does not move.
+   * </ul>
+   *
+   * <p>The {@link Target} is built for {@code environmentId} alone, from the files at the released
+   * tag, the way {@link #approvalOf} rebuilds a held request's — so nothing is registered, no tier
+   * link is written and the catalogue is untouched, and a tier that is not the entry tier is put
+   * back where it is rather than wherever a release would land.
+   *
+   * <p><b>The manual door's semantics, with one difference.</b> No newest-only guard: a person named
+   * the version, and naming an older one is the point. But <b>a file the tag does not carry is
+   * REFUSED, never deployed with the defaults</b> — {@link #redeploy} deploys {@link
+   * DeploymentSpec#DEFAULTS} for an undeclared release, which for a rollback would put back an
+   * application shaped by nothing anybody wrote. An undeclared or unreadable file, a tier that is
+   * gone, or a target that cannot be built is a {@code pd_deployment_request} row {@code UNMET}
+   * naming why, and no deployment ({@link #refuseOne}).
+   *
+   * <p>Package-private and called only from inside an {@link #enqueueOperation} task, which puts it
+   * on the worker, like {@link #redeploy}.
+   *
+   * @param releasedName the release's own application name — the main application's — which a
+   *     variant's default image is derived from
+   * @param applicationName the application the place records: the main one's, or the variant's
+   * @param causationId the event that asked for it — the rows' cause, so the new deployment's
+   *     lifecycle hangs off the rollback request in the event log
+   */
+  void redeployOne(
+      RepositoryRef repository,
+      String releasedName,
+      String applicationName,
+      String environmentId,
+      String version,
+      String packageName,
+      String variant,
+      UUID causationId) {
+    Release refused =
+        new Release(
+            null, repository, applicationName, version, null, packageName, null, DeployHold.NONE,
+            causationId);
+    PdEnvironment environment;
+    try {
+      environment = environments.require(environmentId);
+    } catch (NotFoundException gone) {
+      refuseOne(refused, environmentId, variant, "its tier " + environmentId + " no longer exists");
+      return;
+    }
+    String path = variant == null ? SpecSource.SPEC_PATH : SpecSource.variantPath(variant);
+    SpecSource.SpecRead read;
+    String defaultImage = null;
+    try {
+      SpecSource.SpecRead main = specs.read(repository, SpecSource.tagRev(version));
+      if (!main.declared()) {
+        refuseOne(refused, environmentId, variant, undeclared(SpecSource.SPEC_PATH, version));
+        return;
+      }
+      read = main;
+      if (variant != null) {
+        String mainApplication = applicationName(releasedName, main.spec());
+        defaultImage = main.spec().image() != null ? main.spec().image() : mainApplication;
+        read = specs.read(repository, SpecSource.tagRev(version), path);
+      }
+    } catch (RuntimeException unreadable) {
+      refuseOne(
+          refused,
+          environmentId,
+          variant,
+          "its " + path + " at " + SpecSource.tagRev(version) + " could not be read: "
+              + unreadable.getMessage());
+      return;
+    }
+    if (!read.declared()) {
+      refuseOne(refused, environmentId, variant, undeclared(path, version));
+      return;
+    }
+    DeploymentSpec spec = read.spec();
+    Target target;
+    try {
+      if (variant == null) {
+        // Per version and a tag never changes, so this re-states what the release recorded.
+        egress.record(repository, applicationName, version);
+      }
+      target =
+          targetIn(
+              environment,
+              applicationName,
+              spec,
+              resolveHealthPath(applicationName, spec, findService(applicationName)),
+              ResourceProvisioning.resolve(applicationName, spec.resources()),
+              variant,
+              defaultImage);
+    } catch (RuntimeException e) {
+      refuseOne(refused, environmentId, variant, "its target could not be built: " + e.getMessage());
+      return;
+    }
+    Release release =
+        new Release(
+            null, repository, applicationName, version, read.commitSha(), packageName, null,
+            DeployHold.NONE, causationId);
+    LOG.infof(
+        "Redeploying %s@%s in %s alone%s",
+        applicationName,
+        version,
+        environment.name,
+        variant == null ? ", without its variants" : " (the variant " + variant + ")");
+    for (Queued row : queue(release, List.of(target))) {
+      executeQueued(row, version, read.commitSha());
+    }
+  }
+
+  private static String undeclared(String path, String version) {
+    return "the release carries no " + path + " at " + SpecSource.tagRev(version);
+  }
+
+  /**
+   * {@link #redeployOne}'s refusal: a request row {@code UNMET}, settled, naming why, and no
+   * deployment — {@link #refuseUndeclaredSpec}'s shape for one place. Not retried, for {@link
+   * #queue}'s reason: it INSERTs, and nothing docker-side has happened.
+   */
+  private void refuseOne(Release release, String environmentId, String variant, String why) {
+    String detail =
+        "Not redeployed: "
+            + release.applicationName()
+            + "@"
+            + release.version()
+            + " was asked to be put back alone, and "
+            + why
+            + ". Nothing was deployed and whatever was serving is serving still.";
+    LOG.warnf("%s", detail);
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              PdDeploymentRequest request =
+                  persistRequest(release, release.applicationName(), environmentId);
+              request.variant = variant;
+              request.qualityGate = PdQualityGate.UNMET;
+              request.gateDetail = detail;
+              request.gateSettledAt = Instant.now();
+            });
+  }
+
   void enqueueOperation(String description, Runnable action) {
     worker.submit(
         () -> {

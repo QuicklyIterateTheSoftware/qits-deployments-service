@@ -139,6 +139,29 @@ public class PdApplicationController {
       String version) {}
 
   /**
+   * What the rollback door is asked (qits-2779): the earlier {@code version} to put back — one that
+   * already served this application in this tier — and why. Both are required; {@code reason} is at
+   * most {@value ApplicationScaling#MAX_ROLLBACK_REASON} characters and is written to the audit log
+   * and the {@code ApplicationRollbackRequested} event, for a person.
+   */
+  public record RollbackRequest(String version, String reason) {}
+
+  /**
+   * What the rollback door queued — never an outcome. {@code fromVersion} was serving when the
+   * request was accepted and {@code toVersion} is the one asked for; {@code deploymentId} is the
+   * {@code ACTIVE} deployment serving {@code fromVersion}, the row the rollback replaces — the start
+   * door's choice, because the new row is written on the deploy worker after this answer and is read
+   * from the listing.
+   */
+  public record RollbackResponse(
+      String applicationId,
+      String applicationName,
+      String environmentId,
+      String fromVersion,
+      String toVersion,
+      String deploymentId) {}
+
+  /**
    * What a decommission may name beside what the release ledger knows: the repositories whose
    * published artifacts are the application's too (qits-1941). Optional — an empty POST is the same
    * request with none.
@@ -257,6 +280,55 @@ public class PdApplicationController {
                 queued.environmentId(),
                 queued.deploymentId(),
                 queued.version()))
+        .build();
+  }
+
+  /**
+   * Put one application in one tier back on an earlier version that already served there — the
+   * delivery desk's rollback (qits-2779). No build, and no machine role.
+   *
+   * <p>The version must have served this place ({@code ACTIVE} or {@code DECOMMISSIONED} at it, the
+   * pin rule) and must not be the one serving now; a newer version that served earlier is accepted
+   * by the same rule, so rolling forward again is the same door. The repository, release and variant
+   * come off that deployment's own request, never from the body. <b>Only that application moves</b>
+   * — the main application without its variants, or exactly one variant — and only in this tier, on
+   * its database claims as they are. Its {@code update_order} at that tag must be start-first, so
+   * the serving deployment stays {@code ACTIVE} until the rolled-back one passes its health gate: a
+   * rollback that fails, an image the registry no longer holds included, changes nothing.
+   *
+   * <p>202 like the other levers: it queues behind whatever the deploy worker is doing, and the new
+   * deployment row is read from the listing. Refused with a 409 while a deployment or a database
+   * move of it is in flight, when nothing of it is {@code ACTIVE}, for a version that never served
+   * here (the answer names the ones that did), for a stop-first application or one whose tag carries
+   * no file, for a version no request is on record for, and for this deployer itself.
+   */
+  @POST
+  @Path("/{applicationId}/rollback")
+  @Consumes(MediaType.APPLICATION_JSON)
+  @Operation(operationId = "rollbackApplication", summary = "Roll one application in one tier back to an earlier version that served there — no build, start-first only")
+  @APIResponse(responseCode = "202", description = "Queued on the deploy worker; the versions it moves between and the ACTIVE deployment it replaces are named")
+  @APIResponse(responseCode = "400", description = "Not an application id, no version or reason, or a reason over 500 characters")
+  @APIResponse(responseCode = "404", description = "Nothing has ever been deployed for this application, or its tier is gone")
+  @APIResponse(responseCode = "409", description = "A deployment or database move of it is in flight, nothing of it is ACTIVE, the version never served here or is serving now, it is stop-first or undeclared at that version, no request is on record for it, or it is this deployer itself")
+  @APIResponse(responseCode = "502", description = "The git host could not be asked how the version is updated")
+  public Response rollback(
+      @PathParam("applicationId") String applicationId,
+      RollbackRequest request,
+      @Context SecurityContext security) {
+    if (request == null) {
+      throw new BadRequestException("the rollback body must be {\"version\":\"<version>\",\"reason\":\"<why>\"}");
+    }
+    ApplicationScaling.RollbackAccepted queued =
+        scaling.rollback(applicationId, request.version(), request.reason(), actor(security));
+    return Response.accepted()
+        .entity(
+            new RollbackResponse(
+                queued.applicationId(),
+                queued.applicationName(),
+                queued.environmentId(),
+                queued.fromVersion(),
+                queued.toVersion(),
+                queued.deploymentId()))
         .build();
   }
 

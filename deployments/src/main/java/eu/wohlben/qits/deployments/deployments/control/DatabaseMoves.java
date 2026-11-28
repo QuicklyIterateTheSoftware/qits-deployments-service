@@ -2412,10 +2412,27 @@ public class DatabaseMoves {
    * failed deployment's. Must run on the worker.
    */
   void startOnClaims(String applicationName, String environmentName, Live live) {
+    onClaims(
+        applicationName,
+        environmentName,
+        () ->
+            worker.redeploy(
+                live.repository(), live.releasedName(), live.version(), live.packageName()));
+  }
+
+  /**
+   * Run {@code deploy} — a deployment of {@code applicationName} in {@code environmentName}, on the
+   * worker and synchronously — with NO database move planned for that place: every postgres
+   * resource is provisioned where its claim is. {@link #startOnClaims}' bracket, and the rollback
+   * door's (qits-2779): a rollback puts the CODE back, never the data, so an earlier version whose
+   * spec resolved its databases elsewhere is still started on the claims as they are. Must run on
+   * the worker.
+   */
+  void onClaims(String applicationName, String environmentName, Runnable deploy) {
     String key = applicationName + "|" + environmentName;
     stayingPut.add(key);
     try {
-      worker.redeploy(live.repository(), live.releasedName(), live.version(), live.packageName());
+      deploy.run();
     } finally {
       stayingPut.remove(key);
     }
@@ -2672,8 +2689,12 @@ public class DatabaseMoves {
     return new Accepted(row, note);
   }
 
-  /** What is live for an application in a tier, and the coordinates to redeploy it by. */
-  private record Live(
+  /**
+   * What is live for an application in a tier, and the coordinates to redeploy it by.
+   * Package-private for the rollback door ({@link ApplicationScaling#rollback}, qits-2779), which
+   * resolves an earlier served row's coordinates the same way.
+   */
+  record Live(
       String version,
       String variant,
       RepositoryRef repository,
@@ -2727,8 +2748,13 @@ public class DatabaseMoves {
             });
   }
 
-  /** The coordinates to redeploy one deployment row's version by, off its deployment request. */
-  private Live coordinates(String application, PdDeployment serving) {
+  /**
+   * The coordinates to redeploy one deployment row's version by, off its deployment request — never
+   * off anything a caller sent. Package-private for the rollback door ({@link
+   * ApplicationScaling#rollback}, qits-2779), whose target row is an earlier served one rather than
+   * the live one; a row no request is on record for is the same 409 here as for the start door.
+   */
+  Live coordinates(String application, PdDeployment serving) {
     PdDeploymentRequest request =
         requests
             .find("deploymentId = ?1", serving.id)
