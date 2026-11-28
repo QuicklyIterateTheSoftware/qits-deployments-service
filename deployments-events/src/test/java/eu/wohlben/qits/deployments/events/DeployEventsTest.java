@@ -64,10 +64,18 @@ class DeployEventsTest {
         DECLINED);
   }
 
+  private static final Instant REQUESTED = Instant.parse("2026-08-12T11:00:00Z");
+
+  private static ApplicationRollbackRequested aRollback() {
+    return new ApplicationRollbackRequested(
+        "qits-gateway", "env-1", "dev", VERSION, "2026.811.90000", "alice", "the new one 500s",
+        "d-1", REQUESTED);
+  }
+
   @Test
   void everySignatureIsTheClassNameAndTheNameFollowsIt() {
     for (QitsEvent event :
-        List.of(aQueued(), aStarted(), anActive(), aFailed(), aDeclined())) {
+        List.of(aQueued(), aStarted(), anActive(), aFailed(), aDeclined(), aRollback())) {
       assertEquals(event.getClass().getSimpleName(), event.signature());
       assertEquals(event.signature(), event.name());
     }
@@ -80,6 +88,7 @@ class DeployEventsTest {
     assertEquals(FINISHED, anActive().occurredAt());
     assertEquals(FINISHED, aFailed().occurredAt());
     assertEquals(DECLINED, aDeclined().occurredAt());
+    assertEquals(REQUESTED, aRollback().occurredAt());
   }
 
   @Test
@@ -389,5 +398,40 @@ class DeployEventsTest {
     assertEquals("alice", decoded.declinedBy());
     assertEquals(null, decoded.note());
     assertEquals(DECLINED, decoded.occurredAt());
+  }
+
+  // --- rollback (qits-2779) ----------------------------------------------------------------------
+
+  @Test
+  void theRollbackPayloadIsTheDecisionsShapeAndCarriesNoIdentity() {
+    assertEquals("ApplicationRollbackRequested", aRollback().signature());
+    assertEquals(
+        "{\"applicationName\":\"qits-gateway\",\"deploymentId\":\"d-1\","
+            + "\"environmentId\":\"env-1\",\"environmentName\":\"dev\","
+            + "\"fromVersion\":\""
+            + VERSION
+            + "\",\"reason\":\"the new one 500s\",\"requestedAt\":\"2026-08-12T11:00:00Z\","
+            + "\"requestedBy\":\"alice\",\"toVersion\":\"2026.811.90000\"}",
+        CanonicalJson.payload(aRollback()));
+  }
+
+  @Test
+  void aRollbackByNobodyNamedOmitsTheCallerAndReadsBack() {
+    ApplicationRollbackRequested bare =
+        new ApplicationRollbackRequested(
+            "qits-gateway", "env-1", "dev", VERSION, "2026.811.90000", null, "broken", "d-1",
+            REQUESTED);
+
+    String payload = CanonicalJson.payload(bare);
+    assertFalse(payload.contains("requestedBy"), payload);
+
+    ApplicationRollbackRequested decoded =
+        CanonicalJson.payloadTo(payload, ApplicationRollbackRequested.class);
+    assertEquals("qits-gateway", decoded.applicationName());
+    assertEquals(VERSION, decoded.fromVersion());
+    assertEquals("2026.811.90000", decoded.toVersion());
+    assertEquals("broken", decoded.reason());
+    assertEquals(null, decoded.requestedBy());
+    assertEquals(REQUESTED, decoded.occurredAt());
   }
 }
