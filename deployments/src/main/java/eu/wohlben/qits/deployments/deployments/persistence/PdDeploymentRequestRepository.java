@@ -109,7 +109,7 @@ public class PdDeploymentRequestRepository
    * <p><b>The idempotence guard of the acceptance ledger's re-drive</b> ({@code OwedReleaseSweep}):
    * an obligation whose request row already exists was met by the process that died holding it, and
    * announcing it again would mint a second request and a second deployment of one version. It is
-   * asked of the requests rather than of the deployments for {@link #newestVersionOf}'s reason — a
+   * asked of the requests rather than of the deployments for {@link #requestedVersionsOf}'s reason — a
    * request is written the moment a release is accepted for a place, so it records "this was done
    * here" even for a deployment that then failed.
    *
