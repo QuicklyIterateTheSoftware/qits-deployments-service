@@ -61,8 +61,8 @@
              and it stays one line: the release train's follow-bump step
              (.config/qits/ci-event-upstream-eventstream.yml) rewrites exactly this element with a
              `sed`, so a second spelling of the version anywhere would be left behind. -->
-        <qits.eventstream.version>2026.1127.184243</qits.eventstream.version>
-        <qits.auth-core.version>2026.1127.174457</qits.auth-core.version>
+        <qits.eventstream.version>2026.1127.202344</qits.eventstream.version>
+        <qits.auth-core.version>2026.1127.195930</qits.auth-core.version>
         <!-- The platform's shared ArchUnit rules, published by qits-integrations-quarkus beside
              qits-auth-core. Test scope wherever entities live — see service/pom.xml. -->
         <qits.arch-rules.version>2026.1113.14706</qits.arch-rules.version>
@@ -75,7 +75,7 @@
              qits-integrations-quarkus, same publisher as qits-auth-core and qits-db-core above.
              From 2026.1103.132907 the wrap also rides out an edge switchover (RetryPolicy, 30 s),
              which edge/EdgeBreakGlass's one internal-address try sits behind (epic qits-428). -->
-        <qits.http-core.version>2026.1127.174457</qits.http-core.version>
+        <qits.http-core.version>2026.1127.195930</qits.http-core.version>
         <!-- qits-telemetry-core (epic qits-428): the three OTLP/HTTP exporters as CDI beans whose
              header supplier carries the `qits` oidc client's current bearer, so spans, logs and
              metrics reach qits-observability at its edge host. Published by
@@ -92,7 +92,7 @@
              as QITS_TRUST_ANCHORS. Published by qits-integrations-quarkus with qits-http-core linked;
              this repo keeps its own qits-http-core pin above. First adoption: no maintenance bump
              added it. -->
-        <qits.trust-core.version>2026.1127.174457</qits.trust-core.version>
+        <qits.trust-core.version>2026.1127.195930</qits.trust-core.version>
         <!-- The user-story framework (test scope): this repo's story catalogue is written as
              @UserStory methods, so a `mvn verify -DskipITs=false` also regenerates
              service/target/userstories/ — the story logs and their network diagrams, which are
@@ -109,12 +109,12 @@
         <pact.version>4.7.5</pact.version>
         <!-- THE PROVIDERS' GOLDEN MASTERS, test scope: what each provider records for its states,
              read by the consumer pacts. Moves like every internal pin. -->
-        <qits.idp-golden-masters.version>2026.1125.71255</qits.idp-golden-masters.version>
+        <qits.idp-golden-masters.version>2026.1127.193523</qits.idp-golden-masters.version>
         <qits.githost-golden-masters.version>2026.1109.41303</qits.githost-golden-masters.version>
         <qits.artifacts-golden-masters.version>2026.1124.154841</qits.artifacts-golden-masters.version>
         <qits.edge-golden-masters.version>2026.1115.212737</qits.edge-golden-masters.version>
         <qits.egress-golden-masters.version>2026.1126.60653</qits.egress-golden-masters.version>
-        <qits.projects-golden-masters.version>2026.1127.50902</qits.projects-golden-masters.version>
+        <qits.projects-golden-masters.version>2026.1127.210621</qits.projects-golden-masters.version>
         <!-- THE CONSUMER PACTS ConsumerPactVerificationTest verifies (qits-1149): one jar per consumer
              that commits `pacts/<consumer>_qits-deployments-service.json`, test scope. Exact pins;
              qits-maintenance bumps each when its consumer releases a changed pact. -->
