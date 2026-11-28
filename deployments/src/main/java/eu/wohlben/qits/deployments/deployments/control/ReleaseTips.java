@@ -45,7 +45,9 @@ import java.util.Map;
  * <ul>
  *   <li><b>What this process announced</b>, remembered in a map. Exact, and what makes two releases
  *       seconds apart both deploy, in order.
- *   <li><b>The newest deployment REQUEST row</b> for that application, consulted only when the map
+ *   <li><b>The newest version a deployment REQUEST row names</b> for that application — the highest
+ *       by {@link Versions}, never the newest row, so a rollback's older request cannot lower it
+ *       (qits-2779) — consulted only when the map
  *       has nothing. That is the cross-restart floor: a process that has just booted remembers
  *       nothing, and a catch-up sweep at startup is precisely when a stale event arrives.
  * </ul>
@@ -175,7 +177,9 @@ public class ReleaseTips {
   }
 
   /**
-   * The newest version this application was asked for, or null if it never was.
+   * The newest version this application was asked for — the highest by {@link Versions} over every
+   * request row, which a rollback's older request does not lower (qits-2779) — or null if it never
+   * was.
    *
    * <p><b>In a transaction of its own.</b> The caller is inside the library's claim transaction,
    * which has the {@code eventstream} datasource enlisted; joining it would put a second non-XA
@@ -184,6 +188,10 @@ public class ReleaseTips {
    */
   private String newestRequested(String applicationName) {
     return QuarkusTransaction.requiringNew()
-        .call(() -> requests.newestVersionOf(applicationName).orElse(null));
+        .call(
+            () ->
+                requests.requestedVersionsOf(applicationName).stream()
+                    .max(Versions::compare)
+                    .orElse(null));
   }
 }

@@ -162,8 +162,8 @@ public class PdDeploymentRequestRepository
   }
 
   /**
-   * The newest version this application was ever asked for, whatever the gate said and whatever
-   * became of it.
+   * Every version this application was ever asked for, whatever the gate said and whatever became
+   * of it — {@code ReleaseTips} takes the NEWEST of them by {@code Versions}, the version order.
    *
    * <p><b>It is the cross-restart floor of the monotonic collapse</b> ({@code ReleaseTips}), and it
    * is asked of the REQUESTS rather than of the deployments on purpose: a request is written the
@@ -171,11 +171,23 @@ public class PdDeploymentRequestRepository
    * "this version was seen here" even for a release that then failed to deploy. A floor read off
    * deployment rows alone would let a stale catch-up replay a version whose newer sibling never got
    * as far as a container.
+   *
+   * <p><b>Every version, not the newest ROW (qits-2779).</b> This used to answer the version of the
+   * request with the highest {@code seq}, which is the newest version only while every request is a
+   * forward step. A rollback ({@code POST /applications/{id}/rollback}) writes a request at an OLDER
+   * version, and the newest row would then have lowered the floor to it: after a restart, a stale
+   * catch-up of the version rolled away from — or any release between the two — would have passed
+   * the collapse and deployed the place forward again, undoing a person's rollback with nobody
+   * asking. The floor is the highest version ever requested, which a rollback can never lower.
    */
-  public Optional<String> newestVersionOf(String applicationName) {
-    return find("applicationName = ?1 order by seq desc", applicationName)
-        .firstResultOptional()
-        .map(request -> request.version);
+  public List<String> requestedVersionsOf(String applicationName) {
+    return getEntityManager()
+        .createQuery(
+            "select distinct r.version from PdDeploymentRequest r"
+                + " where r.applicationName = :applicationName and r.version is not null",
+            String.class)
+        .setParameter("applicationName", applicationName)
+        .getResultList();
   }
 
   /**
