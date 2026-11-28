@@ -2049,6 +2049,125 @@ class SwarmDeploymentDriverTest {
         driver.stagedEnvironment(spec(), true), driver.stagedEnvironment(spec(Map.of()), true));
   }
 
+  // --- inherit_settings (qits-2784) ----------------------------------------------------------
+
+  /** A driver whose extras are each application's own rows of {@code rows}, as the store holds them. */
+  private SwarmDeploymentDriver perApplicationSettingsDriver(List<PdSetting> rows) {
+    Config boot = new SmallRyeConfigBuilder().build();
+    return driver(
+        (application, environmentName) ->
+            ExtrasSnapshot.over(
+                boot,
+                SettingsExtrasSource.render(
+                    application,
+                    rows.stream()
+                        .filter(row -> row.applicationName.equals(application))
+                        .filter(row -> row.environmentName.equals(environmentName))
+                        .toList()),
+                "pd_setting " + application));
+  }
+
+  private static PdSetting setting(String application, String key, String value) {
+    PdSetting row = setting(key, value, false);
+    row.applicationName = application;
+    return row;
+  }
+
+  /** {@code qits-edge-private}, the variant {@code private}, reading {@code keys} from qits-edge. */
+  private DeploymentDriver.ServiceSpec inheriting(List<String> keys) {
+    DeploymentDriver.ServiceSpec base = variantSpec("qits-edge-private", "private");
+    return new DeploymentDriver.ServiceSpec(
+        base.environmentId(),
+        base.environmentName(),
+        base.applicationId(),
+        base.applicationName(),
+        base.deploymentId(),
+        base.commitSha(),
+        base.version(),
+        base.deploymentName(),
+        base.wireAlias(),
+        base.networks(),
+        base.imageRef(),
+        base.healthPath(),
+        base.healthCmd(),
+        base.availableOnEnv(),
+        base.updateOrder(),
+        base.publishMode(),
+        base.resources(),
+        base.volumes(),
+        base.stopGracePeriod(),
+        base.shape(),
+        base.renamedFrom(),
+        base.takesOverPredecessor(),
+        base.exposure(),
+        base.variant(),
+        base.imageDefaults(),
+        base.routing(),
+        new DeploymentDriver.InheritedSettings("qits-edge", keys));
+  }
+
+  @Test
+  void aVariantGetsTheSettingsItInheritsFromItsMainApplicationAndNoOthers() {
+    SwarmDeploymentDriver driver =
+        perApplicationSettingsDriver(
+            List.of(
+                setting("qits-edge", "QITS_EDGE_DNS_NODE_ADDRESS", "46.224.171.33"),
+                setting("qits-edge", "QITS_EDGE_ACME_EMAIL", "ops@example.com"),
+                setting("qits-edge", "QITS_EDGE_ONLY_MINE", "main")));
+
+    List<String> argv =
+        driver.buildCreateArgv(
+            inheriting(List.of("QITS_EDGE_DNS_NODE_ADDRESS", "QITS_EDGE_ACME_EMAIL")),
+            "dev-qits-edge-private",
+            List.of("qits-private"));
+
+    assertTrue(
+        argv.containsAll(List.of("--env", "QITS_EDGE_DNS_NODE_ADDRESS=46.224.171.33")),
+        argv.toString());
+    assertTrue(
+        argv.containsAll(List.of("--env", "QITS_EDGE_ACME_EMAIL=ops@example.com")), argv.toString());
+    assertTrue(
+        argv.stream().noneMatch(argument -> argument.startsWith("QITS_EDGE_ONLY_MINE=")),
+        "a setting the variant does not name stays the main application's: " + argv);
+    assertTrue(
+        driver
+            .stagedEnvironment(inheriting(List.of("QITS_EDGE_ACME_EMAIL")), true)
+            .contains("QITS_EDGE_ACME_EMAIL=ops@example.com"),
+        "the settings preview reads the same build");
+  }
+
+  @Test
+  void aVariantInheritingASettingItsMainApplicationDoesNotHoldIsRefused() {
+    SwarmDeploymentDriver driver =
+        perApplicationSettingsDriver(
+            List.of(setting("qits-edge", "QITS_EDGE_DNS_NODE_ADDRESS", "46.224.171.33")));
+    cli.script("--format {{.ID}}", result(1, "no such service"));
+
+    DeploymentDriver.ApplyResult applied =
+        driver.apply(inheriting(List.of("QITS_EDGE_DNS_NODE_ADDRESS", "QITS_EDGE_ACME_EMAIL")));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.REFUSED, applied.outcome());
+    assertTrue(
+        applied.detail().contains("inherit_settings names QITS_EDGE_ACME_EMAIL, which qits-edge holds"
+            + " no setting for in dev"),
+        applied.detail());
+    assertTrue(cli.matching("service create").isEmpty(), "nothing was created");
+  }
+
+  @Test
+  void aMainDeploymentInheritsNothingAndRendersWhatItAlwaysDid() {
+    SwarmDeploymentDriver driver =
+        perApplicationSettingsDriver(
+            List.of(
+                setting("qits-gateway", "QITS_EVENTS_URL", "http://dev-qits-events:8080"),
+                setting("qits-edge", "QITS_EDGE_ACME_EMAIL", "ops@example.com")));
+    List<String> argv = driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
+    assertTrue(argv.stream().noneMatch(argument -> argument.startsWith("QITS_EDGE_ACME_EMAIL=")));
+    assertTrue(
+        argv.containsAll(List.of("--env", "QITS_EVENTS_URL=http://dev-qits-events:8080")),
+        argv.toString());
+  }
+
   @Test
   void anExtrasSourceThatCannotAnswerIsARefusedDeploymentRatherThanTheBootValues() {
     // A fall-back would ship stale values invisibly: a green deployment carrying whatever the

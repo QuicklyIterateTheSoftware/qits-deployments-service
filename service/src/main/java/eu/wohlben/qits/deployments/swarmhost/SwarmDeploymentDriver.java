@@ -3690,10 +3690,25 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * image defaults reads exactly what it always read.
    */
   private ServiceExtras extrasOf(ServiceSpec spec) {
-    return ServiceExtras.of(
+    ServiceExtras own =
+        ServiceExtras.of(
             extrasSource.forDeployment(spec.applicationName(), spec.environmentName()),
-            spec.applicationName())
-        .withoutEnvEqualTo(spec.imageDefaults());
+            spec.applicationName());
+    if (!spec.inherited().isEmpty()) {
+      // A variant's inherit_settings: (qits-2784) — the main application's rows of the same tier,
+      // read in this same build, so a variant and its main never state two values of one key.
+      String main = spec.inherited().from();
+      if (main == null) {
+        throw new ServiceExtras.Refused(
+            spec.applicationName() + " inherits settings and names no application to read them from");
+      }
+      own =
+          own.withInheritedEnv(
+              ServiceExtras.of(extrasSource.forDeployment(main, spec.environmentName()), main),
+              spec.inherited(),
+              spec.environmentName());
+    }
+    return own.withoutEnvEqualTo(spec.imageDefaults());
   }
 
   /**

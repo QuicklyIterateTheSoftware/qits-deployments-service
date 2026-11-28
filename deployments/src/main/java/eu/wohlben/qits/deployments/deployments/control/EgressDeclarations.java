@@ -19,8 +19,11 @@ import org.jboss.logging.Logger;
  *
  * <p><b>Read where the release is read, at the same tag</b>: {@code DeployService} calls {@link
  * #record} for the MAIN application of a release, after {@code deployments.yml} answered and before
- * anything of the release is queued. A variant is an application of its own deployed from the same
- * repository, and the file is the main application's — a variant carries no routes.
+ * anything of the release is queued, and once more for each VARIANT it deploys (qits-2784). A
+ * variant is an application of its own deployed from the same repository, with a principal of its
+ * own, so it reads a file of its own: {@code .config/qits/egress.<variant>.yml} ({@link
+ * SpecSource#egressPath}). The main file's routes are the main application's alone, and a variant
+ * with no file of its own carries no routes.
  *
  * <p><b>Nothing here can fail a deployment.</b> No file (the git host's 404) is no routes. A file
  * {@link EgressDeclarationParser} refuses is stored REFUSED with the reason: that version carries no
@@ -47,13 +50,21 @@ public class EgressDeclarations {
    * @param repository the address the release's files are read at
    */
   public void record(RepositoryRef repository, String applicationName, String version) {
+    record(repository, applicationName, version, SpecSource.EGRESS_PATH);
+  }
+
+  /**
+   * {@link #record(RepositoryRef, String, String)} from the file at {@code path} — a variant's
+   * {@link SpecSource#egressPath}. Never throws.
+   */
+  public void record(
+      RepositoryRef repository, String applicationName, String version, String path) {
     try {
-      String source = SpecSource.EGRESS_PATH + " of " + applicationName + "@" + version;
+      String source = path + " of " + applicationName + "@" + version;
       List<EgressDeclarationParser.Route> routes = null;
       String refused = null;
       try {
-        Optional<String> text =
-            specs.readText(repository, SpecSource.tagRev(version), SpecSource.EGRESS_PATH);
+        Optional<String> text = specs.readText(repository, SpecSource.tagRev(version), path);
         routes =
             text.isEmpty() ? List.of() : EgressDeclarationParser.parse(text.get(), source);
       } catch (RuntimeException e) {

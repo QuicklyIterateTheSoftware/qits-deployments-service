@@ -167,9 +167,14 @@ public class GitHostSpecSource implements SpecSource {
     if (response.statusCode() != 200) {
       throw statusFailure(url, response.statusCode());
     }
+    String source = path + " of " + repository.applicationName() + "@" + rev;
+    // A variant's file may say two things a main file may not (qits-2784): inherit_settings:, and a
+    // read-write mount of a volume its main application owns. Every path but the main one is a
+    // variant's — this seam reads no other deployments file.
     return new SpecRead(
-        DeploymentSpecParser.parse(
-            response.body(), path + " of " + repository.applicationName() + "@" + rev),
+        SpecSource.SPEC_PATH.equals(path)
+            ? DeploymentSpecParser.parse(response.body(), source)
+            : DeploymentSpecParser.parseVariant(response.body(), source),
         commitShaOf(response));
   }
 

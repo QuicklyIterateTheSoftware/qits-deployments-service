@@ -89,6 +89,7 @@ variants: private                    # main file only: also deploy .config/qits/
 stop_grace_period: 10m               # default 30s; SIGTERM-to-SIGKILL, e.g. 90s, 9m30s, at most 1h
 replicas: 2                          # default 1, at most 5; refused beside publishes, publish_mode: host, stop-first
 image_defaults: QITS_EDGE_ACME_MODE=production   # env the image ships itself; settings rows equal to it retire
+inherit_settings: QITS_EDGE_ACME_EMAIL   # variant file only: the main application's settings it gets
 routes: /artifacts,/artifacts/api    # optional public path prefixes, ordered
 upstream_port: 8080                  # default; target port behind every declared route
 navigation: Artifacts:3              # optional label:positive-position for the first route
@@ -166,8 +167,19 @@ resources: postgresql:edge:qits_edge_private, postgresql:eventstream:qits_edge_p
 ```
 
 `shared:qits-edge-letsencrypt` is the public edge's own certificate volume, in the shared vocabulary
-for this one reader and **read-only only** — the private edge orders nothing and serves the same
-certificate. Retiring a variant is removing it from `variants:` and retiring its application through
+and **owned by `qits-edge`**: every other holder mounts it `:ro`, and only a variant file of its
+owner may mount it read-write (qits-2784). The private edge does, because once qits-egress is
+private only it can reach the Hetzner route to renew; each edge orders only while egress' alias
+resolves on its own network, and the order is held under a lease file on the volume itself. A main
+file — qits-edge's included — and a variant of any other application are refused a read-write
+mount.
+
+`inherit_settings:` (qits-2784, variant files only) names settings of the **main application** the
+variant's container gets, for the same environment: `inherit_settings: QITS_EDGE_DNS_NODE_ADDRESS,
+QITS_EDGE_ACME_EMAIL`. A variant has no settings of its own (owner ruling), so the value keeps one
+home and the variant declares that it reads it. Keys are setting keys, none twice, none the deployer
+writes itself; a main file is refused the key, and a named key the main application holds no setting
+for refuses the variant's deployment, naming it. Retiring a variant is removing it from `variants:` and retiring its application through
 `POST /applications/{id}/retire`; nothing infers it from the file's absence.
 
 `image_defaults:` says which environment variables the **image already ships as its own defaults**
@@ -646,8 +658,9 @@ routes:
 `[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}`. An application's `secret:` may not start with `PROJECT_` — that
 namespace is the projects' (below), and is refused in the parser.
 
-It is read at the released tag, beside the spec, for the release's MAIN application (a variant
-carries no routes), and parsed strictly by `EgressDeclarationParser`: `version` must be `1`, unknown
+It is read at the released tag, beside the spec, for the release's MAIN application, and for each
+variant from **its own `.config/qits/egress.<variant>.yml`** (qits-2784): a variant's principal is
+`application:<variant application>`, and it is granted nothing from the main file. It is parsed strictly by `EgressDeclarationParser`: `version` must be `1`, unknown
 keys and a key twice are refused, `name` is unique in the file (route names are per application),
 `target` is `https://…` (plain `http://` refused, no user info, query or fragment) or
 `platform:<label>`, a `platform:` route takes no `secret`/`inject` (it gets the token-exchange

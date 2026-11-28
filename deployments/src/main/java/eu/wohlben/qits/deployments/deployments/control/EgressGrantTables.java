@@ -38,7 +38,9 @@ import org.jboss.logging.Logger;
  *   <li><b>One deployment per place</b>: the newest {@code ACTIVE} row of each (application, tier)
  *       by {@code seq} — by invariant the only one.
  *   <li><b>Its declaration is its VERSION's</b>, joined on (application, version). No declaration
- *       (a version released before this, a variant, a release still being read) grants nothing.
+ *       (a version released before this, a release still being read) grants nothing. A variant's
+ *       declaration is its own {@code egress.<variant>.yml}, read for its own application name
+ *       (qits-2784), so it joins exactly like a main application's.
  *   <li><b>A refused declaration grants nothing and is listed</b> under {@code refused}, once per
  *       (application, version) however many tiers run it.
  *   <li><b>The projects' routes join them</b> (qits-2659): what {@link ProjectEgressGrants} last

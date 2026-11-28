@@ -1821,11 +1821,13 @@ public class DeployService implements ReleaseAnnouncements {
       DeploymentDriver.Exposure exposure,
       String image,
       String variant,
-      Map<String, String> imageDefaults) {
+      Map<String, String> imageDefaults,
+      DeploymentDriver.InheritedSettings inherited) {
 
     /** Null and empty say the same thing: the file declared no image defaults. */
     Target {
       imageDefaults = imageDefaults == null ? Map.of() : imageDefaults;
+      inherited = inherited == null ? DeploymentDriver.InheritedSettings.NONE : inherited;
     }
   }
 
@@ -2122,6 +2124,8 @@ public class DeployService implements ReleaseAnnouncements {
         }
         spec = read.spec();
         DeploymentSpecParser.checkVariant(spec, variant, mainApplication, source);
+        // Whose settings its inherit_settings: names — the one fact the file cannot state.
+        spec = spec.variantOf(mainApplication);
       } catch (RuntimeException e) {
         String name =
             spec != null && spec.application() != null && !spec.application().equals(mainApplication)
@@ -2258,12 +2262,12 @@ public class DeployService implements ReleaseAnnouncements {
     }
     String applicationName = applicationName(releasedName, spec);
     String failure = null;
-    if (variant == null) {
-      // The routes this version sends through qits-egress (epic qits-2523), read at the same tag
-      // before anything of the release is queued. A file that is absent, refused or unreadable is a
-      // version with no routes — never this deployment's failure; record() swallows everything.
-      egress.record(repository, applicationName, version);
-    }
+    // The routes this version sends through qits-egress (epic qits-2523), read at the same tag
+    // before anything of the release is queued: egress.yml for the main application, and a
+    // variant's own egress.<variant>.yml for a variant (qits-2784) — its principal is its own. A file
+    // that is absent, refused or unreadable is a version with no routes — never this deployment's
+    // failure; record() swallows everything.
+    egress.record(repository, applicationName, version, SpecSource.egressPath(variant));
 
     List<Target> targets;
     try {
@@ -2924,7 +2928,9 @@ public class DeployService implements ReleaseAnnouncements {
         variant,
         // The image's own defaults, the variant's file's for a variant — each application retires
         // its own rows, after its own deployment converged.
-        spec.imageDefaults());
+        spec.imageDefaults(),
+        // A variant's inherit_settings:, naming the main application it reads them from (qits-2784).
+        spec.inheritSettings());
   }
 
   /**
@@ -3271,7 +3277,9 @@ public class DeployService implements ReleaseAnnouncements {
                 null,
                 variant,
                 // ...and no image defaults: nothing converges off one of them, so nothing retires.
-                Map.of()));
+                Map.of(),
+                // ...and no inherited settings: nothing is started off one of them.
+                null));
       }
     }
     return List.copyOf(targets);
@@ -3618,6 +3626,11 @@ public class DeployService implements ReleaseAnnouncements {
     /** The file's {@code image_defaults:}, empty for nearly every one — see {@link Target}. */
     Map<String, String> imageDefaults() {
       return target.imageDefaults();
+    }
+
+    /** A variant's {@code inherit_settings:}, NONE for every other place (qits-2784). */
+    DeploymentDriver.InheritedSettings inherited() {
+      return target.inherited();
     }
 
     /**
@@ -5055,7 +5068,9 @@ public class DeployService implements ReleaseAnnouncements {
         plan.imageDefaults(),
         // What it serves, as service labels (qits-2174): hosts, routes primary first, the upstream
         // port, the API document and the navigation entries — the route tables' one source.
-        plan.routeLabels());
+        plan.routeLabels(),
+        // The main application's settings a variant reads (qits-2784); NONE for everything else.
+        plan.inherited());
   }
 
   /**
@@ -5427,7 +5442,9 @@ public class DeployService implements ReleaseAnnouncements {
               // No image defaults: the restored version runs ITS image, which this deployment's
               // image_defaults: says nothing about.
               Map.of(),
-              predecessorRouting(previous.id));
+              predecessorRouting(previous.id),
+              // ...but the settings it inherits, which are today's, as every setting is.
+              failed.inherited());
       restored = driver.apply(spec);
     } catch (RuntimeException e) {
       restored = new DeploymentDriver.ApplyResult(DeploymentDriver.ApplyOutcome.REFUSED, e.toString());
@@ -6095,6 +6112,11 @@ public class DeployService implements ReleaseAnnouncements {
         defaultImage = main.image() != null ? main.image() : mainApplication;
         String path = SpecSource.variantPath(held.variant);
         spec = specs.read(repository, SpecSource.tagRev(held.version), path).spec();
+        // The variant rules again, the owned-volume one above all (qits-2784): an approval deploys
+        // what the release would have, and nothing it would have refused.
+        DeploymentSpecParser.checkVariant(
+            spec, held.variant, mainApplication, path + " of " + mainApplication + "@" + held.version);
+        spec = spec.variantOf(mainApplication);
       }
     } catch (RuntimeException unreadable) {
       throw new BadGatewayException(
