@@ -29,6 +29,18 @@
           "site" : "PdDatabaseMoveController.abort(String, SecurityContext)"
         },
         {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$RollbackAccepted",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$RollbackPlan",
+          "site" : "ApplicationScaling.rollback(String, String, String, String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$RollbackPlan",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "ApplicationScaling.planRollback(String, String, String, String)"
+        },
+        {
           "type" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$StartAccepted",
           "kind" : "assembler",
           "via" : null,
@@ -84,6 +96,14 @@
           "path" : "/database-moves",
           "dto" : "eu.wohlben.qits.deployments.deployments.entity.PdDatabaseMove",
           "kind" : "direct",
+          "cardinality" : "single"
+        },
+        {
+          "operationId" : "rollbackApplication",
+          "method" : "POST",
+          "path" : "/applications/{applicationId}/rollback",
+          "dto" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$RollbackAccepted",
+          "kind" : "body",
           "cardinality" : "single"
         },
         {
@@ -215,6 +235,18 @@
           "kind" : "assembler",
           "via" : null,
           "site" : "ApplicationScaling.resolve(String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$RollbackAccepted",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$RollbackPlan",
+          "site" : "ApplicationScaling.rollback(String, String, String, String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$RollbackPlan",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "ApplicationScaling.planRollback(String, String, String, String)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$StartAccepted",
@@ -413,6 +445,14 @@
           "cardinality" : "single"
         },
         {
+          "operationId" : "rollbackApplication",
+          "method" : "POST",
+          "path" : "/applications/{applicationId}/rollback",
+          "dto" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$RollbackAccepted",
+          "kind" : "body",
+          "cardinality" : "single"
+        },
+        {
           "operationId" : "scaleApplication",
           "method" : "POST",
           "path" : "/applications/{applicationId}/scale",
@@ -457,6 +497,12 @@
           "kind" : "assembler",
           "via" : null,
           "site" : "PdDeploymentRequestController.listOf(List)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$RollbackAccepted",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.control.DatabaseMoves$Live",
+          "site" : "ApplicationScaling.rollback(String, String, String, String)"
         },
         {
           "type" : "eu.wohlben.qits.deployments.deployments.control.DatabaseMoves$Accepted",
@@ -541,6 +587,14 @@
           "method" : "POST",
           "path" : "/database-moves",
           "dto" : "eu.wohlben.qits.deployments.deployments.control.DatabaseMoves$Accepted",
+          "kind" : "body",
+          "cardinality" : "single"
+        },
+        {
+          "operationId" : "rollbackApplication",
+          "method" : "POST",
+          "path" : "/applications/{applicationId}/rollback",
+          "dto" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$RollbackAccepted",
           "kind" : "body",
           "cardinality" : "single"
         },
@@ -677,6 +731,12 @@
       "knownGap" : null,
       "dtos" : [
         {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$RollbackAccepted",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.control.DatabaseMoves$Live",
+          "site" : "ApplicationScaling.rollback(String, String, String, String)"
+        },
+        {
           "type" : "eu.wohlben.qits.deployments.deployments.control.DatabaseMoves$Accepted",
           "kind" : "via",
           "via" : "eu.wohlben.qits.deployments.deployments.control.DatabaseMoves$Live",
@@ -707,6 +767,14 @@
           "method" : "POST",
           "path" : "/database-moves",
           "dto" : "eu.wohlben.qits.deployments.deployments.control.DatabaseMoves$Accepted",
+          "kind" : "body",
+          "cardinality" : "single"
+        },
+        {
+          "operationId" : "rollbackApplication",
+          "method" : "POST",
+          "path" : "/applications/{applicationId}/rollback",
+          "dto" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$RollbackAccepted",
           "kind" : "body",
           "cardinality" : "single"
         },
@@ -929,6 +997,18 @@
           "site" : "ApplicationRetirement.retire(String, String)"
         },
         {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$RollbackAccepted",
+          "kind" : "via",
+          "via" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$RollbackPlan",
+          "site" : "ApplicationScaling.rollback(String, String, String, String)"
+        },
+        {
+          "type" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$RollbackPlan",
+          "kind" : "assembler",
+          "via" : null,
+          "site" : "ApplicationScaling.planRollback(String, String, String, String)"
+        },
+        {
           "type" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$StartAccepted",
           "kind" : "assembler",
           "via" : null,
@@ -1137,6 +1217,14 @@
           "method" : "POST",
           "path" : "/applications/{applicationId}/retire",
           "dto" : "eu.wohlben.qits.deployments.api.PdApplicationController$RetireResponse",
+          "kind" : "body",
+          "cardinality" : "single"
+        },
+        {
+          "operationId" : "rollbackApplication",
+          "method" : "POST",
+          "path" : "/applications/{applicationId}/rollback",
+          "dto" : "eu.wohlben.qits.deployments.deployments.control.ApplicationScaling$RollbackAccepted",
           "kind" : "body",
           "cardinality" : "single"
         },

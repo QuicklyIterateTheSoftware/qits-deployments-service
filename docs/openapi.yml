@@ -675,6 +675,13 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RemovedArtifact"
+    RollbackRequest:
+      type: object
+      properties:
+        version:
+          type: string
+        reason:
+          type: string
     Route:
       type: object
       properties:
@@ -952,6 +959,52 @@ paths:
         "409":
           description: "The deploy worker still has work for it, or it is this deployer's\
             \ own service"
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Application Controller
+      security:
+      - SecurityScheme:
+        - qits:admin
+        - qits:admin-agent
+        - qits:desk-admin
+        - qits:desk
+  /deployments/api/applications/{applicationId}/rollback:
+    post:
+      summary: "Roll one application in one tier back to an earlier version that served\
+        \ there — no build, start-first only"
+      operationId: rollbackApplication
+      parameters:
+      - name: applicationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RollbackRequest"
+        required: true
+      responses:
+        "202":
+          description: Queued on the deploy worker; the versions it moves between
+            and the ACTIVE deployment it replaces are named
+        "400":
+          description: "Not an application id, no version or reason, or a reason over\
+            \ 500 characters"
+        "404":
+          description: "Nothing has ever been deployed for this application, or its\
+            \ tier is gone"
+        "409":
+          description: "A deployment or database move of it is in flight, nothing\
+            \ of it is ACTIVE, the version never served here or is serving now, it\
+            \ is stop-first or undeclared at that version, no request is on record\
+            \ for it, or it is this deployer itself"
+        "502":
+          description: The git host could not be asked how the version is updated
         "401":
           description: Not Authorized
         "403":

@@ -262,6 +262,14 @@ class GoldenMasterRecordingTest {
               200,
               "$.pins",
               null),
+          // qits-2779: the delivery desk's rollback of one application to its earlier served version.
+          write(
+              ProviderStates.AN_APPLICATION_WITH_A_ROLLBACK,
+              "rollbackApplication",
+              "POST",
+              "/deployments/api/applications/{applicationId}/rollback",
+              202,
+              "{\"version\":\"{version}\",\"reason\":\"the newer version answers 500\"}"),
           new Interaction(
               ProviderStates.AN_APPLICATION_HOLDING_A_SERVICE_CLIENT,
               "listIdpClientClaims",

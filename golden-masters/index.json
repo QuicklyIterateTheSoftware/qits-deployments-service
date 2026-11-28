@@ -913,8 +913,10 @@
       "name": "an application serving with a rollback version",
       "slug": "an-application-serving-with-a-rollback-version",
       "params": {
+        "applicationId": "00000000-0000-4000-8000-000000000001:contract-app-00000001",
         "applicationName": "contract-app-00000001",
-        "environmentId": "00000000-0000-4000-8000-000000000001"
+        "environmentId": "00000000-0000-4000-8000-000000000001",
+        "version": "2026.101.120000"
       },
       "dependsOn": [],
       "operations": [
@@ -931,6 +933,29 @@
               "$.pins[*].applicationName"
             ],
             "listFilteredTo": "$.pins"
+          }
+        },
+        {
+          "operationId": "rollbackApplication",
+          "method": "POST",
+          "path": "/deployments/api/applications/{applicationId}/rollback",
+          "body": {
+            "version": "{version}",
+            "reason": "the newer version answers 500"
+          },
+          "status": 202,
+          "file": "an-application-serving-with-a-rollback-version/rollbackApplication.json",
+          "frozen": {
+            "ids": [
+              "$.environmentId",
+              "$.deploymentId"
+            ],
+            "instants": [],
+            "strings": [
+              "$.applicationId",
+              "$.applicationName"
+            ],
+            "listFilteredTo": null
           }
         }
       ]

@@ -793,7 +793,8 @@ public class ProviderStates {
 
   /**
    * Two releases of one application deployed in turn: {@link #NEXT_VERSION} serves and {@link
-   * #VERSION}, decommissioned by it, is what a rollback restores. Its pin holds both.
+   * #VERSION}, decommissioned by it, is what a rollback restores. Its pin holds both, and the
+   * rollback door (qits-2779) is asked to put {@code version} back on {@code applicationId}.
    *
    * <p><b>The only application serving anywhere.</b> {@code listPins} answers instance-wide, and
    * the deployed states leave their designated environments behind, so every application an
@@ -811,9 +812,14 @@ public class ProviderStates {
     settle(environmentId, 1);
     release(application, NEXT_VERSION);
     settle(environmentId, 2);
+    // The rollback door (qits-2779) queues a redeploy: clean-up waits for it.
+    settling.add(environmentId);
     Map<String, String> params = new TreeMap<>();
+    params.put("applicationId", environmentId + ":" + application);
     params.put("applicationName", application);
     params.put("environmentId", environmentId);
+    // The rollback target — what the rollback door is asked to put back.
+    params.put("version", VERSION);
     return new Setup(params, List.of(token));
   }
 
