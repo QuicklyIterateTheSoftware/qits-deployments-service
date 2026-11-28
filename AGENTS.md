@@ -68,7 +68,9 @@ nobody would be watching. **The publishing path joined it when this component go
 own**: the four `DeploymentQueued`/`Started`/`Active`/`Failed` records, `EventEnvelope`, and
 `CanonicalJson$QitsEventMixin` by string name because it is nested in the library. The mix-in is the
 quiet one — it is what keeps `eventId` out of the payload, so its absence is a wire contract that
-changed with no crash and no log. **A fifth event joins the list in the commit that adds it.**
+changed with no crash and no log. **A fifth event joins the list in the commit that adds it** — and
+the list has grown since: `DeploymentRequestDeclined` (qits-2271), the three `Environment*` events
+(qits-387) and `ApplicationRollbackRequested` (qits-2779) are all on it.
 
 ## The partition, and the one rule that keeps it
 
@@ -608,6 +610,71 @@ and `AgentReadAccessTest` arm it; `DeskAdminParityTest` covers it by constructio
 `PdApplicationRetireTest` holds the flow end to end (an `ACTIVE` app and a `SCALED_TO_ZERO` shell
 retired with the database claim kept, the self and in-flight refusals, a failed step finished by the
 next observation, and decommission's 409 unchanged beside it).
+
+## Rollback: the sixth lever, one application back to a version that served (qits-2779)
+
+    POST /deployments/api/applications/{applicationId}/rollback   {"version","reason"}   → 202
+    {"applicationId","applicationName","environmentId","fromVersion","toVersion","deploymentId"}
+
+**The delivery desk could see a bad release and had no way back that was not a person or a build.**
+The manual door (`POST /events/software-released`) needs `qits:system` and replays the WHOLE release
+into the entry tier, variants and all; the start door redeploys only the newest `ACTIVE` version.
+This door puts ONE application in ONE tier back on an earlier version that already served there,
+with no build, no registry call and no machine role. `ApplicationScaling.rollback` decides,
+`DeployService.redeployOne` deploys.
+
+What it refuses, all on the request thread, in the start door's sentences where they overlap:
+
+- **400** a malformed id, a blank `version` or `reason`, a reason over 500 characters
+  (`ApplicationScaling.MAX_ROLLBACK_REASON`); **404** a place nothing ever deployed, or no tier;
+- **409** this deployer itself (`BootResourceRegistration.APPLICATION`), a `QUEUED`/`STARTING` row,
+  an unsettled database move, no `ACTIVE` deployment;
+- **409 a version that did not SERVE this place** — the rule is `RollbackPins`': a row of this
+  (application, tier) at that version, `ACTIVE` or `DECOMMISSIONED` — **or the one serving now**. The
+  answer names the versions that did serve, newest first, at most five. Rolling *forward* again to a
+  newer version that served is the same rule and is allowed;
+- **409 no deployment request on record** for the target row — the coordinates (repository, released
+  name, package, variant) come off that request through `DatabaseMoves.coordinates`, never from the
+  caller;
+- **409 stop-first, or no file at the tag.** The named application's own `update_order` is read at
+  `refs/tags/<version>` now (the variant's own file for a variant). Start-first is what makes the
+  door safe to hand an agent: the serving deployment stays `ACTIVE` until the rolled-back one passes
+  its gate, so a rollback whose image the registry already collected ends `IMAGE_MISSING` and changes
+  nothing. A stop-first application is rolled back by a person. A git host that does not answer is a
+  502 and queues nothing.
+
+**Only that one application moves.** `redeployOne` builds ONE `Target`, for the named tier, from the
+file at the tag — `approvalOf`'s arrangement: nothing is registered, no tier link is written, and a
+non-entry tier is put back where it is. The main application deploys **without** its variants
+(`deployVariants` is never reached); a variant id deploys exactly that variant by its own file, the
+main file read only for the image the variant defaults to. It keeps `Door.MANUAL`'s "a person named
+the version" (no newest-only guard) but **refuses an undeclared file rather than deploying the
+defaults**: an undeclared or unreadable file on the worker is an `UNMET` request row naming why and no
+deployment. It runs inside `DatabaseMoves.onClaims`, the start door's bracket: **a rollback puts the
+code back, never the data** — no database move is planned, whatever the older spec resolved.
+
+**The audit line and the event.** One INFO line on the logger `eu.wohlben.qits.deployments.audit`
+names the caller, application, tier, from, to and reason (control characters flattened). Then
+`ApplicationRollbackRequested` is announced (`DeployAnnouncer.onRollbackRequested`, on the request
+thread, so the ambient cause is its parent), and its `eventId` is the `causation_id` of the rows the
+redeploy writes — the new deployment's ordinary `DeploymentQueued`/`Started`/`Active`/`Failed` hang
+off the decision in the event log. `deploymentId` in the answer and the event is the `ACTIVE` row the
+rollback replaces, the start door's choice: the new row is written on the worker after the answer.
+
+**What keeps a rollback rolled back.** Nothing on the observation tick converges a place to its newest
+release — the observer corrects words, the egress and database hand-overs redeploy the *live* version
+(`DatabaseMoves.live`, which is the rolled-back one), and `pd_owed_release` holds obligations the
+newest release already discharged. **The one thing that did undo it was the tip floor**:
+`PdDeploymentRequestRepository.newestVersionOf` answered the version of the newest request ROW, and a
+rollback writes a request at an OLDER version — so after a restart a stale catch-up of the version
+rolled away from, or of any release between the two, passed `ReleaseTips.claim` and deployed the place
+forward again. It is `requestedVersionsOf` now, and `ReleaseTips` takes the highest by `Versions`.
+`PdApplicationRollbackTest` holds the flow: every guard, the four roles and the two refused callers,
+the variant and main scoping, `IMAGE_MISSING` leaving the serving row `ACTIVE`, the floor, and the
+event's payload and causation.
+
+**Role**: the class-level set — `qits:admin`, `qits:admin-agent`, `qits:desk-admin`, `qits:desk` — no
+`qits:system`, no plain `qits:agent`. `DeskAdminParityTest` covers it by construction.
 
 ## One orchestrator, one seam
 
@@ -3219,6 +3286,11 @@ only by asking this component's API. Four events close it, one per lifecycle poi
 | `DeploymentStarted` | after the `QUEUED`→`STARTING` transaction | taken at the transition — there is no `started_at` column |
 | `DeploymentActive` | after the cutover bookkeeping, last thing in `execute` — **and from the startup sweep's adoption**, which is the only path a self-update has | the row's `finished_at` |
 | `DeploymentFailed` | the single `finish` funnel, when the status is not `ACTIVE` | the row's `finished_at` |
+
+Beside them, two events whose subject is a DECISION rather than a deployment:
+`DeploymentRequestDeclined` (qits-2271, a held request a person declined) and
+`ApplicationRollbackRequested` (qits-2779, the rollback door accepted — see *Rollback*), published
+from the request thread with the ambient cause; the rollback's id is the cause of the rows it queues.
 
 **All four carry the VERSION now, and `commitSha` beside it.** The version is the released
 coordinate — what the image is tagged with, and what a consumer joins a deployment back to a release

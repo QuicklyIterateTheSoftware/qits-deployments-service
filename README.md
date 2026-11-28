@@ -591,6 +591,7 @@ Two more things such a move does once, neither of them an error:
 | `GET /environments/{id}/links` | a reconciliation: this tier's services |
 | `PUT/GET/DELETE /services/{name}` | derived registration (in-process); an operator, for the deliberate acts |
 | `GET /applications` | the client — one entry per (service, tier), flat |
+| `POST /applications/{id}/scale` · `restart` · `start` · `decommission` · `retire` · `rollback` | a person, an admin agent or the delivery desk — the operator's levers (AGENTS.md) |
 | `GET /deployments?environmentId=` | the client — one tier's history, newest first |
 | `GET /pins` | qits-platform-artifacts' OCI garbage collector, fail-closed |
 | `POST /events/build-succeeded` | qits-ci, fire-and-forget; the manual and bootstrap door |
